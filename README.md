@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.2-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.3-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ---
 
@@ -22,6 +22,9 @@ python server.py
 Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Python、启动服务并打开浏览器。
 用于转发的 ZIP 内另有 `README-zh.txt` 简明说明。
 
+可选增强：安装并启动通达信 TQ-Local 后，在“数据源”页点击“检测并接入”。通达信不可用时
+深脉会自动回退，不影响独立运行；详细说明见 [`integrations/tdx-tq-local`](integrations/tdx-tq-local/README.md)。
+
 > 要求：Python 3.9+（运行时零第三方依赖）和现代浏览器。Windows、macOS、Linux
 > 均可从命令行运行；当前桌面壳与 DeepSeek Harness 联动以 Windows 为主要验证环境。
 
@@ -38,7 +41,7 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 | 🪜 涨停梯队 | 游资视角战场地图：按连板高度分层、封板时间/封单/炸板次数/题材、题材热度TOP10、梯队解读 |
 | ⭐ 自选 | 本地自选股雷达（5秒刷新）、情绪标签叠加、备注、导入导出 |
 | 🧭 策略 | 引擎诊断、仓位矩阵、风险清单、打分贡献榜、复盘模板与情绪日记 |
-| 🗄 数据源 | 官方/市场来源分级、真实请求观测状态、官方查验入口、手动记录情绪快照 |
+| 🗄 数据源 | 官方/本地终端/市场来源分级、通达信四步连接检测、真实请求观测状态、官方查验入口、手动记录情绪快照 |
 | 💗 关于我 | 产品的自述：我的身体构造与使用指南 |
 
 ## 三、蚂小财 · DeepSeek 版（AI 对话助手）
@@ -80,7 +83,7 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 | 独立运行 | `python server.py` 同时提供数据 API 与原生 Web 工作台 |
 | 一级导航 | Harness 可注册侧栏入口，在会话视图与工作台之间切换 |
 | 同源 | 工作台静态资源可随主应用发布到 `/deeppulse/`，数据仍由本地服务提供 |
-| 双向桥 | `dp-ask` v2 把问题、当前页、标的、时点、风险、公告与来源分级送入当前会话；收到成功回执后才切回，会话中的深脉深链可转入对应页面 |
+| 双向桥 | `dp-ask` v2 把问题、当前页、标的、时点、风险、公告、来源分级与 TQ-Local 验证状态送入当前会话；收到成功回执后才切回 |
 | 生命周期 | 桌面宿主可检查、启动和停止由自己创建的深脉服务进程 |
 
 桥接协议与接入边界见 [`integrations/deepseek-harness`](integrations/deepseek-harness/README.md)。
@@ -88,12 +91,13 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 
 ## 六、数据源与可靠性
 
-来源分两级：巨潮资讯、上交所、深交所、证监会属于**一级官方来源/查验入口**；东方财富与腾讯属于**市场行情聚合来源**。当前结构化公告由巨潮资讯提供，其他官方站点用于人工复核；接口失败时只展示降级与官方搜索入口，不生成替代公告。行情链采用四级防护：
+来源分三级：巨潮资讯、上交所、深交所、证监会属于**一级官方来源/查验入口**；通达信 TQ-Local 属于**可选本地终端源**；东方财富与腾讯属于**市场行情聚合来源**。当前结构化公告由巨潮资讯提供，其他官方站点用于人工复核；接口失败时只展示降级与官方搜索入口，不生成替代公告。行情链采用五级防护：
 
-1. **主机熔断**：某主机连续失败后 3 分钟自动切换备援（push2 → push2delay → 腾讯）
-2. **备援链**：行情/K线/指数/资金流均有第二、第三路径
-3. **指标降级**：上游缺数据时自动剔除对应指标，不污染温度评分
-4. **限频缓存**：上游请求 ≥0.2s/次；行情5s / 情绪池25s / K线60s / 全A列表2h 多级TTL
+1. **本地优先**：通达信满足 Windows、安装、进程、HTTP 四步检查后，优先提供行情和 K 线
+2. **只读白名单**：账户、持仓、下单、撤单接口均被代码拒绝
+3. **主机熔断**：某来源失败后自动切换备援（TQ-Local → push2 → push2delay → 腾讯）
+4. **指标降级**：上游缺数据时自动剔除对应指标，不污染温度评分；TQ-Local 缺席不计为核心降级
+5. **限频缓存**：上游请求 ≥0.2s/次；行情5s / 情绪池25s / K线60s / 全A列表2h 多级TTL
 
 数据源页的“最近访问成功/访问降级”来自真实请求记录；“本次尚未访问”不代表在线，“官方查验入口”也不冒充实时数据流。
 
@@ -102,6 +106,7 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 ```
 deeppulse/
 ├─ server.py            # 零依赖数据服务（代理/缓存/熔断/备援/快照记忆/CORS/云端大脑）
+├─ tdx_local.py         # 通达信 TQ-Local 只读适配器（固定回环地址 + 方法白名单）
 ├─ emotion.py           # 情绪周期引擎（评分/阶段/建议/风险）
 ├─ README.md / 情绪周期方法论.md / PRODUCT_ROADMAP.md
 ├─ integrations/        # DeepSeek Harness 桥接协议和接入说明
@@ -119,6 +124,7 @@ deeppulse/
 |---|---|
 | `/api/health` | 健康检查（含 CORS，可供桌面宿主或 Harness 探测） |
 | `/api/sources` | 来源等级、用途、最近真实访问时间、延迟与降级状态 |
+| `/api/tdx/status?probe=1&fresh=1` | 通达信 Windows/安装/进程/HTTP 四步检查与只读连接状态 |
 | `/api/disclosures?code=` | 巨潮资讯官方公告索引、PDF 原文地址与拉取时间 |
 | `/api/brain` | 蚂小财大脑状态（llm/本地智脑 + 模型名） |
 | `/api/indices` | 五大指数实时行情 |
@@ -126,8 +132,8 @@ deeppulse/
 | `/api/emotion/record` | POST 手动记录快照 |
 | `/api/chat` | POST 蚂小财对话（可配置 DeepSeek 模型 + 市场上下文注入 + 动作解析） |
 | `/api/ladder?type=ZT\|DT\|ZB` | 涨停/跌停/炸板池 |
-| `/api/quote?code=` | 个股实时行情（东财→腾讯备援） |
-| `/api/kline?code=&klt=&fqt=&n=` | K线（支持 BK0815 板块指数） |
+| `/api/quote?code=` | 个股实时行情（TQ-Local→东财→腾讯备援） |
+| `/api/kline?code=&klt=&fqt=&n=` | K线（TQ-Local→东财→腾讯；支持 BK0815 板块指数） |
 | `/api/rank?sort=up\|flow\|turn` | 涨幅榜/主力净流入榜/换手榜 |
 | `/api/sectors` | 领涨行业板块 |
 | `/api/news` | 7×24快讯 |

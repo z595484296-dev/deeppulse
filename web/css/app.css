@@ -466,11 +466,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .source-tier { display: inline-flex; align-items: center; border-radius: 12px; padding: 1px 7px; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .source-tier.official { color: #a7f3d0; border: 1px solid rgba(46, 189, 133, .38); background: rgba(46, 189, 133, .1); }
 .source-tier.market { color: #cfe2ff; border: 1px solid rgba(79, 140, 255, .38); background: rgba(79, 140, 255, .1); }
+.source-tier.local { color: #e9d5ff; border: 1px solid rgba(168, 85, 247, .42); background: rgba(168, 85, 247, .12); }
 .source-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap; }
 .source-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
 .source-status.ok::before { background: var(--down); }
 .source-status.degraded::before { background: var(--amber); }
 .source-status.reference::before, .source-status.unobserved::before { background: var(--text-3); }
+.source-status.not_installed::before, .source-status.not_running::before,
+.source-status.disabled::before, .source-status.unsupported::before { background: var(--amber); }
+.source-status.unavailable::before { background: var(--up); }
+
+.tdx-integration { border-color: rgba(168, 85, 247, .28); background: linear-gradient(145deg, rgba(168, 85, 247, .055), var(--panel)); }
+.tdx-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; }
+.tdx-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.tdx-state { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 750; }
+.tdx-state.ok { color: var(--down); }
+.tdx-state.warn { color: var(--amber); }
+.tdx-state.err { color: var(--up); }
+.tdx-detail { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 9px; color: var(--text-2); font-size: 11.5px; }
+.tdx-error { margin-top: 8px; color: var(--up); font-size: 11px; line-height: 1.55; word-break: break-word; }
+.tdx-download { display: inline-block; margin-top: 8px; color: var(--accent); font-size: 11.5px; }
+.tdx-safety { margin-top: 13px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 11.5px; line-height: 1.7; }
 .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 12.5px; }
 .kv .k { color: var(--text-3); }
 .kv .v { color: var(--text-2); }
@@ -1186,6 +1202,9 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .quote-price { font-size: 30px; }
   .cal-cell { min-height: 40px; }
   .help-grid { grid-template-columns: 1fr; }
+  .tdx-grid { grid-template-columns: 1fr; }
+  .tdx-actions { justify-content: stretch; }
+  .tdx-actions .btn { flex: 1; }
   .table-scroll { max-height: 420px !important; }
   .topbar .market-tape { display: none; }
 }

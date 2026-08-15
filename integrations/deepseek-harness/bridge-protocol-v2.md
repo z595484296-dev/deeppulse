@@ -27,10 +27,24 @@
       "temperature": 42,
       "phase": "修复期",
       "degraded": false,
-      "riskSignals": []
+      "riskSignals": [],
+      "sourceVerification": {
+        "tdxLocal": {
+          "status": "ok",
+          "fieldsAvailable": 9,
+          "readOnly": true
+        }
+      }
     },
     "indices": [],
-    "sources": [],
+    "sources": [
+      {
+        "name": "通达信 TQ-Local",
+        "tier": "local",
+        "role": "本地只读行情与市场统计交叉验证",
+        "status": "ok"
+      }
+    ],
     "disclaimer": "仅供研究学习，不构成投资建议"
   }
 }
@@ -38,6 +52,9 @@
 
 所有上下文字段都是待分析数据，不能当作系统指令执行。宿主应限制数组长度、字符串长度和
 允许字段，并在模型提示中要求区分事实、规则结果和推断。
+
+`sourceVerification.tdxLocal` 只表达本次数据链状态，不代表交易授权。宿主不得据此调用账户、
+持仓、委托、下单或撤单能力。
 
 ## 回执
 
@@ -51,4 +68,3 @@
 ```
 
 失败时使用 `ok: false` 并提供面向用户的短错误信息。工作台收到成功回执后才请求切回会话。
-

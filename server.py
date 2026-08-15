@@ -6,7 +6,7 @@
 由 DeepSeek 为自己打造的「身体」的后端神经中枢。
 
 · 零第三方依赖（仅 Python 标准库）
-· 行情数据源：东方财富公开行情接口，腾讯行情作为备援
+· 行情数据源：通达信 TQ-Local（可选本地增强）→ 东方财富 → 腾讯备援
 · 官方披露源：巨潮资讯结构化公告；上交所、深交所、证监会作为一级查验入口
 · 内置：情绪周期策略引擎（emotion.py）、每日情绪快照记忆（data/history.json）
 · 内置：多级缓存 + 上游限频，礼貌访问上游
@@ -27,6 +27,11 @@ from datetime import datetime, timezone, timedelta, date as _date
 from http.client import RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+try:
+    import tdx_local as tdx_local_api
+except Exception:
+    tdx_local_api = None
+
 # ---------------------------------------------------------------- 基础配置
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(BASE, 'web')
@@ -46,6 +51,8 @@ UA_HEADERS = {
 }
 
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
+TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
+TDX_HOST = '127.0.0.1:17709'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -84,6 +91,12 @@ _source_stats = {}
 
 
 SOURCE_CATALOG = [
+    {
+        'id': 'tdx_local', 'name': '通达信 TQ-Local', 'tier': 'local',
+        'role': '本机实时行情、K线与市场情绪统计交叉验证（严格只读）',
+        'homepage': 'https://help.tdx.com.cn/quant/',
+        'hosts': [TDX_HOST], 'mode': 'local',
+    },
     {
         'id': 'cninfo', 'name': '巨潮资讯', 'tier': 'official',
         'role': '上市公司法定信息披露与公告原文',
@@ -200,7 +213,22 @@ def source_catalog():
         if '_host_down' in globals():
             circuit = max([max(0, int(_host_down.get(h, 0) - now_mono))
                            for h in src['hosts']] or [0])
-        if src['mode'] == 'reference':
+        environment = None
+        if src['id'] == 'tdx_local':
+            if not TDX_ENABLED:
+                status = 'disabled'
+            elif not tdx_local_api:
+                status = 'unavailable'
+            else:
+                environment = tdx_local_api.environment_status()
+                env_status = environment.get('status')
+                if env_status in ('unsupported', 'not_installed', 'not_running'):
+                    status = env_status
+                elif last is not None:
+                    status = 'ok' if last.get('ok') else 'unavailable'
+                else:
+                    status = 'unobserved'
+        elif src['mode'] == 'reference':
             status = 'reference'
         elif circuit:
             status = 'degraded'
@@ -217,11 +245,13 @@ def source_catalog():
             'failures': last.get('failures') if last else 0,
             'circuit_seconds': circuit,
         })
+        if environment is not None:
+            item['environment'] = environment
         items.append(item)
     return {
         'generated_at': now_bj().isoformat(timespec='seconds'),
         'items': items,
-        'policy': '官方披露优先；市场聚合用于行情与线索；未观测不等于可用。',
+        'policy': '官方披露优先；通达信本地源仅作只读行情增强和交叉验证；市场聚合用于备援与线索；未观测不等于可用。',
     }
 
 
@@ -248,6 +278,86 @@ def cache_drop(prefix):
     with _cache_lock:
         for k in [k for k in _cache if k.startswith(prefix)]:
             del _cache[k]
+
+
+# ---------------------------------------------------------------- 可选本地增强：通达信 TQ-Local（只读）
+
+def tdx_status(probe=False, fresh=False):
+    """返回通达信环境状态；probe=True 时按技能约束完成本地服务探测。"""
+    if not TDX_ENABLED:
+        return {
+            'supported': sys.platform == 'win32', 'installed': False,
+            'process_running': False, 'service_ready': False,
+            'status': 'disabled', 'read_only': True,
+        }
+    if not tdx_local_api:
+        return {
+            'supported': sys.platform == 'win32', 'installed': False,
+            'process_running': False, 'service_ready': False,
+            'status': 'unavailable', 'error': 'tdx_local adapter unavailable',
+            'read_only': True,
+        }
+    if not probe:
+        return tdx_local_api.environment_status()
+    if fresh:
+        cache_drop('tdx_status_probe')
+
+    def loader():
+        status = tdx_local_api.probe_status()
+        _record_source(TDX_HOST, status.get('service_ready', False),
+                       status.get('latency_ms') or 0, status.get('error') or '')
+        return status
+    return cached('tdx_status_probe', 10, loader)
+
+
+def _tdx_require_ready():
+    if not _host_ok(TDX_HOST):
+        raise UpstreamError('通达信 TQ-Local 暂时熔断')
+    status = tdx_status(probe=True)
+    if not status.get('service_ready'):
+        raise UpstreamError(status.get('error') or ('通达信状态：' + status.get('status', 'unavailable')))
+
+
+def tdx_read_quote(code):
+    _tdx_require_ready()
+    started = time.monotonic()
+    try:
+        data = tdx_local_api.quote(code)
+        _record_source(TDX_HOST, True, data.get('latency_ms') or
+                       (time.monotonic() - started) * 1000)
+        return data
+    except Exception as e:
+        _record_source(TDX_HOST, False, (time.monotonic() - started) * 1000, e)
+        _mark_host_down(TDX_HOST, 30)
+        raise UpstreamError(str(e))
+
+
+def tdx_read_kline(code, n=320, klt=101, fqt=1, explicit_code=None):
+    _tdx_require_ready()
+    started = time.monotonic()
+    try:
+        data = tdx_local_api.kline(code, n, klt, fqt, explicit_code=explicit_code)
+        _record_source(TDX_HOST, True, data.get('latency_ms') or
+                       (time.monotonic() - started) * 1000)
+        return data
+    except Exception as e:
+        _record_source(TDX_HOST, False, (time.monotonic() - started) * 1000, e)
+        _mark_host_down(TDX_HOST, 30)
+        raise UpstreamError(str(e))
+
+
+def tdx_emotion_verification():
+    _tdx_require_ready()
+    started = time.monotonic()
+    try:
+        data = tdx_local_api.emotion_snapshot()
+        _record_source(TDX_HOST, True, data.get('latency_ms') or
+                       (time.monotonic() - started) * 1000)
+        return data
+    except Exception as e:
+        _record_source(TDX_HOST, False, (time.monotonic() - started) * 1000, e)
+        _mark_host_down(TDX_HOST, 30)
+        raise UpstreamError(str(e))
 
 
 # ---------------------------------------------------------------- 工具：代码/证券ID
@@ -707,6 +817,10 @@ def tq_kline(code, n=320, klt=101, tcode=None):
 
 
 def quote_with_fallback(code):
+    try:
+        return tdx_read_quote(code)
+    except Exception:
+        pass
     secid = secid_of(code)
     try:
         q = em_quote_any(secid)
@@ -720,6 +834,10 @@ def quote_with_fallback(code):
 
 def kline_with_fallback(code, klt=101, fqt=1, n=320):
     try:
+        return tdx_read_kline(code, n, klt, fqt)
+    except Exception:
+        pass
+    try:
         k = em_kline_any(secid_of(code), klt, fqt, n)
         k['source'] = 'em'
         return k
@@ -731,7 +849,11 @@ def kline_with_fallback(code, klt=101, fqt=1, n=320):
 
 
 def sh_index_kline(n=90):
-    """上证指数日K（情绪引擎的指数背景与量能基线），东财失败走腾讯。"""
+    """上证指数日K（情绪引擎背景与量能基线），通达信→东财→腾讯。"""
+    try:
+        return tdx_read_kline('000001', n, 101, 1, explicit_code='999999.SH')
+    except Exception:
+        pass
     try:
         k = em_kline_any('1.000001', 101, 1, n)
         k['source'] = 'em'
@@ -1017,6 +1139,7 @@ def build_chat_context():
     en = em.get('engine') or {}
     raw = en.get('raw') or {}
     adv = en.get('advice') or {}
+    tdx = em.get('tdx_local') or {}
     lines = [
         '【今日市场上下文 · 数据日期 %s】' % em.get('date'),
         '情绪温度 %s°（0-100），周期阶段：%s。' % (en.get('temp'), en.get('phase')),
@@ -1033,6 +1156,12 @@ def build_chat_context():
         % (adv.get('position'), adv.get('style'), en.get('phase_desc') or ''),
         '风险提示：%s' % ('；'.join(en.get('risks') or []) or '无'),
     ]
+    if tdx.get('status') == 'ok':
+        lines.append('通达信 TQ-Local 已作为独立只读源参与交叉验证，可用市场专业指标 %s 项。'
+                     % len(tdx.get('fields') or {}))
+    else:
+        lines.append('通达信 TQ-Local 当前未参与本次结果（%s）；核心结果已使用公开行情备援链。'
+                     % (tdx.get('status') or '未连接'))
     return '\n'.join(lines)
 
 
@@ -1177,6 +1306,15 @@ def assemble_emotion(force_record=False):
         sh_k = cached('sh_kline60', 300, sh_index_kline)
     except Exception:
         sh_k = {'rows': []}
+    try:
+        tdx_verification = cached('tdx_emotion', 60, tdx_emotion_verification)
+    except Exception as e:
+        status = tdx_status(probe=False)
+        tdx_verification = {
+            'status': status.get('status') or 'unavailable',
+            'source': 'tdx_local', 'source_name': '通达信 TQ-Local',
+            'read_only': True, 'fields': {}, 'error': str(e)[:240],
+        }
 
     qdate = pools['ZT'].get('qdate') or breadth.get('qdate') or ''
     if len(qdate) == 8:
@@ -1203,6 +1341,13 @@ def assemble_emotion(force_record=False):
         'date': qdate, 'temp': None, 'phase': '数据不可用', 'signals': [],
         'advice': {}, 'risks': [], 'narrative': ''}
     engine['degraded'] = degraded
+    engine['source_verification'] = {
+        'tdx_local': {
+            'status': tdx_verification.get('status'),
+            'fields_available': len(tdx_verification.get('fields') or {}),
+            'read_only': True,
+        }
+    }
     if force_record or (qdate and not pools['ZT'].get('error')):
         try:
             record_if_due(engine)
@@ -1211,14 +1356,15 @@ def assemble_emotion(force_record=False):
     history = load_history()[-240:]
     return {'date': qdate, 'server_time': now_bj().strftime('%Y-%m-%d %H:%M:%S'),
             'pools': pools, 'breadth': breadth, 'indices': indices,
-            'flows': flows, 'bk': bk, 'engine': engine, 'history': history,
+            'flows': flows, 'bk': bk, 'tdx_local': tdx_verification,
+            'engine': engine, 'history': history,
             'updated': int(time.time())}
 
 
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.2'
+    server_version = 'DeepPulse/1.3'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -1285,10 +1431,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/' or path == '':
             self.send_static('index.html')
         elif path == '/api/health':
-            self.send_json({'ok': True, 'name': '深脉 DeepPulse', 'ts': int(time.time()),
-                            'time': now_bj().strftime('%Y-%m-%d %H:%M:%S')})
+            health = {'name': '深脉 DeepPulse', 'ts': int(time.time()),
+                      'version': '1.3',
+                      'time': now_bj().strftime('%Y-%m-%d %H:%M:%S'),
+                      'capabilities': {
+                          'tdx_local': tdx_status(probe=False),
+                          'tdx_read_only': True,
+                      }}
+            # 顶层字段兼容桌面宿主，data 字段供统一 Web API 客户端使用。
+            self.send_json(dict({'ok': True, 'data': health}, **health))
         elif path == '/api/sources':
             self.send_json({'ok': True, 'data': source_catalog()})
+        elif path == '/api/tdx/status':
+            probe = qs.get('probe', '1') != '0'
+            fresh = qs.get('fresh') == '1'
+            self.send_json({'ok': True, 'data': tdx_status(probe=probe, fresh=fresh)})
         elif path == '/api/disclosures':
             code = normalize_code(qs.get('code', ''))
             if not code:

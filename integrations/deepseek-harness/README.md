@@ -10,7 +10,8 @@
    `python server.py`。
 3. 在侧栏注册深脉入口，并在会话视图与工作台 iframe 之间切换。
 4. 只接受来自该 iframe `contentWindow` 的桥接消息。
-5. 验证 `dp-ask` 的字段、长度和类型，只把白名单上下文送入模型。
+5. 验证 `dp-ask` 的字段、长度和类型，只把白名单上下文送入模型；允许读取
+   `sourceVerification.tdxLocal`，但不要把来源状态解释为交易授权。
 6. 会话成功接收请求后返回 `dp-ask-result`；失败时保持工作台打开。
 7. 只停止由宿主自己创建的深脉服务进程。
 
@@ -23,6 +24,7 @@
 
 完整消息格式见 [bridge-protocol-v2.md](bridge-protocol-v2.md)。
 
+通达信的安装检查、只读白名单与降级链见 [`../tdx-tq-local/README.md`](../tdx-tq-local/README.md)。
+
 若未来 Harness 提供正式插件清单和生命周期 API，本适配器应迁移为独立安装包；在此之前，
 升级宿主适配器仍可能需要重新构建 Harness。
-

@@ -11,14 +11,15 @@ export function init(container) {
   container.innerHTML = `
     <div class="grid g12">
       <div class="card span-8">
-        <div class="card-head"><div class="card-title">来源分级与可用性</div><div class="card-sub">一级官方披露优先 · 市场聚合仅作行情和线索</div></div>
+        <div class="card-head"><div class="card-title">来源分级与可用性</div><div class="card-sub">一级官方披露优先 · 本地终端增强 · 市场聚合备援</div></div>
         <div class="table-scroll" style="max-height:none"><table class="tbl src-table">
           <thead><tr><th>来源</th><th>等级</th><th>用途</th><th>状态</th><th>最近观测</th><th>入口</th></tr></thead>
           <tbody id="ds-sources"><tr><td colspan="6"><div class="empty">正在读取来源状态…</div></td></tr></tbody>
         </table></div>
         <div style="margin-top:12px;font-size:11.5px;color:var(--text-3);line-height:1.8">
           · “未观测”表示本次运行尚未访问该来源，不等于在线；“查验入口”只提供官方人工核验链接。<br>
-          · 服务内置主机熔断、备援切换与指标剔除降级；行情 5 秒、情绪池 25 秒、K 线 60 秒、公告 5 分钟缓存。
+          · 服务内置主机熔断、备援切换与指标剔除降级；行情 5 秒、情绪池 25 秒、K 线 60 秒、公告 5 分钟缓存。<br>
+          · 通达信 TQ-Local 是可选的 Windows 本地增强源，不可用时不会阻断深脉。
         </div>
       </div>
 
@@ -37,6 +38,24 @@ export function init(container) {
           </div>
           <button class="btn" id="ds-clear-cache">清空本地缓存</button>
         </div>
+      </div>
+
+      <div class="card span-12 tdx-integration">
+        <div class="card-head">
+          <div>
+            <div class="card-title">📡 通达信 TQ-Local</div>
+            <div class="card-sub">本机 127.0.0.1:17709 · 行情/K线优先 · 情绪统计交叉验证</div>
+          </div>
+          <span class="source-tier local">本地只读</span>
+        </div>
+        <div class="tdx-grid">
+          <div id="ds-tdx-status" class="tdx-status"><div class="empty">正在检查本地环境…</div></div>
+          <div class="tdx-actions">
+            <button class="btn primary" id="ds-tdx-probe">检测并接入</button>
+            <a class="btn" id="ds-tdx-help" href="https://help.tdx.com.cn/quant/" target="_blank" rel="noopener noreferrer">TQ 帮助</a>
+          </div>
+        </div>
+        <div class="tdx-safety">🔒 深脉适配器只允许行情、K线、证券信息与市场统计查询；账户、持仓、下单和撤单接口均未开放。</div>
       </div>
 
       <div class="card span-12">
@@ -62,6 +81,13 @@ export function init(container) {
   });
   container.querySelector('#ds-refresh').addEventListener('click', () => {
     location.reload();
+  });
+  container.querySelector('#ds-tdx-probe').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = '检测中…';
+    await renderTdxStatus(container, true);
+    await renderSources(container);
+    btn.disabled = false; btn.textContent = '重新检测';
   });
   // 导出情绪历史快照
   const exportHistory = async (fmt) => {
@@ -99,8 +125,11 @@ export function init(container) {
 
 const STATUS_LABELS = {
   ok: '最近访问成功', degraded: '访问降级', reference: '官方查验入口',
-  unobserved: '本次尚未访问',
+  unobserved: '本次尚未访问', not_installed: '未安装', not_running: '客户端未启动',
+  unavailable: '本地服务不可用', unsupported: '当前系统不支持', disabled: '已关闭',
 };
+
+const TIER_LABELS = { official: '一级官方', local: '本地终端', market: '市场聚合' };
 
 async function renderSources(container) {
   const body = container.querySelector('#ds-sources');
@@ -113,7 +142,7 @@ async function renderSources(container) {
       const detail = s.latency_ms != null ? `${observed} · ${s.latency_ms}ms` : observed;
       return `<tr>
         <td><div class="source-name">${esc(s.name)}</div><div class="code-sub">${esc((s.hosts || []).join(' / '))}</div></td>
-        <td><span class="source-tier ${esc(s.tier)}">${s.tier === 'official' ? '一级官方' : '市场聚合'}</span></td>
+        <td><span class="source-tier ${esc(s.tier)}">${esc(TIER_LABELS[s.tier] || s.tier)}</span></td>
         <td style="color:var(--text-2)">${esc(s.role)}</td>
         <td><span class="source-status ${esc(s.status)}">${esc(STATUS_LABELS[s.status] || s.status)}</span></td>
         <td class="code-sub">${esc(detail)}</td>
@@ -122,6 +151,37 @@ async function renderSources(container) {
     }).join('');
   } catch (e) {
     body.innerHTML = `<tr><td colspan="6"><div class="empty">来源状态读取失败：${esc(e.message)}</div></td></tr>`;
+  }
+}
+
+async function renderTdxStatus(container, fresh = false) {
+  const el = container.querySelector('#ds-tdx-status');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">正在执行 Windows / 安装 / 进程 / HTTP 四步检查…</div>';
+  try {
+    const s = await api.tdxStatus(fresh);
+    const labels = {
+      ok: ['已连接', 'ok'], not_installed: ['未安装通达信', 'warn'],
+      not_running: ['通达信客户端未启动', 'warn'], unavailable: ['TQ 本地服务不可用', 'err'],
+      unsupported: ['仅支持 Windows', 'warn'], disabled: ['本地增强已关闭', 'warn'],
+      unobserved: ['等待服务探测', 'warn'],
+    };
+    const [label, tone] = labels[s.status] || [s.status || '未知状态', 'warn'];
+    const install = s.install || {};
+    const details = [];
+    details.push(`系统：${esc(s.system || '--')}`);
+    details.push(`安装：${s.installed ? esc(install.name || '已检测到') : '未检测到'}`);
+    details.push(`客户端：${s.process_running ? 'TdxW.exe 运行中' : '未运行'}`);
+    details.push(`本地服务：${s.service_ready ? `可用 · ${Number(s.latency_ms || 0)}ms` : '未就绪'}`);
+    el.innerHTML = `
+      <div class="tdx-state ${tone}"><i class="dot ${tone === 'ok' ? 'ok' : tone === 'err' ? 'err' : 'warn'}"></i>${esc(label)}</div>
+      <div class="tdx-detail">${details.map(x => `<span>${x}</span>`).join('')}</div>
+      ${s.error ? `<div class="tdx-error">${esc(s.error)}</div>` : ''}
+      ${s.status === 'not_installed' ? `<a class="tdx-download" href="${esc(s.installer_url || '#')}" target="_blank" rel="noopener noreferrer">打开通达信官方安装包地址</a>` : ''}
+    `;
+    if (s.status === 'ok') toast('通达信 TQ-Local 已接入，只读模式', 'ok');
+  } catch (e) {
+    el.innerHTML = `<div class="tdx-state err"><i class="dot err"></i>检测失败</div><div class="tdx-error">${esc(e.message)}</div>`;
   }
 }
 
@@ -135,7 +195,7 @@ async function renderStatus(container) {
     const engine = (em && em.engine) || {};
     const degraded = engine.degraded;
     el.innerHTML = `
-      <span class="k">服务状态</span><span class="v"><i class="dot ok" style="width:7px;height:7px;border-radius:50%;background:var(--down);display:inline-block;margin-right:6px"></i>运行中（v1.2）</span>
+      <span class="k">服务状态</span><span class="v"><i class="dot ok" style="width:7px;height:7px;border-radius:50%;background:var(--down);display:inline-block;margin-right:6px"></i>运行中（v${esc(h.version || '1.3')}）</span>
       <span class="k">服务时间</span><span class="v num">${esc(h.time || '--')}</span>
       <span class="k">端口</span><span class="v num">${location.port}</span>
       <span class="k">情绪数据</span><span class="v">${degraded
@@ -152,5 +212,5 @@ async function renderStatus(container) {
 
 export async function refresh(container) {
   init(container);
-  await Promise.allSettled([renderSources(container), renderStatus(container)]);
+  await Promise.allSettled([renderSources(container), renderStatus(container), renderTdxStatus(container)]);
 }

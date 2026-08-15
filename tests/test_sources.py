@@ -38,9 +38,16 @@ class OfficialSourceTests(unittest.TestCase):
     def test_source_catalog_does_not_claim_unobserved_hosts_are_online(self):
         with server._source_lock:
             server._source_stats.clear()
-        items = {item['id']: item for item in server.source_catalog()['items']}
+        tdx_env = {
+            'supported': True, 'installed': False, 'process_running': False,
+            'service_ready': False, 'status': 'not_installed', 'read_only': True,
+        }
+        with patch.object(server.tdx_local_api, 'environment_status', return_value=tdx_env):
+            items = {item['id']: item for item in server.source_catalog()['items']}
         self.assertEqual(items['cninfo']['status'], 'unobserved')
         self.assertEqual(items['sse']['status'], 'reference')
+        self.assertEqual(items['tdx_local']['status'], 'not_installed')
+        self.assertTrue(items['tdx_local']['environment']['read_only'])
 
 
 if __name__ == '__main__':

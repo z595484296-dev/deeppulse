@@ -28,6 +28,7 @@ export function init(container) {
         <div class="card-sub">发送当前页面、所选标的、数据时点和来源分级；官方披露优先，行情聚合只作线索。</div>
         <div class="ov-source-row">
           <span class="source-tier official">一级源 · 巨潮 / 交易所 / 证监会</span>
+          <span class="source-tier local">本地增强 · 通达信 TQ-Local（可选）</span>
           <span class="source-tier market">行情源 · 东方财富 / 腾讯</span>
         </div>
       </div>

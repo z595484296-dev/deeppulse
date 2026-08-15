@@ -63,6 +63,7 @@ function goto(page, force = false) {
 function currentHarnessContext() {
   const em = state.emotion || {};
   const engine = em.engine || {};
+  const tdx = em.tdx_local || {};
   const quote = marketState.quote || {};
   return {
     page: currentPage,
@@ -80,6 +81,13 @@ function currentHarnessContext() {
       position: engine.advice && engine.advice.position,
       riskSignals: (engine.flags || []).slice(0, 6).map(f => f.text),
       degraded: !!engine.degraded,
+      sourceVerification: {
+        tdxLocal: {
+          status: tdx.status || 'unavailable',
+          fieldsAvailable: Object.keys(tdx.fields || {}).length,
+          readOnly: true,
+        },
+      },
     },
     indices: (state.indices || []).slice(0, 5).map(i => ({
       code: i.code, name: i.name, price: i.price, pct: i.pct,
@@ -87,6 +95,7 @@ function currentHarnessContext() {
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
       { name: '上交所/深交所/证监会', tier: 'official', role: '官方查验入口' },
+      { name: '通达信 TQ-Local', tier: 'local', role: '本地只读行情与市场统计交叉验证', status: tdx.status || 'unavailable' },
       { name: '东方财富/腾讯行情', tier: 'market', role: '行情与市场线索' },
     ],
     disclaimer: '数据仅供研究参考，不构成投资建议。',

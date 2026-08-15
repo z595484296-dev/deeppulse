@@ -37,6 +37,7 @@ async function request(path, timeoutMs = 20000) {
 export const api = {
   health: () => request('/api/health'),
   sources: () => request('/api/sources'),
+  tdxStatus: (fresh = false) => request('/api/tdx/status?probe=1' + (fresh ? '&fresh=1' : ''), 10000),
   disclosures: (code, n = 8) => request(`/api/disclosures?code=${encodeURIComponent(code)}&n=${n}`),
   brain: () => request('/api/brain'),
   indices: () => request('/api/indices'),
