@@ -97,7 +97,10 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\sync-all.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\sync-all.ps1 -VerifyOnly
+powershell -ExecutionPolicy Bypass -File .\scripts\package-desktop.ps1
 ```
+
+`package-desktop.ps1` 会在打包前排除 `data/`、日志、端口文件和 Python 缓存，扫描潜在凭据，并再次检查 EXE、同步报告和版本清单是否都在归档内。桌面程序正在运行时脚本会拒绝打包，避免生成不完整 ZIP。
 
 ## 六、数据源与可靠性
 
