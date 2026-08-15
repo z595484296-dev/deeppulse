@@ -6,8 +6,8 @@
 ## 宿主职责
 
 1. 将 `web/` 发布为同源静态路径，例如 `/deeppulse/`。
-2. 检查 `http://127.0.0.1:8971/api/health`，需要时从项目目录启动
-   `python server.py`。
+2. 从 8971-8980 探测 `/api/health`，只连接版本满足 `deeppulse.manifest.json` 且声明
+   `capabilities.tdx_read_only=true` 的服务；需要时从项目目录启动 `python server.py`。
 3. 在侧栏注册深脉入口，并在会话视图与工作台 iframe 之间切换。
 4. 只接受来自该 iframe `contentWindow` 的桥接消息。
 5. 验证 `dp-ask` 的字段、长度和类型，只把白名单上下文送入模型；允许读取
@@ -17,8 +17,9 @@
 
 ## 静态资源同步
 
-宿主可以在构建时将本仓库 `web/` 的内容复制到自己的公共目录。不要复制 `data/`，因为其中
-可能包含本机配置、日志和用户数据。
+必须使用仓库根目录的 `scripts/sync-all.ps1` 同步：它会复制 `web/`、宿主适配器和测试，重建
+Harness Web，并以 SHA-256 校验独立版与 `/deeppulse/` 的一致性。不要复制 `data/`，因为其中
+可能包含本机配置、日志和用户数据。`-VerifyOnly` 用于发布前只读复核。
 
 ## 协议
 
@@ -26,5 +27,4 @@
 
 通达信的安装检查、只读白名单与降级链见 [`../tdx-tq-local/README.md`](../tdx-tq-local/README.md)。
 
-若未来 Harness 提供正式插件清单和生命周期 API，本适配器应迁移为独立安装包；在此之前，
-升级宿主适配器仍可能需要重新构建 Harness。
+宿主适配器的源文件保存在 `app/`，由同步脚本写入 Harness；任何宿主改动都必须重新构建 Harness。

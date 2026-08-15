@@ -1,4 +1,4 @@
-深脉 DeepPulse 1.3 分享版
+深脉 DeepPulse 1.3.1 分享版
 ========================
 
 一、系统要求
@@ -33,6 +33,9 @@ python server.py
 integrations\deepseek-harness\README.md
 
 该适配器支持把当前页面、证券、行情、风险、官方公告、来源等级与通达信验证状态结构化发送给 Harness。
+桌面 App 和 Harness 会自动在 8971-8980 中发现兼容的 1.3.1+ 深脉服务，不再固定依赖 8971。
+
+开发或更新后必须运行 scripts\sync-all.ps1；它会同步独立版、Harness 内嵌工作台、桌面安装目录和桌面 App，并执行文件一致性校验。只检查不修改时使用 -VerifyOnly。
 
 五、可选接入通达信 TQ-Local
 

@@ -54,6 +54,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
+VERSION = '1.3.1'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1465,7 +1466,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_static('index.html')
         elif path == '/api/health':
             health = {'name': '深脉 DeepPulse', 'ts': int(time.time()),
-                      'version': '1.3',
+                      'version': VERSION,
                       'time': now_bj().strftime('%Y-%m-%d %H:%M:%S'),
                       'capabilities': {
                           'tdx_local': tdx_status(probe=False),

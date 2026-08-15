@@ -1,6 +1,5 @@
 /* 深脉 DeepPulse — API 客户端（本地后端）
-   嵌入模式（/deeppulse/ 或 harness 端口 3080）下自动切换为绝对后端地址；
-   独立窗口模式走相对路径。 */
+   嵌入模式自动发现 8971~8980 中兼容的本地服务；独立模式走相对路径。 */
 
 export const EMBEDDED = (() => {
   try {
@@ -8,30 +7,102 @@ export const EMBEDDED = (() => {
     return loc.pathname.startsWith('/deeppulse/') || loc.port === '3080';
   } catch { return false; }
 })();
-const BASE = EMBEDDED ? 'http://127.0.0.1:8971' : '';
 
-async function request(path, timeoutMs = 20000) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  let resp;
+const MIN_VERSION = '1.3.1';
+const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
+let cachedBase = EMBEDDED ? null : '';
+
+function normalizeBase(value) {
+  const text = String(value || '').trim().replace(/\/+$/, '');
+  return /^http:\/\/(127\.0\.0\.1|localhost):(?:897[1-9]|8980)$/i.test(text) ? text : '';
+}
+
+function configuredBase() {
+  if (typeof window === 'undefined') return '';
   try {
-    resp = await fetch(BASE + path, { signal: ctrl.signal, cache: 'no-store' });
-  } catch (e) {
-    clearTimeout(timer);
-    // 网络层失败重试一次
-    await new Promise(r => setTimeout(r, 600));
-    try {
-      resp = await fetch(BASE + path, { cache: 'no-store' });
-    } catch (e2) {
-      throw new Error('无法连接本地服务，请确认「深脉」后端正在运行');
-    }
+    return normalizeBase(window.__DEEPPULSE_BASE__ || window.parent?.__DEEPPULSE_BASE__);
+  } catch { return normalizeBase(window.__DEEPPULSE_BASE__); }
+}
+
+function versionAtLeast(value, minimum) {
+  const left = String(value || '').split('.').map(part => Number.parseInt(part, 10) || 0);
+  const right = String(minimum || '').split('.').map(part => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const a = left[index] || 0;
+    const b = right[index] || 0;
+    if (a !== b) return a > b;
+  }
+  return true;
+}
+
+async function probeBase(base, signal) {
+  try {
+    const response = await fetch(`${base}/api/health`, { cache: 'no-store', signal });
+    if (!response.ok) return '';
+    const body = await response.json();
+    const health = (body && body.data) || body || {};
+    const capabilities = health.capabilities || {};
+    return versionAtLeast(health.version, MIN_VERSION) && capabilities.tdx_read_only === true ? base : '';
+  } catch { return ''; }
+}
+
+async function discoverBase() {
+  if (!EMBEDDED) return '';
+  if (cachedBase) return cachedBase;
+  const preferred = configuredBase();
+  const candidates = [...new Set([preferred, ...LOCAL_BASES].filter(Boolean))];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500);
+  try {
+    const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
+    const found = results.find(Boolean);
+    if (!found) throw new Error('没有找到兼容的深脉 1.3.1+ 本地服务');
+    cachedBase = found;
+    return found;
   } finally {
     clearTimeout(timer);
   }
-  if (!resp.ok) throw new Error('HTTP ' + resp.status);
-  const j = await resp.json();
-  if (!j || j.ok !== true) throw new Error((j && j.error) || '接口返回异常');
-  return j.data;
+}
+
+async function fetchLocal(path, options = {}, timeoutMs = 20000) {
+  let base = await discoverBase();
+  const run = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(base + path, { cache: 'no-store', ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  try {
+    return await run();
+  } catch {
+    if (EMBEDDED) cachedBase = null;
+    await new Promise(resolve => setTimeout(resolve, 500));
+    base = await discoverBase();
+    try { return await run(); }
+    catch { throw new Error('无法连接兼容的深脉本地服务，请确认桌面 App 已启动'); }
+  }
+}
+
+async function request(path, timeoutMs = 20000) {
+  const response = await fetchLocal(path, {}, timeoutMs);
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  const body = await response.json();
+  if (!body || body.ok !== true) throw new Error((body && body.error) || '接口返回异常');
+  return body.data;
+}
+
+async function post(path, payload, timeoutMs = 20000) {
+  const response = await fetchLocal(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  }, timeoutMs);
+  const body = await response.json();
+  if (!response.ok || !body || body.ok !== true) throw new Error((body && body.error) || ('HTTP ' + response.status));
+  return body.data;
 }
 
 export const api = {
@@ -42,21 +113,14 @@ export const api = {
   brain: () => request('/api/brain'),
   indices: () => request('/api/indices'),
   emotion: (record) => request('/api/emotion' + (record ? '?record=1' : ''), 60000),
-  recordSnapshot: () => fetch(BASE + '/api/emotion/record', { method: 'POST' }).then(r => r.json()),
+  recordSnapshot: () => post('/api/emotion/record'),
   ladder: (type = 'ZT') => request('/api/ladder?type=' + type),
   premium: () => request('/api/premium', 60000),
   dragon: () => request('/api/dragon', 60000),
   dragonSeats: (code, date) => request(`/api/dragon-seats?code=${encodeURIComponent(code)}&date=${encodeURIComponent(date || '')}`, 60000),
   sectorCycle: () => request('/api/sector-cycle', 90000),
   weights: () => request('/api/weights'),
-  saveWeights: async (weights) => {
-    const resp = await fetch(BASE + '/api/weights', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ weights }),
-    });
-    const j = await resp.json();
-    return j.data || {};
-  },
+  saveWeights: (weights) => post('/api/weights', { weights }),
   quote: (code) => request('/api/quote?code=' + encodeURIComponent(code)),
   kline: (code, klt = 101, fqt = 1, n = 320) =>
     request(`/api/kline?code=${encodeURIComponent(code)}&klt=${klt}&fqt=${fqt}&n=${n}`),
@@ -65,18 +129,5 @@ export const api = {
   sectorsFlow: () => request('/api/sectors-flow'),
   news: () => request('/api/news'),
   search: (q) => request('/api/search?q=' + encodeURIComponent(q)),
-  chat: async (messages) => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 60000);
-    try {
-      const resp = await fetch(BASE + '/api/chat', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages }), signal: ctrl.signal,
-      });
-      const j = await resp.json();
-      return (j && j.data) || { mode: 'local' };
-    } finally {
-      clearTimeout(timer);
-    }
-  },
+  chat: (messages) => post('/api/chat', { messages }, 60000),
 };

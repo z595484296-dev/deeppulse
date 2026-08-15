@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.3-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.3.1-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ---
 
@@ -85,9 +85,19 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 | 同源 | 工作台静态资源可随主应用发布到 `/deeppulse/`，数据仍由本地服务提供 |
 | 双向桥 | `dp-ask` v2 把问题、当前页、标的、时点、风险、公告、来源分级与 TQ-Local 验证状态送入当前会话；收到成功回执后才切回 |
 | 生命周期 | 桌面宿主可检查、启动和停止由自己创建的深脉服务进程 |
+| 动态端口 | App 与 Harness 从 8971-8980 中只选择版本兼容且声明 TDX 只读能力的服务 |
 
 桥接协议与接入边界见 [`integrations/deepseek-harness`](integrations/deepseek-harness/README.md)。
 当前属于适配器集成，不冒充已经存在的标准插件市场格式。
+
+### 完整同步规则
+
+`scripts/sync-all.ps1` 是唯一发布入口。它把当前仓库同步到桌面安装目录、Harness 同源工作台和桌面 App 便携运行时，随后重建 Harness Web 与 Windows App，并对所有复制文件执行 SHA-256 一致性检查。以后任何后端、前端、桥协议或数据源更新，都必须通过该脚本并通过 `-VerifyOnly` 复核后才能视为完成。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\sync-all.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\sync-all.ps1 -VerifyOnly
+```
 
 ## 六、数据源与可靠性
 
@@ -110,6 +120,8 @@ deeppulse/
 ├─ emotion.py           # 情绪周期引擎（评分/阶段/建议/风险）
 ├─ README.md / 情绪周期方法论.md / PRODUCT_ROADMAP.md
 ├─ integrations/        # DeepSeek Harness 桥接协议和接入说明
+├─ desktop/             # Windows 桌面 App 的可复现源代码
+├─ scripts/sync-all.ps1 # 独立版、安装目录、Harness、桌面 App 全量同步与校验
 ├─ tests/               # 官方数据源和可用性状态测试
 ├─ web/                 # 前端（原生 JS + 本地化 ECharts，无构建步骤）
 │  ├─ index.html  css/app.css
