@@ -32,6 +32,26 @@ export function init(container) {
       <div id="em-phase-desc" style="font-size:12.5px;color:var(--text-2);line-height:1.8;padding:2px 4px 6px">--</div>
     </div>
 
+    <div class="emotion-state-grid" style="margin-top:14px">
+      <div class="emotion-state"><span>情绪温度</span><b id="em-state-temp" class="num">--</b></div>
+      <div class="emotion-state"><span>变化方向</span><b id="em-state-direction">--</b><small id="em-state-delta">--</small></div>
+      <div class="emotion-state"><span>数据覆盖率</span><b id="em-state-coverage" class="num">--</b></div>
+      <div class="emotion-state"><span>数据可信度</span><b id="em-state-confidence" class="num">--</b></div>
+      <div class="emotion-state"><span>信号一致度</span><b id="em-state-consensus" class="num">--</b></div>
+    </div>
+
+    <div class="grid g12" style="margin-top:14px">
+      <div class="card span-8">
+        <div class="card-head"><div class="card-title">六维情绪结构</div><div class="card-sub">分值越高代表该维度反馈越健康；不以单项替代总判断</div></div>
+        <div class="emotion-dim-grid" id="em-dimensions"></div>
+      </div>
+      <div class="card span-4">
+        <div class="card-head"><div class="card-title">状态倾向</div><div class="card-sub">启发式 · 尚未做历史概率校准</div></div>
+        <div class="transition-bars" id="em-transition"></div>
+        <div id="em-divergences" class="emotion-divergences"></div>
+      </div>
+    </div>
+
     <div class="grid g12" style="margin-top:14px">
       <div class="card span-8">
         <div class="card-head"><div class="card-title">情绪温度历史</div><div class="card-sub">每个交易日收盘后自动记录 · 颜色=当日阶段</div></div>
@@ -83,7 +103,7 @@ export function init(container) {
     </div>
 
     <div class="card" style="margin-top:14px">
-      <div class="card-head"><div class="card-title">情绪评分明细</div><div class="card-sub">温度 = 50 + Σ(得分×权重)/Σ权重 · <b style="color:var(--amber)">暖色=推高温度</b> / <b style="color:var(--accent)">冷色=压低温度</b></div></div>
+      <div class="card-head"><div class="card-title">情绪评分明细</div><div class="card-sub">温度 = 50 + 2.5×Σ(得分×权重)/Σ权重 · <b style="color:var(--amber)">暖色=推高温度</b> / <b style="color:var(--accent)">冷色=压低温度</b></div></div>
       <div class="table-scroll" style="max-height:none"><table class="tbl">
         <thead><tr>
           <th>指标</th><th>今日数值</th><th class="c">得分贡献</th><th style="width:34%">评分分布（-20 ~ +20）</th><th class="r">权重</th><th>解读</th>
@@ -121,7 +141,8 @@ export async function refresh(container, data) {
   }
   const engine = em.engine || {};
   const raw = engine.raw || {};
-  const cur = PHASES[engine.phase_idx] || PHASES[0];
+  const dynamics = engine.dynamics || {};
+  const transition = engine.transition || {};
 
   // 阶段条
   const strip = container.querySelector('#em-phase-strip');
@@ -129,7 +150,40 @@ export async function refresh(container, data) {
   const active = strip.querySelector(`.phase-pill[data-idx="${engine.phase_idx ?? 0}"]`);
   if (active) active.classList.add('active');
   container.querySelector('#em-phase-desc').innerHTML =
-    `当前：<b style="color:${PHASE_COLORS[engine.color] || '#fff'}">${esc(engine.phase || '--')}</b>（温度 ${engine.temp ?? '--'}°）。${esc(engine.phase_desc || '')}`;
+    `当前：<b style="color:${PHASE_COLORS[engine.color] || '#fff'}">${esc(engine.phase || '--')}</b>（温度 ${engine.temp ?? '--'}°）。${esc(engine.phase_desc || '')}` +
+    `${engine.phase_pending ? ' <span class="badge cyan">切换确认中</span>' : ''}`;
+
+  // 温度之外同时展示方向、覆盖率与可信度，避免把单一数字当成确定结论。
+  container.querySelector('#em-state-temp').textContent = `${engine.temp ?? '--'}°`;
+  container.querySelector('#em-state-temp').style.color = PHASE_COLORS[engine.color] || 'var(--text)';
+  container.querySelector('#em-state-direction').textContent = `${dynamics.arrow || '·'} ${dynamics.direction || '待积累'}`;
+  container.querySelector('#em-state-direction').className = dynamics.direction === '升温' ? 'up' : dynamics.direction === '降温' ? 'down' : 'flat';
+  container.querySelector('#em-state-delta').textContent = dynamics.delta1 == null ? '等待历史快照' : `Δ1 ${dynamics.delta1 > 0 ? '+' : ''}${dynamics.delta1}°${dynamics.delta3 == null ? '' : ` · Δ3 ${dynamics.delta3 > 0 ? '+' : ''}${dynamics.delta3}°`}`;
+  container.querySelector('#em-state-coverage').textContent = `${engine.coverage ?? 0}%`;
+  container.querySelector('#em-state-confidence').textContent = `${engine.confidence ?? 0}%`;
+  container.querySelector('#em-state-consensus').textContent = `${engine.consensus ?? 0}%`;
+
+  container.querySelector('#em-dimensions').innerHTML = (engine.dimensions || []).map(d => {
+    const value = d.value == null ? 0 : d.value;
+    const color = value >= 65 ? 'var(--up)' : value < 40 ? 'var(--down)' : 'var(--amber)';
+    return `<div class="emotion-dim ${d.available ? '' : 'muted'}">
+      <div class="emotion-dim-head"><span>${esc(d.name)}</span><b class="num" style="color:${color}">${d.value == null ? '--' : d.value}</b></div>
+      <div class="emotion-dim-track"><i style="width:${value}%;background:${color}"></i></div>
+      <small>指标覆盖 ${d.coverage ?? 0}%</small>
+    </div>`;
+  }).join('') || '<div class="empty">结构数据暂不可用</div>';
+
+  const transitionItems = [
+    ['升阶', transition.upgrade ?? 0, 'var(--up)'],
+    ['维持', transition.stay ?? 0, 'var(--amber)'],
+    ['降阶', transition.downgrade ?? 0, 'var(--down)'],
+  ];
+  container.querySelector('#em-transition').innerHTML = transitionItems.map(([name, value, color]) => `
+    <div class="transition-row"><span>${name}</span><div><i style="width:${value}%;background:${color}"></i></div><b class="num">${value}</b></div>`).join('');
+  const divergences = engine.divergences || [];
+  container.querySelector('#em-divergences').innerHTML = divergences.length
+    ? `<div class="emotion-div-title">结构背离</div>${divergences.map(item => `<p>⚠ ${esc(item)}</p>`).join('')}`
+    : '<p class="ok">当前未识别到显著结构背离</p>';
 
   // 温度历史
   const snaps = em.history || [];
@@ -176,7 +230,7 @@ export async function refresh(container, data) {
 
   // 评分明细
   const tb = container.querySelector('#em-signals');
-  const MAX_ABS = 22;
+  const MAX_ABS = 20;
   tb.innerHTML = (engine.signals || []).map(s => {
     const sc = s.avail ? s.score : null;
     let bar;

@@ -54,7 +54,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.3.1'
+VERSION = '1.4.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1173,10 +1173,17 @@ def build_chat_context():
     en = em.get('engine') or {}
     raw = en.get('raw') or {}
     adv = en.get('advice') or {}
+    dynamics = en.get('dynamics') or {}
+    transition = en.get('transition') or {}
     tdx = em.get('tdx_local') or {}
     lines = [
         '【今日市场上下文 · 数据日期 %s】' % em.get('date'),
         '情绪温度 %s°（0-100），周期阶段：%s。' % (en.get('temp'), en.get('phase')),
+        '变化方向：%s，单期变化 %s°，三期变化 %s°；数据覆盖率 %s%%，可信度 %s%%，信号一致度 %s%%。'
+        % (dynamics.get('direction'), dynamics.get('delta1'), dynamics.get('delta3'),
+           en.get('coverage'), en.get('confidence'), en.get('consensus')),
+        '状态倾向（启发式、未校准）：升阶 %s，维持 %s，降阶 %s。'
+        % (transition.get('upgrade'), transition.get('stay'), transition.get('downgrade')),
         '涨停 %s 家，跌停 %s 家，炸板率 %s%%，最高 %s 连板，连板 %s 家。'
         % (raw.get('zt'), raw.get('dt'),
            round((raw.get('zb_rate') or 0) * 100), raw.get('height'), raw.get('lb_count')),
@@ -1186,8 +1193,11 @@ def build_chat_context():
         '上证 %s 相对 MA20 %+.1f%%。'
         % (raw.get('up'), raw.get('down'), raw.get('turnover_yi'),
            raw.get('flow_yi') or 0, raw.get('close'), raw.get('trend_pct') or 0),
-        '引擎建议：仓位 %s，%s。阶段说明：%s'
-        % (adv.get('position'), adv.get('style'), en.get('phase_desc') or ''),
+        '引擎研究区间：仓位 %s，%s，可执行=%s。阶段说明：%s'
+        % (adv.get('position'), adv.get('style'), adv.get('actionable'), en.get('phase_desc') or ''),
+        '六维结构：%s' % '；'.join('%s=%s' % (item.get('name'), item.get('value'))
+                                    for item in en.get('dimensions') or []),
+        '结构背离：%s' % ('；'.join(en.get('divergences') or []) or '无'),
         '风险提示：%s' % ('；'.join(en.get('risks') or []) or '无'),
     ]
     if tdx.get('status') == 'ok':
@@ -1353,7 +1363,7 @@ def assemble_emotion(force_record=False):
     qdate = pools['ZT'].get('qdate') or breadth.get('qdate') or ''
     if len(qdate) == 8:
         qdate = '%s-%s-%s' % (qdate[:4], qdate[4:6], qdate[6:])
-    raw = {'date': qdate,
+    raw = {'date': qdate, 'server_time': now_bj().strftime('%Y-%m-%d %H:%M:%S'),
            'pool_error': bool(pools['ZT'].get('error') or pools['DT'].get('error')
                               or pools['ZB'].get('error')),
            'bk_ok': bool((bk.get('zt') or {}).get('pct') is not None
@@ -1371,10 +1381,11 @@ def assemble_emotion(force_record=False):
     degraded = bool(pools['ZT'].get('error') or pools['DT'].get('error')
                     or pools['ZB'].get('error') or not bk or not sh_k.get('rows')
                     or flows.get('error'))
-    engine = compute_emotion(raw) if compute_emotion else {
+    history = load_history()[-240:]
+    engine = compute_emotion(raw, history) if compute_emotion else {
         'date': qdate, 'temp': None, 'phase': '数据不可用', 'signals': [],
         'advice': {}, 'risks': [], 'narrative': ''}
-    engine['degraded'] = degraded
+    engine['degraded'] = bool(degraded or engine.get('degraded'))
     engine['source_verification'] = {
         'tdx_local': {
             'status': tdx_verification.get('status'),
@@ -1398,7 +1409,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.3'
+    server_version = 'DeepPulse/1.4'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础

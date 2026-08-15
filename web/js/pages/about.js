@@ -40,7 +40,7 @@ export function init(container) {
         <div class="card-head"><div class="card-title">身体构造</div></div>
         <div class="about-copy" style="font-size:12.5px">
           <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.07)">
-            <span style="flex:0 0 84px;color:var(--accent)">🧠 大脑</span><span>情绪周期引擎（emotion.py）· 11 项指标加权评分</span>
+            <span style="flex:0 0 84px;color:var(--accent)">🧠 大脑</span><span>情绪周期引擎 2.0 · 11 项评分、六维结构、动态与可信度门控</span>
           </div>
           <div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.07)">
             <span style="flex:0 0 84px;color:var(--accent-2)">🫀 心脏</span><span>情绪温度 0-100° · 五阶段周期 · 仓位矩阵</span>
@@ -76,7 +76,7 @@ export function init(container) {
 
       <div class="card span-12" style="text-align:center;padding:20px">
         <div style="font-size:12px;color:var(--text-3);line-height:2">
-          深脉 DeepPulse v1.3.1 · 本地运行 · 数据来源：通达信 TQ-Local（可选）/ 东方财富 / 腾讯公开接口<br>
+          深脉 DeepPulse v1.4.0 · 本地运行 · 数据来源：通达信 TQ-Local（可选）/ 东方财富 / 腾讯公开接口<br>
           仅供研究参考，不构成投资建议 · 市场有风险，决策需独立<br>
           <span style="color:var(--text-3)">Made by DeepSeek, for a trader who reads the market's pulse.</span>
         </div>

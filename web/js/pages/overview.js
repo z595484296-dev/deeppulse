@@ -59,7 +59,7 @@ export function init(container) {
       <div class="card span-5">
         <div class="card-head"><div class="card-title">今日作战指令</div><div class="card-sub">引擎自动生成</div></div>
         <div class="advice-card">
-          <div class="advice-title">建议仓位</div>
+          <div class="advice-title">研究仓位区间</div>
           <div class="advice-line"><span id="ov-position" style="font-size:26px;font-weight:800">--</span>
             <span style="margin-left:12px" id="ov-style"></span></div>
           <div class="advice-desc" id="ov-advice-desc">--</div>
@@ -217,10 +217,10 @@ export async function refresh(container, data) {
   container.querySelector('#ov-phase').innerHTML =
     `<span class="badge lg ${esc(engine.color || 'gray')}">${esc(engine.phase || '--')}</span>`;
   const trendEl = container.querySelector('#ov-trend');
-  if (em.history && em.history.length >= 2) {
-    const prev = em.history[em.history.length - 2];
-    const d = (engine.temp ?? 0) - prev.temp;
-    trendEl.innerHTML = `较昨日 <b class="${d > 0 ? 'up' : d < 0 ? 'down' : 'flat'}">${d > 0 ? '↑' : d < 0 ? '↓' : '→'} ${Math.abs(d)}°</b> · 昨日 ${prev.temp}°（${esc(prev.phase)}）`;
+  const dynamics = engine.dynamics || {};
+  if (dynamics.delta1 != null) {
+    const d = dynamics.delta1;
+    trendEl.innerHTML = `${esc(dynamics.direction || '变化')} <b class="${d > 0 ? 'up' : d < 0 ? 'down' : 'flat'}">${dynamics.arrow || '→'} ${Math.abs(d)}°</b> · 覆盖率 ${engine.coverage ?? 0}% · 可信度 ${engine.confidence ?? 0}%`;
   } else {
     trendEl.textContent = '历史温度将随每个交易日收盘自动累积';
   }
@@ -236,6 +236,7 @@ export async function refresh(container, data) {
     ['昨日涨停指数', raw.zt_idx_pct != null ? fmtPct(raw.zt_idx_pct) : '--', '', (raw.zt_idx_pct ?? 0) >= 0 ? 'up' : 'down'],
     ['昨日连板指数', raw.lb_idx_pct != null ? fmtPct(raw.lb_idx_pct) : '--', '', (raw.lb_idx_pct ?? 0) >= 0 ? 'up' : 'down'],
     ['上涨占比', raw.up_ratio != null ? (raw.up_ratio * 100).toFixed(1) + '%' : '--', '', raw.up_ratio >= 0.6 ? 'up' : raw.up_ratio >= 0.4 ? 'flat' : 'down'],
+    ['数据可信度', engine.confidence != null ? engine.confidence + '%' : '--', '', engine.confidence >= 80 ? 'down' : engine.confidence >= 60 ? 'flat' : 'up'],
     ['昨日涨停均涨', '<span id="ov-prem-avg" style="color:var(--flat)">--</span>', '', 'flat'],
   ];
   statsEl.innerHTML = S.map(([label, v, unit, cls]) => `
@@ -280,8 +281,8 @@ export async function refresh(container, data) {
     flags.push({ type: 'info', text: '📝 今日已收盘、情绪快照已记录，但复盘还没写——去策略页一键生成' });
   }
   container.querySelector('#ov-flags-n').textContent = flags.length ? flags.length + ' 条' : '';
-  const warns = flags.filter(f => f.type === 'warn');
-  const others = flags.filter(f => f.type !== 'warn');
+  const warns = flags.filter(f => f.type === 'warn' || f.type === 'risk');
+  const others = flags.filter(f => f.type !== 'warn' && f.type !== 'risk');
   const flagHtml = (list) => list.map(f => `<div class="flag ${esc(f.type)}"><span class="f-dot"></span><span>${esc(f.text)}</span></div>`).join('');
   container.querySelector('#ov-flags').innerHTML =
     (warns.length ? `<div style="font-size:11px;color:var(--text-3);margin-bottom:6px">风险预警</div>` + flagHtml(warns) : '') +

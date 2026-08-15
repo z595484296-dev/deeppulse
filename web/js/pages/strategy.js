@@ -36,7 +36,7 @@ export function init(container) {
       </div>
 
       <div class="card span-4">
-        <div class="card-head"><div class="card-title">仓位矩阵</div><div class="card-sub">情绪阶段 → 建议仓位</div></div>
+        <div class="card-head"><div class="card-title">仓位研究矩阵</div><div class="card-sub">阶段区间需由方向与可信度共同确认</div></div>
         <div class="pos-matrix" id="st-matrix"></div>
         <div style="margin-top:12px;font-size:11.5px;color:var(--text-3);line-height:1.8">
           仓位矩阵由情绪温度动态驱动：温度越高越接近亢奋，越需要把利润装进口袋；
@@ -357,7 +357,7 @@ export function init(container) {
         + `炸板率 ${r.zb_rate != null ? (r.zb_rate * 100).toFixed(1) : '-'}%，最高 ${r.height} 连板，连板 ${r.lb_count} 家，`
         + `昨涨停指数 ${r.zt_idx_pct ?? '-'}%，昨连板指数 ${r.lb_idx_pct ?? '-'}%，`
         + `上涨 ${r.up} / 下跌 ${r.down}，成交 ${r.turnover_yi ?? '-'} 亿，主力净流入 ${r.flow_yi ?? '-'} 亿，`
-        + `上证 vs MA20 ${r.trend_pct ?? '-'}%，建议仓位 ${(snap.advice || {}).position || '-'}`;
+        + `上证 vs MA20 ${r.trend_pct ?? '-'}%，研究仓位区间 ${(snap.advice || {}).position || '-'}`;
       const resp = await api.chat([{ role: 'user', content: prompt }]);
       if (resp && resp.mode === 'llm' && resp.reply) {
         calText.value = resp.reply.trim();
@@ -413,7 +413,8 @@ export async function refresh(container, data) {
       <div style="font-size:44px;font-weight:800;line-height:1;color:${color};text-shadow:0 0 28px ${color}55" class="num">${engine.temp ?? '--'}<span style="font-size:16px;color:var(--text-3)">°</span></div>
       <div>
         <div><span class="badge lg ${esc(engine.color || 'gray')}">${esc(engine.phase || '--')}</span></div>
-        <div style="font-size:12px;color:var(--text-2);margin-top:5px">建议仓位 <b style="font-size:17px;color:${color}">${esc(adv.position || '--')}</b> · ${esc(adv.style || '--')}</div>
+        <div style="font-size:12px;color:var(--text-2);margin-top:5px">研究仓位区间 <b style="font-size:17px;color:${color}">${esc(adv.position || '--')}</b> · ${esc(adv.style || '--')}</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:5px">数据覆盖 ${engine.coverage ?? 0}% · 可信度 ${engine.confidence ?? 0}% · 信号一致度 ${engine.consensus ?? 0}%</div>
       </div>
     </div>
     <div class="advice-card">
@@ -422,6 +423,9 @@ export async function refresh(container, data) {
     </div>
     <div style="margin-top:10px;font-size:11.5px;color:var(--text-3);line-height:1.7">
       ${esc(adv.phase_desc || '')}
+    </div>
+    <div style="margin-top:10px;display:flex;gap:7px;flex-wrap:wrap">
+      ${(adv.scenarios || []).map(s => `<span class="badge ${s.active ? 'amber' : 'gray'}" title="${esc(s.condition)} · ${esc(s.action)}">${s.active ? '● ' : ''}${esc(s.name)}</span>`).join('')}
     </div>`;
 
   // 仓位矩阵高亮

@@ -99,7 +99,7 @@ export function init(container) {
       if (fmt === 'json') {
         downloadText(`深脉情绪快照_${date}.json`, JSON.stringify(h, null, 2), 'application/json');
       } else {
-        const head = '日期,温度,阶段,涨停,跌停,炸板,炸板率%,最高连板,连板家数,昨涨停指数%,昨连板指数%,上涨,下跌,成交额亿,主力净流入亿,上证vsMA20%,建议仓位';
+        const head = '日期,温度,阶段,涨停,跌停,炸板,炸板率%,最高连板,连板家数,昨涨停指数%,昨连板指数%,上涨,下跌,成交额亿,主力净流入亿,上证vsMA20%,研究仓位区间';
         const rows = h.map(s => {
           const r = s.raw || {};
           const adv = s.advice || {};
@@ -195,7 +195,7 @@ async function renderStatus(container) {
     const engine = (em && em.engine) || {};
     const degraded = engine.degraded;
     el.innerHTML = `
-      <span class="k">服务状态</span><span class="v"><i class="dot ok" style="width:7px;height:7px;border-radius:50%;background:var(--down);display:inline-block;margin-right:6px"></i>运行中（v${esc(h.version || '1.3')}）</span>
+      <span class="k">服务状态</span><span class="v"><i class="dot ok" style="width:7px;height:7px;border-radius:50%;background:var(--down);display:inline-block;margin-right:6px"></i>运行中（v${esc(h.version || '1.4')}）</span>
       <span class="k">服务时间</span><span class="v num">${esc(h.time || '--')}</span>
       <span class="k">端口</span><span class="v num">${location.port}</span>
       <span class="k">情绪数据</span><span class="v">${degraded
