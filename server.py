@@ -355,6 +355,15 @@ def tdx_emotion_verification():
                        (time.monotonic() - started) * 1000)
         return data
     except Exception as e:
+        # ErrorId 表示服务在线但当前客户端未提供该专业数据（常见于权限或本地数据未准备）。
+        # 这不应熔断仍然可用的实时行情和 K 线能力。
+        if 'ErrorId=' in str(e):
+            return {
+                'status': 'unavailable', 'source': 'tdx_local',
+                'source_name': '通达信 TQ-Local', 'read_only': True,
+                'fields': {}, 'error': str(e)[:240],
+                'reason': 'professional_market_data_unavailable',
+            }
         _record_source(TDX_HOST, False, (time.monotonic() - started) * 1000, e)
         _mark_host_down(TDX_HOST, 30)
         raise UpstreamError(str(e))

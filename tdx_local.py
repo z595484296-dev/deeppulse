@@ -7,6 +7,7 @@
 """
 
 import json
+import os
 import platform
 import subprocess
 import time
@@ -34,6 +35,7 @@ READ_ONLY_METHODS = frozenset({
 })
 
 BJ = timezone(timedelta(hours=8))
+_signed_install_cache = None
 
 
 class TdxLocalError(RuntimeError):
@@ -86,6 +88,48 @@ def _process_running():
         return False
 
 
+def _signed_running_install():
+    """处理部分 Python 进程看不到卸载注册表、但官方客户端确已运行的情况。
+
+    只接受 Windows 验证为有效且签发给财富趋势公司的 TdxW.exe，避免仅凭文件名信任
+    任意进程。PowerShell 命令固定且不包含外部输入。
+    """
+    global _signed_install_cache
+    if _signed_install_cache:
+        return dict(_signed_install_cache)
+    command = (
+        "$p=Get-Process -Name TdxW -ErrorAction SilentlyContinue|Select-Object -First 1;"
+        "if($p){$s=Get-AuthenticodeSignature -LiteralPath $p.Path;"
+        "[pscustomobject]@{Path=$p.Path;Status=[string]$s.Status;"
+        "Signer=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{$null}}|"
+        "ConvertTo-Json -Compress}else{'{}'}"
+    )
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5,
+            creationflags=flags, check=False,
+        )
+        payload = json.loads((result.stdout or b'{}').decode('utf-8-sig', 'replace').strip() or '{}')
+    except Exception:
+        return None
+    signer = str(payload.get('Signer') or '')
+    path = str(payload.get('Path') or '')
+    trusted_signer = ('Shenzhen Fortune Trend technology Co., Ltd' in signer or
+                      '深圳市财富趋势科技股份有限公司' in signer)
+    if payload.get('Status') != 'Valid' or not trusted_signer or not path:
+        return None
+    _signed_install_cache = {
+        'name': '通达信金融终端64',
+        'location': os.path.dirname(path),
+        'executable': path,
+        'detection': 'signed_running_process',
+        'signer': signer,
+    }
+    return dict(_signed_install_cache)
+
+
 def environment_status():
     """按 TQ-Local 技能约束检查 Windows、安装注册表和 TdxW 进程。"""
     system = platform.system()
@@ -105,13 +149,16 @@ def environment_status():
     }
     if system != 'Windows':
         return base
-    install = _registry_install()
+    process_running = _process_running()
+    install = _registry_install() or _signed_install_cache
+    if not install and process_running:
+        install = _signed_running_install()
     base['install'] = install
     base['installed'] = bool(install)
+    base['process_running'] = process_running
     if not install:
         base['status'] = 'not_installed'
         return base
-    base['process_running'] = _process_running()
     if not base['process_running']:
         base['status'] = 'not_running'
         return base
@@ -155,7 +202,9 @@ def rpc_call(method, params=None, timeout=2.5):
         if str(result.get('ErrorId')) != '0':
             raise TdxLocalError(str(result.get('ErrorMsg') or result.get('Msg') or
                                     ('ErrorId=' + str(result.get('ErrorId')))))
-        value = result.get('Value')
+        # 部分接口（如 get_market_snapshot / get_stock_info）把字段直接放在 result，
+        # 只有批量接口才包在 Value 中。
+        value = result.get('Value') if 'Value' in result else result
     else:
         value = result
     return {'value': value, 'latency_ms': latency_ms, 'result': result}
@@ -244,6 +293,15 @@ def _row_list(value):
             if rows:
                 return rows
     if isinstance(value, dict):
+        dates = _get_ci(value, 'Date')
+        closes = _get_ci(value, 'Close')
+        if isinstance(dates, list) and isinstance(closes, list):
+            # TQ-Local 实际 K 线返回是列式对象：每个字段对应一个数组。
+            columns = {str(key): column for key, column in value.items()
+                       if isinstance(column, list)}
+            size = max([len(column) for column in columns.values()] or [0])
+            return [{key: (column[index] if index < len(column) else None)
+                     for key, column in columns.items()} for index in range(size)]
         if _get_ci(value, 'Date') is not None and _get_ci(value, 'Close') is not None:
             return [value]
         for nested in value.values():
@@ -292,7 +350,8 @@ def quote(code):
         'high': _number(_get_ci(snap, 'Max')),
         'low': _number(_get_ci(snap, 'Min')),
         'volume': _number(_get_ci(snap, 'Volume')),
-        'amount': _number(_get_ci(snap, 'Amount')),
+        # 快照 Amount 的实际单位为万元，与 K 线文档一致；统一转为元。
+        'amount': _number(_get_ci(snap, 'Amount')) * 10000,
         'turnover': _number(_get_ci(more, 'fHSL')),
         'vol_ratio': _number(_get_ci(more, 'fLianB')),
         'mktcap': _number(_get_ci(more, 'Zsz')) * 100000000,
@@ -336,6 +395,10 @@ def kline(code, n=320, klt=101, fqt=1, explicit_code=None):
         previous = close
     if not rows:
         raise TdxLocalError('TQ-Local K线为空')
+    minimum = min(int(n), 20)
+    if len(rows) < minimum:
+        raise TdxLocalError('TQ-Local 本地K线仅有 %d/%d 条，交给公开行情备援' %
+                            (len(rows), minimum))
     return {
         'name': str(code), 'code': str(code), 'pre': None, 'rows': rows[-int(n):],
         'source': 'tdx_local', 'source_name': '通达信 TQ-Local',
