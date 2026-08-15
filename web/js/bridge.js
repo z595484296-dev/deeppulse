@@ -1,0 +1,105 @@
+/* 深脉 DeepPulse — 与壳层（深脉主应用）的双向桥。
+   工作台既可独立运行，也可作为主应用的一级视图（/deeppulse/）运行。
+   桥协议（window.postMessage）：
+     工作台 → 壳层： {type:'dp-exit'} 返回会话视图
+                    {type:'dp-ask', version:2, requestId, question, context}
+     壳层 → 工作台： {type:'dp-ask-result', requestId, ok, error?}
+                    {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
+
+import { applyChartTheme } from './charts.js';
+
+export const EMBEDDED = (() => {
+  try {
+    if (typeof window === 'undefined') return false;
+    if (window.self === window.top) return false;
+    return location.pathname.startsWith('/deeppulse/') || location.port === '3080';
+  } catch { return false; }
+})();
+
+let contextProvider = () => ({});
+
+/** 注册当前页面上下文提供器；发送时读取，避免把轮询数据复制到桥状态。 */
+export function setBridgeContextProvider(provider) {
+  contextProvider = typeof provider === 'function' ? provider : () => ({});
+}
+
+function requestId() {
+  try { return crypto.randomUUID(); } catch { return `dp-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+}
+
+function boundedContext(value) {
+  try {
+    const plain = JSON.parse(JSON.stringify(value || {}));
+    const encoded = JSON.stringify(plain);
+    if (encoded.length <= 6000) return plain;
+    return {
+      page: plain.page,
+      pageTitle: plain.pageTitle,
+      selectedSecurity: plain.selectedSecurity,
+      asOf: plain.asOf,
+      truncated: true,
+    };
+  } catch { return {}; }
+}
+
+/** 应用主题并通知图表层重渲染。 */
+export function applyTheme(light) {
+  try {
+    document.body.classList.toggle('light', !!light);
+    applyChartTheme(!!light);
+    document.dispatchEvent(new CustomEvent('theme-changed'));
+  } catch { /* 忽略 */ }
+}
+
+function post(msg) {
+  if (!EMBEDDED) return;
+  try { window.parent.postMessage(msg, '*'); } catch { /* 忽略 */ }
+}
+
+/** 返回主应用会话视图。 */
+export function exitToSession() {
+  post({ type: 'dp-exit' });
+}
+
+/** 把问题和可信来源上下文送入主应用当前会话；壳层确认接收后才切回会话。 */
+export function askDeepSeek(input) {
+  if (!EMBEDDED) return null;
+  const spec = typeof input === 'string' ? { question: input } : (input || {});
+  const question = String(spec.question ?? spec.text ?? '').trim().slice(0, 2000);
+  if (!question) return null;
+  let provided = {};
+  try { provided = contextProvider() || {}; } catch { /* 提供器失败不阻断发送 */ }
+  const id = requestId();
+  post({
+    type: 'dp-ask', version: 2, requestId: id, question,
+    context: boundedContext({ ...provided, ...(spec.context || {}) }),
+  });
+  return id;
+}
+
+/** 壳层导航指令（主应用深链 → 工作台页面）与主题同步。 */
+export function initBridge() {
+  window.addEventListener('message', (e) => {
+    const d = (e.data ?? {});
+    if (!d) return;
+    if (EMBEDDED && e.source !== window.parent) return;
+    if (d.type === 'dp-theme') {
+      // 主题跟随主应用（K线红绿语义不变，轴文字/tooltip 随主题）
+      applyTheme(d.theme === 'light');
+      return;
+    }
+    if (d.type === 'dp-ask-result') {
+      document.dispatchEvent(new CustomEvent('harness-ask-result', { detail: d }));
+      return;
+    }
+    if (d.type !== 'dp-nav') return;
+    try {
+      if (d.page) document.dispatchEvent(new CustomEvent('nav', { detail: { page: d.page } }));
+      if (d.code) {
+        setTimeout(() => document.dispatchEvent(new CustomEvent('open-quote', {
+          detail: { code: d.code, name: d.name || d.code },
+        })), 60);
+      }
+    } catch { /* 忽略 */ }
+  });
+}
