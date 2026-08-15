@@ -108,6 +108,15 @@ class TdxLocalAdapterTests(unittest.TestCase):
         self.assertEqual(result, expected)
         eastmoney.assert_not_called()
 
+    def test_ready_probe_clears_stale_tdx_circuit(self):
+        server._mark_host_down(server.TDX_HOST, 30)
+        try:
+            with patch.object(server, 'tdx_status', return_value={'service_ready': True}):
+                server._tdx_require_ready()
+            self.assertTrue(server._host_ok(server.TDX_HOST))
+        finally:
+            server._clear_host_down(server.TDX_HOST)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -18,6 +18,7 @@
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -65,6 +66,22 @@ except Exception:  # 引擎不可用时降级
     save_weights = lambda w: {}
 
 # ---------------------------------------------------------------- 工具函数
+
+class DeepPulseHTTPServer(ThreadingHTTPServer):
+    """Avoid Windows' permissive HTTPServer port sharing semantics."""
+
+    allow_reuse_address = False
+
+
+def port_is_listening(host, port, timeout=0.2):
+    """Return True when another local service already accepts connections."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        return sock.connect_ex((host, port)) == 0
+    finally:
+        sock.close()
+
 
 def log(msg):
     try:
@@ -311,11 +328,13 @@ def tdx_status(probe=False, fresh=False):
 
 
 def _tdx_require_ready():
+    status = tdx_status(probe=True)
+    if status.get('service_ready'):
+        _clear_host_down(TDX_HOST)
+        return
     if not _host_ok(TDX_HOST):
         raise UpstreamError('通达信 TQ-Local 暂时熔断')
-    status = tdx_status(probe=True)
-    if not status.get('service_ready'):
-        raise UpstreamError(status.get('error') or ('通达信状态：' + status.get('status', 'unavailable')))
+    raise UpstreamError(status.get('error') or ('通达信状态：' + status.get('status', 'unavailable')))
 
 
 def tdx_read_quote(code):
@@ -548,6 +567,11 @@ def _mark_host_down(host, secs=180):
     with _host_down_lock:
         _host_down[host] = time.monotonic() + secs
     log('circuit: %s marked down for %ds' % (host, secs))
+
+
+def _clear_host_down(host):
+    with _host_down_lock:
+        _host_down.pop(host, None)
 
 
 def em_pool(kind, date=None, size=250):
@@ -1610,8 +1634,10 @@ def main():
     ensure_config()
     port = 8971
     for p in range(8971, 8981):
+        if port_is_listening('127.0.0.1', p):
+            continue
         try:
-            srv = ThreadingHTTPServer(('127.0.0.1', p), Handler)
+            srv = DeepPulseHTTPServer(('127.0.0.1', p), Handler)
             port = p
             break
         except OSError:
