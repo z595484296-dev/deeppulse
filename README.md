@@ -19,6 +19,9 @@ python server.py
 然后访问 `http://127.0.0.1:8971`。若端口被占用，服务会在 8971-8980 中选择可用端口，
 实际端口写入 `data/port.txt`。
 
+Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Python、启动服务并打开浏览器。
+用于转发的 ZIP 内另有 `README-zh.txt` 简明说明。
+
 > 要求：Python 3.9+（运行时零第三方依赖）和现代浏览器。Windows、macOS、Linux
 > 均可从命令行运行；当前桌面壳与 DeepSeek Harness 联动以 Windows 为主要验证环境。
 
