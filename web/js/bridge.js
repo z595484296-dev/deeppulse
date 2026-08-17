@@ -27,17 +27,47 @@ function requestId() {
   try { return crypto.randomUUID(); } catch { return `dp-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 }
 
-function boundedContext(value) {
+export function boundedContext(value) {
   try {
     const plain = JSON.parse(JSON.stringify(value || {}));
-    const encoded = JSON.stringify(plain);
-    if (encoded.length <= 6000) return plain;
+    if (JSON.stringify(plain).length <= 16000) return plain;
+    // 渐进压缩：优先保留分析事实，先缩短历史和指标解读，避免超限时把整个市场上下文清空。
+    const emotion = plain.emotionAnalysis || {};
+    const reduced = {
+      ...plain,
+      emotionAnalysis: {
+        ...emotion,
+        history: (emotion.history || []).slice(-8),
+        signals: (emotion.signals || []).map(s => ({
+          key: s.key, name: s.name, value: s.value, unit: s.unit,
+          score: s.score, weight: s.weight, contribution: s.contribution,
+          available: s.available,
+        })),
+      },
+      contextTruncated: { value: true, sections: ['history:8', 'signalNotes'] },
+    };
+    if (JSON.stringify(reduced).length <= 16000) return reduced;
+    const market = reduced.market || {};
+    const sourceVerification = market.sourceVerification || {};
+    const tdxLocal = sourceVerification.tdxLocal || {};
     return {
-      page: plain.page,
-      pageTitle: plain.pageTitle,
-      selectedSecurity: plain.selectedSecurity,
-      asOf: plain.asOf,
-      truncated: true,
+      page: reduced.page, pageTitle: reduced.pageTitle, asOf: reduced.asOf,
+      selectedSecurity: reduced.selectedSecurity,
+      market: {
+        ...market,
+        sourceVerification: {
+          ...sourceVerification,
+          tdxLocal: { ...tdxLocal, fields: [] },
+        },
+      },
+      emotionAnalysis: {
+        modelVersion: emotion.modelVersion, formula: emotion.formula,
+        scoreRange: emotion.scoreRange, phaseThresholds: emotion.phaseThresholds,
+        positionNature: emotion.positionNature, transitionCalibrated: emotion.transitionCalibrated,
+        raw: emotion.raw, missing: emotion.missing,
+      },
+      indices: reduced.indices, sources: reduced.sources, disclaimer: reduced.disclaimer,
+      contextTruncated: { value: true, sections: ['history', 'signals', 'tdxFields'] },
     };
   } catch { return {}; }
 }

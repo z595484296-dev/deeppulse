@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.4.0'
+const MIN_BACKEND_VERSION = '1.4.1'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -119,6 +119,24 @@ function finite(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+function scalar(value: unknown, max = 160): string | number | boolean | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'boolean') return value
+  return short(value, max)
+}
+
+function uniqueStrings(value: unknown, limit: number, max = 240): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.slice(0, limit).map(item => short(item, max)).filter((item): item is string => Boolean(item)))]
+}
+
+const RAW_EMOTION_KEYS = [
+  'zt', 'dt', 'zb', 'zb_rate', 'zt_equiv', 'dt_equiv', 'universe',
+  'height', 'lb_count', 'zt_idx_pct', 'lb_idx_pct', 'up', 'down', 'flat',
+  'up_ratio', 'turnover_yi', 'vol_ratio', 'volume_basis', 'flow_yi',
+  'trend_pct', 'ma20', 'close',
+] as const
+
 /** Validate the iframe wire message and retain only context fields owned by DeepPulse. */
 export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined {
   const data = recordOf(value)
@@ -128,6 +146,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const raw = recordOf(data['context'])
   const selected = recordOf(raw['selectedSecurity'])
   const market = recordOf(raw['market'])
+  const emotion = recordOf(raw['emotionAnalysis'])
   const disclosures = Array.isArray(selected['officialDisclosures'])
     ? selected['officialDisclosures'].slice(0, 6).map(item => {
       const row = recordOf(item)
@@ -143,12 +162,70 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const sources = Array.isArray(raw['sources'])
     ? raw['sources'].slice(0, 8).map(item => {
       const row = recordOf(item)
-      return { name: short(row['name'], 80), tier: short(row['tier'], 30), role: short(row['role'], 160) }
+      return { name: short(row['name'], 80), tier: short(row['tier'], 30), role: short(row['role'], 160), status: short(row['status'], 40) }
     })
     : []
-  const riskSignals = Array.isArray(market['riskSignals'])
-    ? market['riskSignals'].slice(0, 8).map(item => short(item, 240)).filter(Boolean)
+  const riskSignals = uniqueStrings(market['riskSignals'], 8)
+  const dimensions = Array.isArray(market['dimensions'])
+    ? market['dimensions'].slice(0, 8).map(item => {
+      const row = recordOf(item)
+      return { name: short(row['name'], 80), value: finite(row['value']), coverage: finite(row['coverage']) }
+    })
     : []
+  const transitionRow = recordOf(market['transition'])
+  const transition = {
+    upgrade: finite(transitionRow['upgrade']), stay: finite(transitionRow['stay']),
+    downgrade: finite(transitionRow['downgrade']), calibrated: transitionRow['calibrated'] === true,
+    label: short(transitionRow['label'], 160),
+  }
+  const sourceVerification = recordOf(market['sourceVerification'])
+  const tdx = recordOf(sourceVerification['tdxLocal'])
+  const tdxFields = Array.isArray(tdx['fields'])
+    ? tdx['fields'].slice(0, 20).map(item => {
+      const row = recordOf(item)
+      return { key: short(row['key'], 60), label: short(row['label'], 80), value: scalar(row['value'], 120) }
+    })
+    : []
+  const engineRaw = recordOf(emotion['raw'])
+  const emotionRaw: BridgeRecord = {}
+  for (const key of RAW_EMOTION_KEYS) {
+    const value = scalar(engineRaw[key], 80)
+    if (value !== undefined) emotionRaw[key] = value
+  }
+  const signals = Array.isArray(emotion['signals'])
+    ? emotion['signals'].slice(0, 16).map(item => {
+      const row = recordOf(item)
+      return {
+        key: short(row['key'], 40), name: short(row['name'], 80),
+        value: scalar(row['value'], 100), display: short(row['display'], 80), unit: short(row['unit'], 20),
+        score: finite(row['score']), weight: finite(row['weight']), contribution: finite(row['contribution']),
+        available: row['available'] === true, note: short(row['note'], 260),
+      }
+    })
+    : []
+  const history = Array.isArray(emotion['history'])
+    ? emotion['history'].slice(-20).map(item => {
+      const row = recordOf(item)
+      return {
+        date: short(row['date'], 30), temp: finite(row['temp']), phase: short(row['phase'], 80),
+        coverage: finite(row['coverage']), confidence: finite(row['confidence']),
+      }
+    })
+    : []
+  const phaseThresholds = Array.isArray(emotion['phaseThresholds'])
+    ? emotion['phaseThresholds'].slice(0, 8).map(item => {
+      const row = recordOf(item)
+      return {
+        name: short(row['name'], 80), min: finite(row['min']), max: finite(row['max']),
+        condition: short(row['condition'], 80),
+      }
+    })
+    : []
+  const scoreRange = Array.isArray(emotion['scoreRange'])
+    ? emotion['scoreRange'].slice(0, 2).map(finite).filter((item): item is number => item !== undefined)
+    : []
+  const truncated = recordOf(raw['contextTruncated'])
+  const hasSelectedSecurity = Boolean(short(selected['code'], 20) || short(selected['name'], 80))
   return {
     requestId: short(data['requestId'], 100) ?? `legacy-${Date.now()}`,
     question,
@@ -156,18 +233,40 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       page: short(raw['page'], 40), pageTitle: short(raw['pageTitle'], 80),
       intent: short(raw['intent'], 80), asOf: short(raw['asOf'], 80),
       disclaimer: short(raw['disclaimer'], 200),
-      selectedSecurity: {
+      selectedSecurity: hasSelectedSecurity ? {
         code: short(selected['code'], 20), name: short(selected['name'], 80),
         price: finite(selected['price']), pct: finite(selected['pct']),
         officialDisclosures: disclosures,
-      },
+      } : null,
+      officialDisclosuresScope: hasSelectedSecurity ? 'selected-security-only' : 'not-applicable-no-security-selected',
       market: {
         dataDate: short(market['dataDate'], 30), temperature: finite(market['temperature']),
-        phase: short(market['phase'], 80), position: short(market['position'], 80),
+        phase: short(market['phase'], 80), phaseCandidate: short(market['phaseCandidate'], 80),
+        direction: short(market['direction'], 40), delta1: finite(market['delta1']), delta3: finite(market['delta3']),
+        coverage: finite(market['coverage']), confidence: finite(market['confidence']), consensus: finite(market['consensus']),
+        dimensions, transition, divergences: uniqueStrings(market['divergences'], 8),
+        position: short(market['position'], 80), actionable: market['actionable'] === true,
         degraded: market['degraded'] === true, riskSignals,
+        sourceVerification: {
+          tdxLocal: {
+            status: short(tdx['status'], 40), fieldsAvailable: finite(tdx['fieldsAvailable']),
+            readOnly: tdx['readOnly'] === true, asOf: short(tdx['asOf'], 80),
+            reason: short(tdx['reason'], 120), error: short(tdx['error'], 240), fields: tdxFields,
+          },
+        },
+      },
+      emotionAnalysis: {
+        modelVersion: short(emotion['modelVersion'], 40), formula: short(emotion['formula'], 240),
+        scoreRange, phaseThresholds, positionNature: short(emotion['positionNature'], 240),
+        transitionCalibrated: emotion['transitionCalibrated'] === true,
+        raw: emotionRaw, signals, history, missing: uniqueStrings(emotion['missing'], 16, 100),
       },
       indices,
       sources,
+      contextTruncated: {
+        value: truncated['value'] === true,
+        sections: uniqueStrings(truncated['sections'], 8, 80),
+      },
     },
   }
 }
@@ -188,6 +287,9 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '2. 明确区分事实、规则引擎结果和你的推断，并标注数据时点。',
     '3. 公司公告优先引用一级官方来源；市场聚合资讯只作为线索，无法核验时明确说明。',
     '4. 给出关键风险、反证条件和下一步需要查验的数据；不把研究结论表述成投资建议。',
+    '5. emotionAnalysis 已披露模型版本、公式、阶段阈值、11项指标、历史和缺失项；存在这些字段时不得再称其口径未披露。',
+    '6. officialDisclosuresScope=not-applicable-no-security-selected 表示当前页面没有选中个股，不代表官方公告源缺失。',
+    '7. transitionCalibrated=false 时只能称为启发式状态倾向，不得称为经过校准的预测概率。',
   ].join('\n')
 }
 

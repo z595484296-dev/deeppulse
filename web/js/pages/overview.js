@@ -272,12 +272,12 @@ export async function refresh(container, data) {
   }
 
   // ---- 风险信号
-  const flags = engine.flags || [];
+  const flags = [...new Map((engine.flags || []).map(flag => [`${flag.type}|${flag.text}`, flag])).values()];
   // 收盘复盘提醒（快照已记录但今日还没写复盘）
   const closedNow = tradingState().state !== 'open';
   const hasTodaySnap = (em.history || []).some(s => s.date === em.date);
   const hasTodayJournal = loadJournal().some(j => j.date === em.date);
-  if (closedNow && hasTodaySnap && !hasTodayJournal) {
+  if (closedNow && hasTodaySnap && !hasTodayJournal && !flags.some(flag => flag.text.includes('复盘还没写'))) {
     flags.push({ type: 'info', text: '📝 今日已收盘、情绪快照已记录，但复盘还没写——去策略页一键生成' });
   }
   container.querySelector('#ov-flags-n').textContent = flags.length ? flags.length + ' 条' : '';

@@ -54,7 +54,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.4.0'
+VERSION = '1.4.1'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1482,6 +1482,8 @@ class Handler(BaseHTTPRequestHandler):
                       'capabilities': {
                           'tdx_local': tdx_status(probe=False),
                           'tdx_read_only': True,
+                          'bridge_protocol': 2,
+                          'emotion_context_full': True,
                       }}
             # 顶层字段兼容桌面宿主，data 字段供统一 Web API 客户端使用。
             self.send_json(dict({'ok': True, 'data': health}, **health))

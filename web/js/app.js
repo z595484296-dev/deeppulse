@@ -65,6 +65,30 @@ function currentHarnessContext() {
   const engine = em.engine || {};
   const tdx = em.tdx_local || {};
   const quote = marketState.quote || {};
+  const raw = engine.raw || {};
+  const rawKeys = [
+    'zt', 'dt', 'zb', 'zb_rate', 'zt_equiv', 'dt_equiv', 'universe',
+    'height', 'lb_count', 'zt_idx_pct', 'lb_idx_pct', 'up', 'down', 'flat',
+    'up_ratio', 'turnover_yi', 'vol_ratio', 'volume_basis', 'flow_yi',
+    'trend_pct', 'ma20', 'close',
+  ];
+  const rawMetrics = Object.fromEntries(rawKeys
+    .filter(key => raw[key] !== undefined && raw[key] !== null)
+    .map(key => [key, raw[key]]));
+  const tdxFields = Object.entries(tdx.fields || {}).slice(0, 20).map(([key, value]) => {
+    const row = value && typeof value === 'object' ? value : { value };
+    const fieldValue = row.value;
+    return {
+      key: String(key).slice(0, 60),
+      label: String(row.label || key).slice(0, 80),
+      value: typeof fieldValue === 'number' || typeof fieldValue === 'boolean'
+        ? fieldValue : String(fieldValue ?? '').slice(0, 120),
+    };
+  });
+  const recentHistory = (em.history || []).slice(-20).map(s => ({
+    date: s.date, temp: s.temp, phase: s.phase,
+    coverage: s.coverage, confidence: s.confidence,
+  }));
   return {
     page: currentPage,
     pageTitle: PAGES[currentPage] ? PAGES[currentPage].title : currentPage,
@@ -97,8 +121,34 @@ function currentHarnessContext() {
           status: tdx.status || 'unavailable',
           fieldsAvailable: Object.keys(tdx.fields || {}).length,
           readOnly: true,
+          asOf: tdx.as_of || null,
+          reason: tdx.reason || null,
+          error: tdx.error || null,
+          fields: tdxFields,
         },
       },
+    },
+    emotionAnalysis: {
+      modelVersion: engine.model_version || null,
+      formula: 'temperature = clamp(50 + 2.5 × weightedMean(score), 0, 100)',
+      scoreRange: [-20, 20],
+      phaseThresholds: [
+        { name: '冰点期', min: 0, max: 20, condition: '0 ≤ temp < 20' },
+        { name: '修复期', min: 20, max: 40, condition: '20 ≤ temp < 40' },
+        { name: '发酵期', min: 40, max: 60, condition: '40 ≤ temp < 60' },
+        { name: '高潮期', min: 60, max: 80, condition: '60 ≤ temp < 80' },
+        { name: '亢奋期', min: 80, max: 100, condition: '80 ≤ temp ≤ 100' },
+      ],
+      positionNature: '研究仓位区间；由阶段映射，并受数据可信度门控，不构成投资建议',
+      transitionCalibrated: engine.transition ? engine.transition.calibrated === true : false,
+      raw: rawMetrics,
+      signals: (engine.signals || []).slice(0, 16).map(s => ({
+        key: s.key, name: s.name, value: s.value, display: s.display, unit: s.unit,
+        score: s.score, weight: s.weight, contribution: s.contribution,
+        available: !!s.avail, note: s.note,
+      })),
+      history: recentHistory,
+      missing: (engine.missing || []).slice(0, 16),
     },
     indices: (state.indices || []).slice(0, 5).map(i => ({
       code: i.code, name: i.name, price: i.price, pct: i.pct,
@@ -115,8 +165,11 @@ function currentHarnessContext() {
 
 function askCurrentPage() {
   const target = marketState.code ? `${marketState.name || marketState.code}（${marketState.code}）` : '当前市场';
+  const emotionFocus = currentPage === 'emotion'
+    ? '请完整使用 emotionAnalysis 中的模型公式、阶段阈值、原始指标、11项信号、维度、历史与缺失项；当前未选中个股时，不要把公告为空误判为公告源故障。'
+    : '';
   return askDeepSeek({
-    question: `请基于深脉当前的「${PAGES[currentPage].title}」页面，分析${target}。请区分事实与推断，优先核对官方披露，指出数据时点、风险、反证条件和下一步应查的数据。`,
+    question: `请基于深脉当前的「${PAGES[currentPage].title}」页面，分析${target}。${emotionFocus}请区分事实与推断，优先核对适用的官方披露，指出数据时点、风险、反证条件和下一步应查的数据。`,
     context: { intent: 'analyze-current-page' },
   });
 }
