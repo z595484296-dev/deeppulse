@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 涨停梯队页 */
 
-import { api } from '../api.js';
-import { hbarChart } from '../charts.js';
-import { esc, fmtSeal, fmtPrice, fmtBig, fmtPct, pctClass } from '../util.js';
+import { api } from '../api.js?v=1.4.2';
+import { hbarChart } from '../charts.js?v=1.4.2';
+import { esc, fmtSeal, fmtPrice, fmtBig, fmtPct, pctClass } from '../util.js?v=1.4.2';
 
 let built = false;
 let mode = 'ZT';
@@ -22,7 +22,7 @@ export function init(container) {
     <div class="card">
       <div class="card-head">
         <div class="tabs" id="ld-tabs">
-          ${MODES.map(m => `<span class="tab ${m.key === 'ZT' ? 'active' : ''}" data-mode="${m.key}">${m.label}</span>`).join('')}
+          ${MODES.map(m => `<button type="button" class="tab ${m.key === 'ZT' ? 'active' : ''}" data-mode="${m.key}">${m.label}</button>`).join('')}
         </div>
         <div id="ld-emotion-context"></div>
       </div>
@@ -56,12 +56,20 @@ export function init(container) {
   });
 
   container.querySelector('#ld-body').addEventListener('click', e => {
+    const toggle = e.target.closest('[data-expand-first]');
+    if (toggle) {
+      const row = toggle.closest('.first-board');
+      const expanded = row.classList.toggle('expanded');
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.textContent = expanded ? '收起首板' : `展开全部 ${toggle.dataset.total} 只首板`;
+      return;
+    }
     const chip = e.target.closest('.chip');
     if (chip) {
+      document.querySelector('.nav-item[data-page="market"]').click();
       document.dispatchEvent(new CustomEvent('open-quote', {
         detail: { code: chip.dataset.code, name: chip.dataset.name },
       }));
-      document.querySelector('.nav-item[data-page="market"]').click();
     }
     const row = e.target.closest('.ld-row');
     if (row) {
@@ -69,12 +77,17 @@ export function init(container) {
         // 龙虎榜：打开席位明细弹层
         openSeats(container, row.dataset.code, row.dataset.name);
       } else {
+        document.querySelector('.nav-item[data-page="market"]').click();
         document.dispatchEvent(new CustomEvent('open-quote', {
           detail: { code: row.dataset.code, name: row.dataset.name },
         }));
-        document.querySelector('.nav-item[data-page="market"]').click();
       }
     }
+  });
+  container.querySelector('#ld-body').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('.ld-row');
+    if (row) { e.preventDefault(); row.click(); }
   });
 }
 
@@ -140,26 +153,31 @@ function ladderHTML(pool) {
   return `<div class="ladder">` + keys.map(k => {
     const list = groups[k].sort((a, b) => b.fund - a.fund);
     const cls = k >= 6 ? 'h6' : k >= 4 ? 'h5' : k >= 3 ? 'h4' : '';
-    return `<div class="ladder-row">
+    const visible = k === 1 ? list.slice(0, 15) : list;
+    const hidden = k === 1 ? list.slice(15) : [];
+    const chipHTML = (it, extra = false) => {
+      const isZhazha = k >= 3 && it.zbc > 0;
+      return `<button type="button" class="chip ${isZhazha ? 'zha' : ''} ${extra ? 'first-extra' : ''}" data-code="${esc(it.code)}" data-name="${esc(it.name)}" aria-label="查看${esc(it.name)}行情">
+        <span class="ch-name">${esc(it.name)} <span class="code-sub">${esc(it.code)}</span></span>
+        <span class="ch-row">
+          <span class="num ${it.pct >= 0 ? 'up' : 'down'}">${it.pct >= 0 ? '+' : ''}${it.pct.toFixed(2)}%</span>
+          <span>首封 ${fmtSeal(it.fbt)}</span>
+          <span>封单 ${fmtBig(it.fund)}</span>
+          <span>换手 ${it.turnover.toFixed(2)}%</span>
+          ${isZhazha ? `<span style="color:var(--amber)">炸${it.zbc}</span>` : ''}
+          <span style="color:var(--text-3)">${esc(it.hybk)}</span>
+        </span>
+      </button>`;
+    };
+    return `<div class="ladder-row ${k === 1 ? 'first-board' : ''}">
       <div class="ladder-label ${cls}">
         <div class="lb-n num">${k}</div>
         <div class="lb-t">${k === 1 ? '首板' : '连板'}</div>
         <div class="lb-t">${list.length} 只</div>
       </div>
-      <div class="ladder-chips">` + list.map(it => {
-        const isZhazha = k >= 3 && it.zbc > 0;
-        return `<div class="chip ${isZhazha ? 'zha' : ''}" data-code="${esc(it.code)}" data-name="${esc(it.name)}">
-          <div class="ch-name">${esc(it.name)} <span class="code-sub">${esc(it.code)}</span></div>
-          <div class="ch-row">
-            <span class="num ${it.pct >= 0 ? 'up' : 'down'}">${it.pct >= 0 ? '+' : ''}${it.pct.toFixed(2)}%</span>
-            <span>首封 ${fmtSeal(it.fbt)}</span>
-            <span>封单 ${fmtBig(it.fund)}</span>
-            <span>换手 ${it.turnover.toFixed(2)}%</span>
-            ${isZhazha ? `<span style="color:var(--amber)">炸${it.zbc}</span>` : ''}
-            <span style="color:var(--text-3)">${esc(it.hybk)}</span>
-          </div>
-        </div>`;
-      }).join('') + `</div></div>`;
+      <div class="ladder-chips">${visible.map(it => chipHTML(it)).join('')}${hidden.map(it => chipHTML(it, true)).join('')}
+        ${hidden.length ? `<button type="button" class="btn sm ghost first-board-toggle" data-expand-first data-total="${list.length}" aria-expanded="false">展开全部 ${list.length} 只首板</button>` : ''}
+      </div></div>`;
   }).join('') + '</div>';
 }
 
@@ -185,7 +203,7 @@ function dragonHTML(res) {
         <th>名称</th><th class="r">涨跌幅</th><th class="r">净买额(亿)</th><th class="r">买入(亿)</th><th class="r">卖出(亿)</th><th class="r">成交额(亿)</th><th class="r">换手率</th><th>上榜原因</th>
       </tr></thead>
       <tbody>` + res.list.map(it => `
-        <tr style="cursor:pointer" class="ld-row" data-code="${esc(it.code)}" data-name="${esc(it.name)}">
+        <tr style="cursor:pointer" class="ld-row" tabindex="0" role="link" aria-label="查看${esc(it.name)}详情" data-code="${esc(it.code)}" data-name="${esc(it.name)}">
           <td><div class="name-cell"><b>${esc(it.name)}</b><span class="code-sub">${esc(it.code)}</span></div></td>
           <td class="r num ${pctClass(it.pct)}" style="font-weight:650">${fmtPct(it.pct)}</td>
           <td class="r num ${it.net >= 0 ? 'up' : 'down'}" style="font-weight:700">${it.net > 0 ? '+' : ''}${it.net}</td>
@@ -201,7 +219,7 @@ function poolTable(pool) {  if (!pool || !pool.length) return '<div class="empty
   return `<div class="table-scroll"><table class="tbl">
     <thead><tr><th>名称</th><th class="r">现价</th><th class="r">涨跌幅</th><th class="r">换手率</th><th class="r">封单/成交额</th><th class="c">封板时间</th><th class="c">炸板次数</th><th>行业</th></tr></thead>
     <tbody>` + pool.map(it => `
-      <tr style="cursor:pointer" class="ld-row" data-code="${esc(it.code)}" data-name="${esc(it.name)}">
+      <tr style="cursor:pointer" class="ld-row" tabindex="0" role="link" aria-label="查看${esc(it.name)}行情" data-code="${esc(it.code)}" data-name="${esc(it.name)}">
         <td><div class="name-cell"><b>${esc(it.name)}</b><span class="code-sub">${esc(it.code)}</span></div></td>
         <td class="r num">${fmtPrice(it.price)}</td>
         <td class="r num ${pctClass(it.pct)}" style="font-weight:650">${fmtPct(it.pct)}</td>
@@ -263,10 +281,11 @@ function renderCycle(container, c) {
   const sub = container.querySelector('#ld-cycle-sub');
   if (!el) return;
   if (!c || !c.sectors || !c.sectors.length) {
-    el.innerHTML = '<div class="empty">暂无题材周期数据</div>';
+    sub.textContent = `${(c && c.dates && c.dates.length) || 0} 个真实交易日快照 · 不使用伪历史补齐`;
+    el.innerHTML = `<div class="empty">${esc((c && c.message) || '暂无题材周期数据')}</div>`;
     return;
   }
-  sub.textContent = `${(c.dates || []).length} 个交易日 · 柱高=当日该题材涨停家数`;
+  sub.textContent = `${(c.dates || []).length} 个真实交易日快照 · 柱高=当日该题材涨停家数`;
   const maxCount = Math.max(...c.sectors.flatMap(s => s.counts), 1);
   el.innerHTML = `<div class="cyc-table">` + c.sectors.map(s => {
     let badge;

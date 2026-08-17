@@ -1,10 +1,10 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js';
-import { state, bus } from '../store.js';
-import { loadJournal } from '../store.js';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js';
+import { api } from '../api.js?v=1.4.2';
+import { state, bus } from '../store.js?v=1.4.2';
+import { loadJournal } from '../store.js?v=1.4.2';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.4.2';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.4.2';
 
 let built = false;
 let sparksAt = 0;
@@ -108,8 +108,8 @@ export function init(container) {
       <div class="card span-6">
         <div class="card-head"><div class="card-title">板块雷达</div>
           <div class="tabs" id="ov-sector-tabs">
-            <span class="tab active" data-tab="up">涨幅</span>
-            <span class="tab" data-tab="flow">资金流</span>
+            <button type="button" class="tab active" data-tab="up">涨幅</button>
+            <button type="button" class="tab" data-tab="flow">资金流</button>
           </div>
         </div>
         <div class="chart h220" id="ov-sectors"></div>
@@ -125,14 +125,21 @@ export function init(container) {
   container.querySelector('#ov-indices').addEventListener('click', e => {
     const card = e.target.closest('.idx-card');
     if (card) {
+      document.querySelector('.nav-item[data-page="market"]')?.click();
       document.dispatchEvent(new CustomEvent('open-quote', { detail: { code: card.dataset.code, name: card.dataset.name } }));
     }
   });
   container.querySelector('#ov-rank').addEventListener('click', e => {
     const tr = e.target.closest('tr');
     if (tr && tr.dataset.code) {
+      document.querySelector('.nav-item[data-page="market"]')?.click();
       document.dispatchEvent(new CustomEvent('open-quote', { detail: { code: tr.dataset.code, name: tr.dataset.name } }));
     }
+  });
+  container.querySelector('#ov-rank').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const tr = e.target.closest('tr[data-code]');
+    if (tr) { e.preventDefault(); tr.click(); }
   });
 
   // 板块雷达：涨幅 / 资金流 切换
@@ -174,12 +181,12 @@ function renderIndices(el, indices) {
   el.innerHTML = (indices || []).map((ix, i) => {
     if (!ix || ix.error) return '';
     const cls = pctClass(ix.pct);
-    return `<div class="card idx-card" data-code="${esc(ix.code)}" data-name="${esc(ix.name)}">
+    return `<button type="button" class="card idx-card" data-code="${esc(ix.code)}" data-name="${esc(ix.name)}" aria-label="查看${esc(ix.name)}行情">
       <div class="idx-name">${esc(ix.name)}</div>
       <div class="idx-price num ${cls}">${fmtPrice(ix.price)}</div>
-      <div class="idx-row"><span class="num ${cls}">${fmtPct(ix.pct)}</span><span class="num ${cls}">${ix.chg > 0 ? '+' : ''}${ix.chg}</span></div>
+      <div class="idx-row"><span class="num ${cls}">${fmtPct(ix.pct)}</span><span class="num ${cls}">${ix.chg > 0 ? '+' : ''}${fmtPrice(ix.chg)}</span></div>
       <div class="spark" id="ov-spark-${i}"></div>
-    </div>`;
+    </button>`;
   }).join('');
 }
 
@@ -341,7 +348,7 @@ export async function refreshSecondary(container) {
     const rank = await api.rank('up');
     const tb = container.querySelector('#ov-rank');
     tb.innerHTML = rank.slice(0, 10).map((r, i) => `
-      <tr data-code="${esc(r.code)}" data-name="${esc(r.name)}" style="cursor:pointer">
+      <tr data-code="${esc(r.code)}" data-name="${esc(r.name)}" tabindex="0" role="link" aria-label="查看${esc(r.name)}行情" style="cursor:pointer">
         <td class="c" style="color:var(--text-3)">${i + 1}</td>
         <td><div class="name-cell"><b>${esc(r.name)}</b><span class="code-sub">${r.code}</span></div></td>
         <td class="r num">${fmtPrice(r.price)}</td>

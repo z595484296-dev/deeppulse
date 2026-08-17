@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.4.1",
-  "minimumDesktopVersion": "1.4.1",
+  "version": "1.4.2",
+  "minimumDesktopVersion": "1.4.2",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "dynamic-local-port",

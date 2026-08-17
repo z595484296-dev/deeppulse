@@ -1,20 +1,20 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js';
-import { state, marketState, emit, loadAlerts, markTriggered } from './store.js';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js';
+import { api } from './api.js?v=1.4.2';
+import { state, marketState, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.4.2';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.4.2';
 
-import * as pageOverview from './pages/overview.js';
-import * as pageEmotion from './pages/emotion.js';
-import * as pageMarket from './pages/market.js';
-import * as pageLadder from './pages/ladder.js';
-import * as pageWatch from './pages/watch.js';
-import * as pageStrategy from './pages/strategy.js';
-import * as pageDatasrc from './pages/datasrc.js';
-import * as pageAbout from './pages/about.js';
-import { createChatView, chatStore, ensureGreeting } from './chat.js';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js';
-import { initOnboarding } from './onboarding.js';
+import * as pageOverview from './pages/overview.js?v=1.4.2';
+import * as pageEmotion from './pages/emotion.js?v=1.4.2';
+import * as pageMarket from './pages/market.js?v=1.4.2';
+import * as pageLadder from './pages/ladder.js?v=1.4.2';
+import * as pageWatch from './pages/watch.js?v=1.4.2';
+import * as pageStrategy from './pages/strategy.js?v=1.4.2';
+import * as pageDatasrc from './pages/datasrc.js?v=1.4.2';
+import * as pageAbout from './pages/about.js?v=1.4.2';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.4.2';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.4.2';
+import { initOnboarding } from './onboarding.js?v=1.4.2';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -202,7 +202,8 @@ function renderTape() {
       <span class="num ${cls}">${fmtPct(i.pct)}</span></span>`;
   }).join('');
   const track = $('#tape-track');
-  track.innerHTML = items + items; // 双份实现无缝循环
+  const clone = items.replaceAll('<span class="tape-item"', '<span aria-hidden="true" class="tape-item"');
+  track.innerHTML = items + clone; // 双份实现无缝循环；复制段不重复朗读
   track.style.animationDuration = Math.max(24, idx.length * 7) + 's';
 }
 
@@ -212,7 +213,8 @@ function renderNewsline() {
   const items = news.slice(0, 18).map(n =>
     `<span class="news-item" data-url="${esc(n.url)}" title="市场聚合资讯 · ${esc(n.source_name || '来源未标注')}"><span class="n-time">${esc(n.time)}</span>${esc(n.title)}<span class="n-source"> · ${esc(n.source_name || '市场资讯')}</span></span>`).join('');
   const track = $('#newsline-track');
-  track.innerHTML = items ? items + items : '<span class="news-item">快讯加载中…</span>';
+  const clone = items.replaceAll('<span class="news-item"', '<span aria-hidden="true" class="news-item"');
+  track.innerHTML = items ? items + clone : '<span class="news-item">快讯加载中…</span>';
 }
 $('#newsline-track')?.addEventListener('click', e => {
   const it = e.target.closest('.news-item');
@@ -595,6 +597,12 @@ async function boot() {
       sessionBtn.style.display = '';
       sessionBtn.addEventListener('click', () => exitToSession());
     }
+  }
+
+  try {
+    await syncProfile();
+  } catch (error) {
+    toast('本机档案暂未同步，将继续使用当前端数据', 'err', 5000);
   }
 
   goto(location.hash.slice(1) || 'overview', true);

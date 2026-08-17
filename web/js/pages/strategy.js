@@ -1,19 +1,19 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js';
+import { api } from '../api.js?v=1.4.2';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.4.2';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.4.2';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
 let calRender = null; // 复盘日历渲染句柄（refresh 时重绘）
 
 const MATRIX = [
-  { phase: '冰点期', color: 'blue', range: '0-20°', pos: '0-2成', tip: '空仓观察 · 等回暖' },
-  { phase: '修复期', color: 'cyan', range: '20-40°', pos: '2-4成', tip: '轻仓试错 · 低吸核心' },
-  { phase: '发酵期', color: 'amber', range: '40-60°', pos: '5-8成', tip: '主线进攻 · 强势接力' },
-  { phase: '高潮期', color: 'red', range: '60-80°', pos: '5-7成', tip: '持仓兑现 · 只做核心' },
-  { phase: '亢奋期', color: 'violet', range: '80-100°', pos: '≤3成', tip: '防守减仓 · 谨防退潮' },
+  { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '空仓观察 · 等回暖' },
+  { phase: '修复期', color: 'cyan', range: '20≤T<40', pos: '2-4成', tip: '轻仓试错 · 低吸核心' },
+  { phase: '发酵期', color: 'amber', range: '40≤T<60', pos: '5-8成', tip: '主线进攻 · 强势接力' },
+  { phase: '高潮期', color: 'red', range: '60≤T<80', pos: '5-7成', tip: '持仓兑现 · 只做核心' },
+  { phase: '亢奋期', color: 'violet', range: '80≤T≤100', pos: '≤3成', tip: '防守减仓 · 谨防退潮' },
 ];
 
 const TEMPLATE = `【复盘模板 · 情绪周期版】
@@ -55,10 +55,12 @@ export function init(container) {
       </div>
 
       <div class="card span-12">
-        <div class="card-head"><div class="card-title">⚙️ 引擎调教</div><div class="card-sub">权重决定温度计算 · 调整后下一轮评分立即生效 · 这是你的身体</div></div>
+        <div class="card-head"><div class="card-title">⚙️ 引擎调教</div><div class="card-sub">先在草稿中预览温度影响，确认后才应用到引擎</div></div>
         <div class="tune-grid" id="st-tune"></div>
         <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
-          <button class="btn sm" id="st-tune-reset">恢复默认权重</button>
+          <button class="btn sm primary" id="st-tune-apply" disabled>应用权重</button>
+          <button class="btn sm" id="st-tune-discard" disabled>放弃修改</button>
+          <button class="btn sm ghost" id="st-tune-reset">载入默认草稿</button>
           <span style="font-size:11px;color:var(--text-3)" id="st-tune-hint"></span>
         </div>
       </div>
@@ -93,7 +95,7 @@ export function init(container) {
       </div>
 
       <div class="card span-12">
-        <div class="card-head"><div class="card-title">复盘与情绪日记</div><div class="card-sub">我的记忆 · 保存在本地</div></div>
+        <div class="card-head"><div class="card-title">复盘与情绪日记</div><div class="card-sub">我的记忆 · 保存在本机并跨端共享</div></div>
         <div class="grid g2">
           <div class="journal-box">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
@@ -201,21 +203,49 @@ export function init(container) {
     }
   });
 
-  // 引擎调教：权重滑块（防抖保存，下一轮评分生效）
+  // 引擎调教：草稿预览 → 明确应用，避免误触后立即改变全局引擎。
   const tuneEl = container.querySelector('#st-tune');
   const tuneHint = container.querySelector('#st-tune-hint');
+  const applyBtn = container.querySelector('#st-tune-apply');
+  const discardBtn = container.querySelector('#st-tune-discard');
   const INDICATOR_NAMES = {
     zt: '涨停家数', dt: '跌停家数', zb: '炸板率', height: '最高连板', lb_count: '连板家数',
     zt_idx: '昨日涨停指数', lb_idx: '昨日连板指数', breadth: '上涨家数占比',
     volume: '量能比(20日)', flow: '主力净流入', trend: '上证vs MA20',
   };
   let tuneData = null;
-  let tuneTimer = null;
+  const isTuneDirty = () => tuneData && tuneData.order.some(k =>
+    Math.abs((tuneData.draft[k] ?? 0) - (tuneData.active[k] ?? 0)) > 0.001);
+  const previewTemperature = () => {
+    const signals = (lastEm && lastEm.engine && lastEm.engine.signals) || [];
+    let weighted = 0;
+    let totalWeight = 0;
+    signals.forEach(signal => {
+      const key = signal.key;
+      const score = Number(signal.score);
+      const weight = Number(tuneData && tuneData.draft[key]);
+      if ((signal.avail === false || signal.available === false) || !Number.isFinite(score) || !Number.isFinite(weight) || weight <= 0) return;
+      weighted += score * weight;
+      totalWeight += weight;
+    });
+    if (!totalWeight) return null;
+    return Math.max(0, Math.min(100, 50 + 2.5 * weighted / totalWeight));
+  };
+  const updateTuneState = () => {
+    const dirty = isTuneDirty();
+    applyBtn.disabled = !dirty;
+    discardBtn.disabled = !dirty;
+    const preview = previewTemperature();
+    const current = lastEm && lastEm.engine && lastEm.engine.temp;
+    tuneHint.textContent = dirty
+      ? `草稿预览：${preview == null ? '--' : preview.toFixed(1)}°（当前 ${current ?? '--'}°），尚未应用`
+      : '当前为已应用权重';
+  };
   const renderTune = () => {
     if (!tuneData) { tuneEl.innerHTML = '<div class="empty" style="padding:14px">权重数据加载中…</div>'; return; }
-    const { weights, defaults, order } = tuneData;
+    const { draft, defaults, order } = tuneData;
     tuneEl.innerHTML = order.map(k => {
-      const w = weights[k] ?? defaults[k];
+      const w = draft[k] ?? defaults[k];
       const d = defaults[k];
       const changed = Math.abs(w - d) > 0.001;
       return `<div class="tune-row ${changed ? 'changed' : ''}">
@@ -225,38 +255,38 @@ export function init(container) {
         <span class="tr-default">默认 ${d.toFixed(1)}</span>
       </div>`;
     }).join('');
-  };
-  const pushWeights = (weights) => {
-    clearTimeout(tuneTimer);
-    tuneTimer = setTimeout(async () => {
-      try {
-        await api.saveWeights(weights);
-        tuneHint.textContent = '✓ 已保存，下一轮评分生效（刷新数据后见新温度）';
-        setTimeout(() => { tuneHint.textContent = ''; }, 4000);
-      } catch (e) {
-        tuneHint.textContent = '保存失败：' + e.message;
-      }
-    }, 600);
+    updateTuneState();
   };
   tuneEl.addEventListener('input', e => {
     const slider = e.target.closest('.tr-slider');
     if (!slider || !tuneData) return;
     const k = slider.dataset.key;
-    tuneData.weights[k] = parseFloat(slider.value);
+    tuneData.draft[k] = parseFloat(slider.value);
     slider.closest('.tune-row').querySelector('.tr-val').textContent = slider.value;
     slider.closest('.tune-row').classList.toggle('changed', Math.abs(parseFloat(slider.value) - tuneData.defaults[k]) > 0.001);
-    pushWeights({ [k]: parseFloat(slider.value) });
+    updateTuneState();
   });
-  container.querySelector('#st-tune-reset').addEventListener('click', async () => {
+  applyBtn.addEventListener('click', async () => {
     try {
-      await api.saveWeights({});
-      tuneData = await api.weights();
+      applyBtn.disabled = true;
+      await api.saveWeights(tuneData.draft);
+      tuneData.active = { ...tuneData.draft };
       renderTune();
-      tuneHint.textContent = '✓ 已恢复默认权重';
-      setTimeout(() => { tuneHint.textContent = ''; }, 4000);
-    } catch (e) { tuneHint.textContent = '恢复失败：' + e.message; }
+      tuneHint.textContent = '✓ 权重已应用；刷新数据后可查看正式温度';
+    } catch (e) { tuneHint.textContent = '应用失败：' + e.message; updateTuneState(); }
   });
-  api.weights().then(d => { tuneData = d; renderTune(); }).catch(() => {
+  discardBtn.addEventListener('click', () => {
+    tuneData.draft = { ...tuneData.active };
+    renderTune();
+  });
+  container.querySelector('#st-tune-reset').addEventListener('click', () => {
+    tuneData.draft = { ...tuneData.defaults };
+    renderTune();
+  });
+  api.weights().then(d => {
+    tuneData = { ...d, active: { ...d.weights }, draft: { ...d.weights } };
+    renderTune();
+  }).catch(() => {
     tuneEl.innerHTML = '<div class="empty" style="padding:14px">权重接口暂不可用</div>';
   });
 

@@ -6,7 +6,7 @@
      壳层 → 工作台： {type:'dp-ask-result', requestId, ok, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js';
+import { applyChartTheme } from './charts.js?v=1.4.2';
 
 export const EMBEDDED = (() => {
   try {

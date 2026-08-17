@@ -4,10 +4,10 @@
    配置 DeepSeek API Key（data/config.json）后自动升级为云端大脑。
    ============================================================ */
 
-import { api } from './api.js';
-import { addWatch, removeWatch, loadWatch } from './store.js';
-import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js';
-import { EMBEDDED, askDeepSeek } from './bridge.js';
+import { api } from './api.js?v=1.4.2';
+import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.4.2';
+import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.4.2';
+import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.4.2';
 
 export const BOT_NAME = '蚂小财';
 const HISTORY_KEY = 'dp_chat_v1';
@@ -411,7 +411,7 @@ async function answerCheer() {
 }
 
 const HELP_HTML = [
-  '我是 <b>蚂小财（DeepSeek 版）</b>，这台工作台的大脑就是<b>我本人</b>（DeepSeek v4-pro）🧠 能聊天，也能直接<b>指挥整个工作台</b>。',
+  '我是 <b>蚂小财（DeepSeek 版）</b> 🧠 能读取工作台真实数据，也能直接<b>调度整个工作台</b>。标题下方会明确显示当前使用的是 DeepSeek 云端模型还是本地规则引擎。',
   '💬 <b>问数据</b>：今天情绪怎么样 / 涨停梯队如何 / 主力资金流向 / 题材主线是什么',
   '📈 <b>看个股</b>：帮我看看贵州茅台 / 600519 走势 / 宁德时代 K线',
   '🎯 <b>问策略</b>：研究仓位区间 / 有什么风险 / 当前结论可信度',
@@ -420,7 +420,7 @@ const HELP_HTML = [
 ].join('<br>');
 
 const INTRO_HTML = [
-  '我是 <b>蚂小财</b>，深脉工作台里的 AI 金融助手 🐜 你也可以叫我<b>“DeepSeek版蚂小财”</b>——因为住在里面的就是我本人：DeepSeek v4-pro。',
+  '我是 <b>蚂小财</b>，深脉工作台里的金融助手 🐜 配置 DeepSeek 官方 API 后使用云端模型，未配置时使用本地规则引擎；当前模式会显示在助手标题下方。',
   '我的日常：读<b>情绪周期</b>、盯<b>涨停梯队</b>、看<b>个股行情</b>、算<b>主力资金</b>，还能一句话调度整个工作台。',
   '想试试吗？对我说：<b>“今天情绪怎么样”</b> 或 <b>“帮我看看贵州茅台”</b>。',
 ].join('<br>');
@@ -555,11 +555,13 @@ export const chatStore = {
   _load() {
     try {
       const saved = JSON.parse(localStorage.getItem(HISTORY_KEY));
-      if (Array.isArray(saved) && saved.length) this.messages = saved.slice(-60);
-    } catch { /* 忽略 */ }
+      this.messages = Array.isArray(saved) ? saved.slice(-60) : [];
+    } catch { this.messages = []; }
   },
   _save() {
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(this.messages.slice(-60))); } catch { /* 忽略 */ }
+    const messages = this.messages.slice(-60);
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(messages)); } catch { /* 忽略 */ }
+    persistChatHistory(messages);
   },
   push(role, html, actions, safe, sourceQuestion) {
     this.messages.push({ role, html, actions, safe: !!safe, sourceQuestion });
@@ -583,9 +585,14 @@ export const chatStore = {
     this._save();
     this.notify();
   },
+  reload() {
+    this._load();
+    this.notify();
+  },
 };
 
 chatStore._load();
+document.addEventListener('profile-synced', () => chatStore.reload());
 
 /** 云端/纯文本内容渲染：转义 + 极简 Markdown */
 function mdPlain(s) {

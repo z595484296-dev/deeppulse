@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 自选页（分组 · 排序 · 批量 · 提醒） */
 
-import { api } from '../api.js';
+import { api } from '../api.js?v=1.4.2';
 import {
   loadWatch, saveWatch, removeWatch, setWatchNote,
   batchRemoveWatch, batchMoveWatch, watchGroups, bus,
   loadAlerts, addAlert, removeAlert,
-} from '../store.js';
-import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js';
+} from '../store.js?v=1.4.2';
+import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.4.2';
 
 let built = false;
 let timer = null;

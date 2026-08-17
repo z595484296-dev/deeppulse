@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 情绪周期页 */
 
-import { api } from '../api.js';
-import { bus } from '../store.js';
-import { tempHistoryChart, ztIdxChart, hbarChart, distChart, intradayChart } from '../charts.js';
-import { esc, PHASE_COLORS, fmtPct, pctClass } from '../util.js';
+import { api } from '../api.js?v=1.4.2';
+import { bus } from '../store.js?v=1.4.2';
+import { tempHistoryChart, ztIdxChart, hbarChart, distChart, intradayChart } from '../charts.js?v=1.4.2';
+import { esc, PHASE_COLORS, fmtPct, pctClass } from '../util.js?v=1.4.2';
 
 let built = false;
 let bkAt = 0;
@@ -11,11 +11,11 @@ let premAt = 0;
 let intradayPoints = [];
 
 const PHASES = [
-  { name: '冰点期', color: 'blue', range: '0-20°', desc: '亏钱效应极致，市场冰封。空仓观望，等待回暖信号。' },
-  { name: '修复期', color: 'cyan', range: '20-40°', desc: '情绪回暖，试错期。轻仓低吸超跌核心，打首板试错。' },
-  { name: '发酵期', color: 'amber', range: '40-60°', desc: '主线发酵，赚钱效应扩散。围绕主线做核心股低吸与弱转强接力。' },
-  { name: '高潮期', color: 'red', range: '60-80°', desc: '情绪高潮，普涨逼近分歧。持仓兑现、去弱留强，谨慎接力高位。' },
-  { name: '亢奋期', color: 'violet', range: '80-100°', desc: '情绪过热，盛极而衰前夜。减仓防守，等待退潮出清后的新周期。' },
+  { name: '冰点期', color: 'blue', range: '0≤T<20', desc: '亏钱效应极致，市场冰封。空仓观望，等待回暖信号。' },
+  { name: '修复期', color: 'cyan', range: '20≤T<40', desc: '情绪回暖，试错期。轻仓低吸超跌核心，打首板试错。' },
+  { name: '发酵期', color: 'amber', range: '40≤T<60', desc: '主线发酵，赚钱效应扩散。围绕主线做核心股低吸与弱转强接力。' },
+  { name: '高潮期', color: 'red', range: '60≤T<80', desc: '情绪高潮，普涨逼近分歧。持仓兑现、去弱留强，谨慎接力高位。' },
+  { name: '亢奋期', color: 'violet', range: '80≤T≤100', desc: '情绪过热，盛极而衰前夜。减仓防守，等待退潮出清后的新周期。' },
 ];
 
 export function init(container) {
@@ -124,9 +124,14 @@ export function init(container) {
   container.querySelector('#em-prem-body').addEventListener('click', e => {
     const tr = e.target.closest('tr');
     if (tr && tr.dataset.code) {
-      document.dispatchEvent(new CustomEvent('open-quote', { detail: { code: tr.dataset.code, name: tr.dataset.name } }));
       document.querySelector('.nav-item[data-page="market"]').click();
+      document.dispatchEvent(new CustomEvent('open-quote', { detail: { code: tr.dataset.code, name: tr.dataset.name } }));
     }
+  });
+  container.querySelector('#em-prem-body').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const tr = e.target.closest('tr[data-code]');
+    if (tr) { e.preventDefault(); tr.click(); }
   });
 }
 
@@ -137,7 +142,7 @@ export async function refresh(container, data) {
   // 打板溢价（低频 120s）
   if (Date.now() - premAt > 120000) {
     premAt = Date.now();
-    api.premium().then(p => renderPremium(container, p)).catch(() => {});
+    api.premium().then(p => renderPremium(container, p)).catch(e => renderPremiumError(container, e));
   }
   const engine = em.engine || {};
   const raw = engine.raw || {};
@@ -179,7 +184,7 @@ export async function refresh(container, data) {
     ['降阶', transition.downgrade ?? 0, 'var(--down)'],
   ];
   container.querySelector('#em-transition').innerHTML = transitionItems.map(([name, value, color]) => `
-    <div class="transition-row"><span>${name}</span><div><i style="width:${value}%;background:${color}"></i></div><b class="num">${value}</b></div>`).join('');
+    <div class="transition-row"><span>${name}</span><div><i style="width:${value}%;background:${color}"></i></div><b class="num">${value}%</b></div>`).join('');
   const divergences = engine.divergences || [];
   container.querySelector('#em-divergences').innerHTML = divergences.length
     ? `<div class="emotion-div-title">结构背离</div>${divergences.map(item => `<p>⚠ ${esc(item)}</p>`).join('')}`
@@ -257,7 +262,7 @@ export async function refresh(container, data) {
   // ---- 打板溢价（低频 120s） ----
   if (Date.now() - premAt > 120000) {
     premAt = Date.now();
-    api.premium().then(p => renderPremium(container, p)).catch(() => {});
+    api.premium().then(p => renderPremium(container, p)).catch(e => renderPremiumError(container, e));
   }
   // ---- 盘中温度轨迹 ----
   const intraEl = container.querySelector('#em-intraday');
@@ -269,7 +274,7 @@ export async function refresh(container, data) {
 function renderPremium(container, p) {
   const s = p.stats || {};
   container.querySelector('#em-prem-sub').textContent =
-    `基准日 ${p.prev_date || '--'} → ${p.date || '--'} · ${s.count ?? 0} 只样本`;
+    `基准日 ${p.prev_date || '--'} → ${p.date || '--'} · ${s.count ?? 0} 只样本 · ${esc((p.source && p.source.name) || '市场源')}`;
   container.querySelector('#em-prem-stats').innerHTML = [
     ['平均涨幅', s.avg_pct != null ? fmtPct(s.avg_pct) : '--', (s.avg_pct ?? 0) >= 0 ? 'up' : 'down', ''],
     ['红盘率', s.up_ratio != null ? s.up_ratio + '%' : '--', (s.up_ratio ?? 0) >= 50 ? 'up' : 'down', ''],
@@ -288,7 +293,7 @@ function renderPremium(container, p) {
     if (r.up_today && r.today_lbc >= 2) badge = `<span class="badge red">${r.today_lbc}连板</span>`;
     else if (r.up_today) badge = '<span class="badge red">涨停</span>';
     else if (r.zha_today) badge = '<span class="badge amber">炸板</span>';
-    return `<tr style="cursor:pointer" data-code="${esc(r.code)}" data-name="${esc(r.name)}">
+    return `<tr style="cursor:pointer" tabindex="0" role="link" aria-label="查看${esc(r.name)}行情" data-code="${esc(r.code)}" data-name="${esc(r.name)}">
       <td><div class="name-cell"><b>${esc(r.name)}</b><span class="code-sub">${esc(r.code)}</span></div></td>
       <td class="r num ${pctClass(r.pct)}" style="font-weight:650">${fmtPct(r.pct)}</td>
       <td class="r num ${pctClass(r.open_pct)}">${r.open_pct != null ? fmtPct(r.open_pct) : '--'}</td>
@@ -297,4 +302,10 @@ function renderPremium(container, p) {
       <td style="color:var(--text-2)">${esc(r.hybk || '--')}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="6"><div class="empty">暂无数据</div></td></tr>';
+}
+
+function renderPremiumError(container, error) {
+  container.querySelector('#em-prem-sub').textContent = '数据可靠性校验未通过';
+  container.querySelector('#em-prem-stats').innerHTML = '';
+  container.querySelector('#em-prem-body').innerHTML = `<tr><td colspan="6"><div class="empty">打板溢价暂不可用：${esc(error && error.message || '上游数据异常')}。系统不会使用休市日或重复数据生成结论。</div></td></tr>`;
 }

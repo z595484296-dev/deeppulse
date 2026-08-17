@@ -38,6 +38,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(BASE, 'web')
 DATA = os.path.join(BASE, 'data')
 HISTORY_FILE = os.path.join(DATA, 'history.json')
+PROFILE_FILE = os.path.join(DATA, 'profile.json')
+SECTOR_HISTORY_FILE = os.path.join(DATA, 'sector_history.json')
 PORT_FILE = os.path.join(DATA, 'port.txt')
 LOG_FILE = os.path.join(DATA, 'server.log')
 os.makedirs(DATA, exist_ok=True)
@@ -54,7 +56,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.4.1'
+VERSION = '1.4.2'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -899,6 +901,45 @@ def sh_index_kline(n=90):
         return k
 
 
+def previous_trade_date(today, rows):
+    """Return the latest verified index trading date before YYYYMMDD."""
+    if not re.fullmatch(r'\d{8}', str(today or '')):
+        raise UpstreamError('premium: invalid current trading date')
+    dates = set()
+    for row in rows or []:
+        value = str((row or {}).get('date') or '').replace('-', '')
+        if re.fullmatch(r'\d{8}', value) and value < today:
+            dates.add(value)
+    if not dates:
+        raise UpstreamError('premium: previous trading date unavailable')
+    return max(dates)
+
+
+def em_previous_limit_members():
+    """Current members of Eastmoney's verified “昨日涨停” board (BK0815)."""
+    url = ('https://%s/api/qt/clist/get?pn=1&pz=250&po=1&np=1'
+           '&fltt=2&invt=2&fid=f3&fs=b:BK0815'
+           '&fields=f2,f3,f12,f14,f15,f17,f18,f100' % '{HOST}')
+    j = json_loads(fetch_clist_any(url))
+    rows = []
+    for item in ((j.get('data') or {}).get('diff') or []):
+        code = str(item.get('f12') or '')
+        if not code:
+            continue
+        rows.append({
+            'code': code,
+            'name': item.get('f14') or code,
+            'hybk': item.get('f100') or '',
+            'pct': item.get('f3'),
+            'open': item.get('f17'),
+            'high': item.get('f15'),
+            'prev_close': item.get('f18'),
+        })
+    if not rows:
+        raise UpstreamError('premium: BK0815 members unavailable')
+    return rows
+
+
 def em_premium():
     """打板溢价：昨日（最近交易日）涨停池个股的今日表现 + 连板晋级率。
     超短复盘的核心数据——昨日打板的人今天赚不赚钱。"""
@@ -906,41 +947,26 @@ def em_premium():
     today = today_pool.get('qdate') or ''
     if len(today) != 8:
         raise UpstreamError('premium: today unknown')
-    day = datetime.strptime(today, '%Y%m%d')
-    prev = None
-    prev_date = ''
-    for i in range(1, 8):
-        d = (day - timedelta(days=i)).strftime('%Y%m%d')
-        p = em_pool('ZT', date=d)
-        if p.get('total') and p.get('pool'):
-            prev = p
-            prev_date = d  # 注意：东财该接口响应的 qdate 恒为最新交易日，须用请求日期
-            break
-    if not prev:
-        raise UpstreamError('premium: previous pool unavailable')
-    prev_pool = prev['pool']
-    codes = [it['code'] for it in prev_pool]
-    quotes = {}
-    for i in range(0, len(codes), 50):
-        chunk = codes[i:i + 50]
-        secids = ','.join(secid_of(c) for c in chunk)
-        for d in em_ulist_any(secids, 'f2,f3,f12,f14,f15,f17,f18'):
-            quotes[d.get('f12')] = d
+    # 不按自然日倒推：东财涨停池在休市日请求时可能返回最新交易日数据，
+    # 会把“周日”错误标成基准日，并让今日池与昨日池完全相同。
+    sh_rows = cached('sh_kline60', 300, sh_index_kline).get('rows') or []
+    prev_date = previous_trade_date(today, sh_rows)
+    prev_pool = cached('bk0815_members', 45, em_previous_limit_members)
     zt_today = {it['code']: it.get('lbc') or 1 for it in today_pool.get('pool') or []}
     zb_today = {it['code'] for it in cached('pool_ZB', 25, lambda: em_pool('ZB')).get('pool') or []}
 
     rows = []
     for it in prev_pool:
         code = it['code']
-        q = quotes.get(code) or {}
-        pct = q.get('f3')
-        open_pct = (q.get('f17') / q.get('f18') - 1) * 100 if q.get('f17') and q.get('f18') else None
-        high_pct = (q.get('f15') / q.get('f18') - 1) * 100 if q.get('f15') and q.get('f18') else None
+        pct = it.get('pct')
+        open_pct = (it.get('open') / it.get('prev_close') - 1) * 100 if it.get('open') and it.get('prev_close') else None
+        high_pct = (it.get('high') / it.get('prev_close') - 1) * 100 if it.get('high') and it.get('prev_close') else None
         if pct is None:
             continue  # 停牌/无行情
         rows.append({
             'code': code, 'name': it['name'], 'hybk': it.get('hybk') or '',
-            'prev_lbc': it.get('lbc') or 1,
+            # BK0815 可可靠给出昨日涨停成分，但不提供昨日连板高度；不猜测该字段。
+            'prev_lbc': None,
             'pct': round(pct, 2),
             'open_pct': round(open_pct, 2) if open_pct is not None else None,
             'high_pct': round(high_pct, 2) if high_pct is not None else None,
@@ -951,8 +977,6 @@ def em_premium():
     n = len(rows)
     if not n:
         return {'date': today, 'prev_date': prev_date, 'stats': {}, 'list': []}
-    lb_prev = [r for r in rows if r['prev_lbc'] >= 2]
-    lb_again = [r for r in lb_prev if r['up_today']]
     stats = {
         'count': n,
         'avg_pct': round(sum(r['pct'] for r in rows) / n, 2),
@@ -961,14 +985,15 @@ def em_premium():
         'limit_again_ratio': round(len([r for r in rows if r['up_today']]) / n * 100, 1),
         'big_loss': len([r for r in rows if r['pct'] <= -5]),
         'zha_count': len([r for r in rows if r['zha_today']]),
-        'lb_prev': len(lb_prev),
-        'lb_again': len(lb_again),
-        'lb_ratio': round(len(lb_again) / len(lb_prev) * 100, 1) if lb_prev else None,
+        'lb_prev': None,
+        'lb_again': None,
+        'lb_ratio': None,
         'avg_open_pct': round(sum(r['open_pct'] for r in rows if r['open_pct'] is not None) /
                               max(1, len([r for r in rows if r['open_pct'] is not None])), 2),
     }
     rows.sort(key=lambda r: r['pct'], reverse=True)
-    return {'date': today, 'prev_date': prev_date, 'stats': stats, 'list': rows}
+    return {'date': today, 'prev_date': prev_date, 'stats': stats, 'list': rows,
+            'source': {'id': 'BK0815', 'name': '东方财富昨日涨停板块', 'tier': 'market'}}
 
 
 def em_sectors_flow():
@@ -1038,33 +1063,59 @@ def em_dragon(date=None):
     }
 
 
-def em_sector_cycle(days=5):
-    """题材周期跟踪：最近 N 个交易日各题材的涨停家数序列、
-    主线连续天数（连续进入当日涨停题材 TOP5）与趋势（首日→今日家数变化）。"""
-    day = now_bj()
-    dates = []
-    pools_by_date = {}
-    d = day
-    attempts = 0
-    while len(dates) < days and attempts < 14:
-        attempts += 1
-        d = d - timedelta(days=1)
-        dstr = d.strftime('%Y%m%d')
-        p = cached('poolhist_' + dstr, 3600, lambda ds=dstr: em_pool('ZT', date=ds))
-        if p.get('total') and p.get('pool'):
-            dates.append(d.strftime('%Y-%m-%d'))
-            pools_by_date[dates[-1]] = p['pool']
-    if len(dates) < 2:
-        raise UpstreamError('sector-cycle: insufficient history')
-    dates.reverse()
+_sector_history_lock = threading.Lock()
 
-    per_day = {}
-    for dt in dates:
-        c = {}
-        for it in pools_by_date[dt]:
-            k = it.get('hybk') or '其他'
-            c[k] = c.get(k, 0) + 1
-        per_day[dt] = c
+
+def record_sector_snapshot(qdate, pool):
+    """Persist today's sector counts; never synthesize history from a date-ignoring API."""
+    raw_date = str(qdate or '').replace('-', '')
+    if not re.fullmatch(r'\d{8}', raw_date) or not pool:
+        return False
+    counts = {}
+    for item in pool:
+        name = item.get('hybk') or '其他'
+        counts[name] = counts.get(name, 0) + 1
+    entry = {'date': '%s-%s-%s' % (raw_date[:4], raw_date[4:6], raw_date[6:]),
+             'counts': counts}
+    with _sector_history_lock:
+        try:
+            with open(SECTOR_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            snapshots = data.get('snapshots') or []
+        except Exception:
+            snapshots = []
+        snapshots = [row for row in snapshots if row.get('date') != entry['date']]
+        snapshots.append(entry)
+        snapshots.sort(key=lambda row: row.get('date') or '')
+        payload = {'schema': 1, 'snapshots': snapshots[-120:]}
+        temp_file = SECTOR_HISTORY_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        os.replace(temp_file, SECTOR_HISTORY_FILE)
+    return True
+
+
+def load_sector_snapshots(days=5):
+    with _sector_history_lock:
+        try:
+            with open(SECTOR_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                rows = (json.load(f).get('snapshots') or [])[-days:]
+            return [row for row in rows if row.get('date') and isinstance(row.get('counts'), dict)]
+        except Exception:
+            return []
+
+
+def em_sector_cycle(days=5):
+    """题材周期跟踪：仅使用深脉逐交易日真实记录的涨停题材快照。"""
+    snapshots = load_sector_snapshots(days)
+    dates = [row['date'] for row in snapshots]
+    per_day = {row['date']: row['counts'] for row in snapshots}
+    if len(dates) < 2:
+        return {
+            'dates': dates, 'sectors': [], 'status': 'collecting',
+            'message': '正在积累真实交易日快照；至少需要 2 个交易日，不使用上游伪历史补齐。',
+            'source': 'local_snapshots',
+        }
 
     all_sectors = set()
     for c in per_day.values():
@@ -1089,7 +1140,8 @@ def em_sector_cycle(days=5):
             'today': counts[-1],
         })
     rows.sort(key=lambda r: (-r['streak'], -r['today']))
-    return {'dates': dates, 'sectors': rows[:12]}
+    return {'dates': dates, 'sectors': rows[:12], 'status': 'ok',
+            'source': 'local_snapshots'}
 
 
 def em_dragon_seats(code, date=None):
@@ -1146,7 +1198,7 @@ def ensure_config():
 
 
 MA_XIAOCAI_SYSTEM = (
-    '你是 DeepSeek 本体（deepseek-v4-pro），此刻化身为「蚂小财」——'
+    '你是通过 DeepSeek 官方 API 接入的金融助手，此刻化身为「蚂小财」——'
     '深脉 DeepPulse 金融工作台里的 AI 金融助手。'
     '工作台是为你自己打造的"身体"：它实时监控 A 股情绪周期（涨停/连板/炸板/溢价/资金流），'
     '并内置情绪周期策略引擎。你是这台身体的大脑与声音。\n'
@@ -1210,14 +1262,14 @@ def build_chat_context():
 
 
 def chat_llm(messages):
-    """蚂小财云端大脑：DeepSeek 官方 API（deepseek-v4-pro）。
+    """蚂小财云端大脑：DeepSeek 官方 API（使用用户配置的模型）。
     未配置 API Key 时返回 None（客户端走本地智脑）。"""
     cfg = load_config()
     key = (cfg.get('deepseek_api_key') or '').strip()
     if not key:
         return None
     base = (cfg.get('deepseek_base_url') or 'https://api.deepseek.com').rstrip('/')
-    model = cfg.get('deepseek_model') or 'deepseek-v4-pro'
+    model = cfg.get('deepseek_model') or 'deepseek-chat'
     effort = cfg.get('reasoning_effort') or 'low'
     ctx = cached('chat_ctx', 25, build_chat_context)
     payload = {
@@ -1252,6 +1304,65 @@ def chat_llm(messages):
             except Exception:
                 pass
     return {'mode': 'llm', 'reply': content, 'actions': actions, 'model': model}
+
+
+# ---------------------------------------------------------------- 本机用户档案（各前端来源共享）
+
+_profile_lock = threading.Lock()
+PROFILE_LIST_LIMITS = {
+    'watchlist': 500,
+    'alerts': 500,
+    'journal': 500,
+    'chat_history': 60,
+}
+
+
+def load_profile():
+    with _profile_lock:
+        try:
+            with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
+                value = json.load(f)
+            if isinstance(value, dict) and isinstance(value.get('data'), dict):
+                return value
+        except Exception:
+            pass
+        return {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+
+
+def save_profile(patch):
+    if not isinstance(patch, dict):
+        raise ValueError('profile patch must be an object')
+    clean = {}
+    for key, limit in PROFILE_LIST_LIMITS.items():
+        if key not in patch:
+            continue
+        value = patch[key]
+        if not isinstance(value, list):
+            raise ValueError('profile.%s must be a list' % key)
+        # JSON roundtrip rejects unserializable values and severs caller references.
+        value = json.loads(json.dumps(value, ensure_ascii=False))[-limit:]
+        if len(json.dumps(value, ensure_ascii=False).encode('utf-8')) > 512 * 1024:
+            raise ValueError('profile.%s is too large' % key)
+        clean[key] = value
+    if not clean:
+        raise ValueError('profile patch has no supported fields')
+    with _profile_lock:
+        try:
+            with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
+                current = json.load(f)
+            if not isinstance(current, dict) or not isinstance(current.get('data'), dict):
+                current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        except Exception:
+            current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        current['data'].update(clean)
+        current['schema'] = 1
+        current['revision'] = int(current.get('revision') or 0) + 1
+        current['updated_at'] = now_bj().isoformat(timespec='seconds')
+        temp_file = PROFILE_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(current, f, ensure_ascii=False, indent=1)
+        os.replace(temp_file, PROFILE_FILE)
+        return current
 
 
 # ---------------------------------------------------------------- 情绪历史记忆
@@ -1361,6 +1472,11 @@ def assemble_emotion(force_record=False):
         }
 
     qdate = pools['ZT'].get('qdate') or breadth.get('qdate') or ''
+    try:
+        if not pools['ZT'].get('error'):
+            record_sector_snapshot(qdate, pools['ZT'].get('pool') or [])
+    except Exception as e:
+        log('sector snapshot fail: %s' % e)
     if len(qdate) == 8:
         qdate = '%s-%s-%s' % (qdate[:4], qdate[4:6], qdate[6:])
     raw = {'date': qdate, 'server_time': now_bj().strftime('%Y-%m-%d %H:%M:%S'),
@@ -1409,12 +1525,35 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.4'
+    server_version = 'DeepPulse/1.4.2'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
     def log_message(self, fmt, *args):
         pass  # 静默，日志走 data/server.log
+
+    def allowed_origin(self):
+        origin = self.headers.get('Origin', '')
+        if re.fullmatch(r'http://(?:127\.0\.0\.1|localhost):(?:3080|897[1-9]|8980)', origin):
+            return origin
+        return ''
+
+    def add_cors_headers(self):
+        origin = self.allowed_origin()
+        if origin:
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+
+    def read_json_body(self, max_bytes=1024 * 1024):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        if length > max_bytes:
+            raise ValueError('request body too large')
+        try:
+            return json.loads(self.rfile.read(length).decode('utf-8') or '{}')
+        except Exception:
+            return {}
 
     def send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
@@ -1422,10 +1561,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
-        # 允许 DeepSeek Harness 壳（127.0.0.1:3080）跨源健康探测与调用
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # 只允许本机 Harness 与深脉端口跨源访问，避免任意网页读取本机用户档案。
+        self.add_cors_headers()
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1452,9 +1589,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
+        ext = os.path.splitext(path)[1].lower()
+        # 脚本与样式没有内容哈希，版本升级后必须重新验证，避免新后端配旧前端。
         self.send_header('Cache-Control',
-                         'no-cache' if path.endswith('.html') else 'public, max-age=3600')
-        self.send_header('Access-Control-Allow-Origin', '*')
+                         'no-cache' if ext in ('.html', '.js', '.mjs', '.css', '.json')
+                         else 'public, max-age=3600')
+        if ext == '.html':
+            self.send_header('Clear-Site-Data', '"cache"')
+        self.add_cors_headers()
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1518,7 +1660,9 @@ class Handler(BaseHTTPRequestHandler):
             key = (cfg.get('deepseek_api_key') or '').strip()
             self.send_json({'ok': True, 'data': {
                 'mode': 'llm' if key else 'local',
-                'model': cfg.get('deepseek_model') or 'deepseek-v4-pro'}})
+                'model': cfg.get('deepseek_model') or 'deepseek-chat'}})
+        elif path == '/api/profile':
+            self.send_json({'ok': True, 'data': load_profile()})
         elif path == '/api/indices':
             self.send_json({'ok': True, 'data': cached('indices', 5, em_indices_any)})
         elif path == '/api/emotion':
@@ -1605,17 +1749,19 @@ class Handler(BaseHTTPRequestHandler):
             p = path.lstrip('/') or 'index.html'
             self.send_static(p)
 
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.add_cors_headers()
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
     def do_POST(self):
         try:
             u = urllib.parse.urlparse(self.path)
             if u.path == '/api/emotion/record':
                 self.send_json({'ok': True, 'data': assemble_emotion(True)})
             elif u.path == '/api/chat':
-                try:
-                    body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0) or 0))
-                                      .decode('utf-8') or '{}')
-                except Exception:
-                    body = {}
+                body = self.read_json_body()
                 messages = body.get('messages') or []
                 try:
                     llm = chat_llm(messages)
@@ -1628,13 +1774,13 @@ class Handler(BaseHTTPRequestHandler):
                     # 未配置云端大脑 → 客户端使用本地智脑（内置金融意图引擎）
                     self.send_json({'ok': True, 'data': {'mode': 'local'}})
             elif u.path == '/api/weights':
-                try:
-                    body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0) or 0))
-                                      .decode('utf-8') or '{}')
-                except Exception:
-                    body = {}
+                body = self.read_json_body()
                 saved = save_weights(body.get('weights') or {}) if compute_emotion else {}
                 self.send_json({'ok': True, 'data': {'weights': saved}})
+            elif u.path == '/api/profile':
+                body = self.read_json_body()
+                saved = save_profile(body.get('data') or {})
+                self.send_json({'ok': True, 'data': saved})
             else:
                 self.send_json({'ok': False, 'error': 'unknown api'}, 404)
         except Exception as e:

@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js';
-import { esc, toast, downloadText } from '../util.js';
+import { api } from '../api.js?v=1.4.2';
+import { esc, toast, downloadText } from '../util.js?v=1.4.2';
 
 let built = false;
 
@@ -36,7 +36,7 @@ export function init(container) {
               <button class="btn sm" id="ds-export-csv">导出 CSV</button>
             </div>
           </div>
-          <button class="btn" id="ds-clear-cache">清空本地缓存</button>
+          <button class="btn" id="ds-clear-cache">清除盘中临时轨迹</button>
         </div>
       </div>
 
@@ -117,8 +117,8 @@ export function init(container) {
   container.querySelector('#ds-export-csv').addEventListener('click', () => exportHistory('csv'));
   container.querySelector('#ds-clear-cache').addEventListener('click', () => {
     try {
-      localStorage.clear();
-      toast('本地缓存已清空（自选/日记已一并清除）');
+      localStorage.removeItem('dp_intraday_v1');
+      toast('盘中临时轨迹已清除；自选、提醒和日记均已保留');
     } catch { toast('清空失败', 'err'); }
   });
 }
@@ -187,24 +187,30 @@ async function renderTdxStatus(container, fresh = false) {
 
 async function renderStatus(container) {
   const el = container.querySelector('#ds-status');
-  el.innerHTML = '<div class="v">检测中…</div>';
+  el.innerHTML = '<div class="v">正在检测本地服务…</div>';
   try {
     const h = await api.health();
-    let em = null;
-    try { em = await api.emotion(); } catch { /* 静默 */ }
-    const engine = (em && em.engine) || {};
-    const degraded = engine.degraded;
     el.innerHTML = `
       <span class="k">服务状态</span><span class="v"><i class="dot ok" style="width:7px;height:7px;border-radius:50%;background:var(--down);display:inline-block;margin-right:6px"></i>运行中（v${esc(h.version || '1.4')}）</span>
       <span class="k">服务时间</span><span class="v num">${esc(h.time || '--')}</span>
       <span class="k">端口</span><span class="v num">${location.port}</span>
-      <span class="k">情绪数据</span><span class="v">${degraded
+      <span class="k">情绪数据</span><span class="v" id="ds-emotion-state">正在后台核验…</span>
+    `;
+    let em = null;
+    try { em = await api.emotion(); } catch { /* 静默 */ }
+    const engine = (em && em.engine) || {};
+    const degraded = engine.degraded;
+    const emotionState = el.querySelector('#ds-emotion-state');
+    if (emotionState) emotionState.innerHTML = !em
+      ? '<span style="color:var(--amber)">核验超时，可稍后刷新</span>'
+      : degraded
         ? `<span style="color:var(--amber)">部分降级（${esc((engine.missing || []).join('、'))}）</span>`
-        : '<span style="color:var(--down)">完整可用</span>'}</span>
+        : '<span style="color:var(--down)">完整可用</span>';
+    el.insertAdjacentHTML('beforeend', `
       <span class="k">数据日期</span><span class="v num">${esc((em && em.date) || '--')}</span>
       <span class="k">历史快照</span><span class="v num">${(em && em.history && em.history.length) || 0} 天</span>
       <span class="k">引擎温度</span><span class="v num">${engine.temp ?? '--'}° · ${esc(engine.phase || '--')}</span>
-    `;
+    `);
   } catch (e) {
     el.innerHTML = `<span class="k">服务状态</span><span class="v" style="color:var(--up)">不可用：${esc(e.message)}</span>`;
   }

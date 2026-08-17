@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.4.1';
+const MIN_VERSION = '1.4.2';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -56,7 +56,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.4.1+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.4.2+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -111,6 +111,8 @@ export const api = {
   tdxStatus: (fresh = false) => request('/api/tdx/status?probe=1' + (fresh ? '&fresh=1' : ''), 10000),
   disclosures: (code, n = 8) => request(`/api/disclosures?code=${encodeURIComponent(code)}&n=${n}`),
   brain: () => request('/api/brain'),
+  profile: () => request('/api/profile', 5000),
+  saveProfile: (data) => post('/api/profile', { data }, 5000),
   indices: () => request('/api/indices'),
   emotion: (record) => request('/api/emotion' + (record ? '?record=1' : ''), 60000),
   recordSnapshot: () => post('/api/emotion/record'),

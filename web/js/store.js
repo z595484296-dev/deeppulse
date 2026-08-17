@@ -1,4 +1,6 @@
-/* 深脉 DeepPulse — 状态存储：会话状态 + 本地记忆（自选/日记） */
+/* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
+
+import { api } from './api.js?v=1.4.2';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -16,6 +18,52 @@ export function emit(type, detail) {
   bus.dispatchEvent(new CustomEvent(type, { detail }));
 }
 
+const PROFILE_KEYS = {
+  watchlist: 'dp_watchlist_v1',
+  alerts: 'dp_alerts_v1',
+  journal: 'dp_journal_v1',
+  chat_history: 'dp_chat_v1',
+};
+const profileTimers = new Map();
+
+function persistProfile(key, value) {
+  clearTimeout(profileTimers.get(key));
+  profileTimers.set(key, setTimeout(() => {
+    api.saveProfile({ [key]: value }).then(() => {
+      emit('profile-sync', { ok: true, key });
+    }).catch(error => {
+      emit('profile-sync', { ok: false, key, error: error.message });
+    });
+  }, 250));
+}
+
+/**
+ * 以本机后端档案为权威，在首次升级时把当前来源的 localStorage 迁入后端。
+ * 显式空数组也具有含义，避免另一个来源用旧数据把用户已删除的内容复活。
+ */
+export async function syncProfile() {
+  const profile = await api.profile();
+  const remote = (profile && profile.data) || {};
+  const migration = {};
+  Object.entries(PROFILE_KEYS).forEach(([key, storageKey]) => {
+    if (Object.prototype.hasOwnProperty.call(remote, key)) {
+      localStorage.setItem(storageKey, JSON.stringify(remote[key]));
+    } else {
+      try {
+        const localValue = JSON.parse(localStorage.getItem(storageKey) || '[]');
+        // 空的新来源不能抢先覆盖旧来源中尚待迁移的真实数据。
+        if (Array.isArray(localValue) && localValue.length) migration[key] = localValue;
+      } catch { /* 等待其他来源迁移或首次真实写入 */ }
+    }
+  });
+  if (Object.keys(migration).length) await api.saveProfile(migration);
+  emit('watch', loadWatch());
+  emit('alerts', loadAlerts());
+  emit('journal', loadJournal());
+  document.dispatchEvent(new CustomEvent('profile-synced'));
+  return profile;
+}
+
 /* ---------------- 自选股（localStorage） ---------------- */
 const WATCH_KEY = 'dp_watchlist_v1';
 
@@ -28,6 +76,7 @@ export function loadWatch() {
 
 export function saveWatch(list) {
   localStorage.setItem(WATCH_KEY, JSON.stringify(list));
+  persistProfile('watchlist', list);
   emit('watch', list);
 }
 
@@ -85,6 +134,7 @@ export function loadAlerts() {
 
 export function saveAlerts(list) {
   localStorage.setItem(ALERTS_KEY, JSON.stringify(list));
+  persistProfile('alerts', list);
   emit('alerts', list);
 }
 
@@ -122,6 +172,7 @@ export function saveJournalEntry(date, text) {
   else list.push({ date, text, ts: Date.now() });
   list.sort((a, b) => (a.date < b.date ? 1 : -1));
   localStorage.setItem(JOURNAL_KEY, JSON.stringify(list));
+  persistProfile('journal', list);
   emit('journal', list);
   return list;
 }
@@ -132,7 +183,12 @@ export function deleteJournalEntry(date) {
 
 function saveJournalRaw(list) {
   localStorage.setItem(JOURNAL_KEY, JSON.stringify(list));
+  persistProfile('journal', list);
   emit('journal', list);
+}
+
+export function persistChatHistory(messages) {
+  persistProfile('chat_history', (messages || []).slice(-60));
 }
 
 /* ---------------- 行情页状态 ---------------- */

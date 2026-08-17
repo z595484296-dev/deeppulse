@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 行情页（个股K线 + 实时行情） */
 
-import { api } from '../api.js';
-import { marketState, addWatch, loadWatch, emit, state } from '../store.js';
-import { klineChart } from '../charts.js';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, debounce, toast, UP, DOWN, phaseBandsOf } from '../util.js';
+import { api } from '../api.js?v=1.4.2';
+import { marketState, addWatch, loadWatch, emit, state } from '../store.js?v=1.4.2';
+import { klineChart } from '../charts.js?v=1.4.2';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, debounce, toast, UP, DOWN, phaseBandsOf } from '../util.js?v=1.4.2';
 
 let built = false;
 let timer = null;
@@ -23,17 +23,18 @@ export function init(container) {
         <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
           <div class="search-box" style="width:300px">
             <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-3.8-3.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            <input id="mk-search" placeholder="输入代码或名称，如 600519 / 茅台" autocomplete="off">
-            <div class="search-results" id="mk-results"></div>
+            <input id="mk-search" placeholder="输入代码或名称，如 600519 / 茅台" autocomplete="off"
+              role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="mk-results">
+            <div class="search-results" id="mk-results" role="listbox"></div>
           </div>
           <div class="tabs" id="mk-periods">
-            ${PERIODS.map((p, i) => `<span class="tab ${i === 0 ? 'active' : ''}" data-klt="${p.klt}">${p.label}</span>`).join('')}
-            <span class="tab" id="mk-fqt" title="复权方式">前复权</span>
+            ${PERIODS.map((p, i) => `<button type="button" class="tab ${i === 0 ? 'active' : ''}" data-klt="${p.klt}">${p.label}</button>`).join('')}
+            <button type="button" class="tab" id="mk-fqt" title="复权方式">前复权</button>
           </div>
           <div class="tabs" id="mk-indicators" title="副图指标">
-            <span class="tab active" data-ind="macd">VOL · MACD</span>
-            <span class="tab" data-ind="kdj">KDJ</span>
-            <span class="tab" data-ind="rsi">RSI</span>
+            <button type="button" class="tab active" data-ind="macd">VOL · MACD</button>
+            <button type="button" class="tab" data-ind="kdj">KDJ</button>
+            <button type="button" class="tab" data-ind="rsi">RSI</button>
           </div>
           <div style="display:flex;gap:8px;margin-left:auto">
             <button class="btn" id="mk-add-watch">☆ 加自选</button>
@@ -46,52 +47,107 @@ export function init(container) {
         <div class="empty">输入代码或名称开始分析 · 支持 A股 / 指数 / 板块（如 BK0815 昨日涨停）</div>
       </div>
 
-      <div class="card span-12" id="mk-disclosures" style="display:none"></div>
-
       <div class="card span-12" style="padding:10px 8px 4px">
         <div id="mk-chart" class="chart" style="height:540px"></div>
       </div>
+
+      <div class="card span-12" id="mk-disclosures" style="display:none"></div>
     </div>
   `;
 
   const searchEl = container.querySelector('#mk-search');
   const resEl = container.querySelector('#mk-results');
+  let searchHits = [];
+  let activeHit = -1;
+  let searchSeq = 0;
+
+  const renderHits = () => {
+    if (!searchHits.length) {
+      resEl.innerHTML = '<div class="empty">未找到匹配标的</div>';
+    } else {
+      resEl.innerHTML = searchHits.map((h, index) => `
+        <button type="button" class="sr-item ${index === activeHit ? 'active' : ''}" role="option"
+          id="mk-option-${index}" aria-selected="${index === activeHit}" data-code="${esc(h.code)}" data-name="${esc(h.name)}">
+          <span class="sr-name">${esc(h.name)}</span>
+          <span class="sr-code">${esc(h.code)}</span>
+        </button>`).join('');
+    }
+    searchEl.setAttribute('aria-expanded', 'true');
+    if (activeHit >= 0) searchEl.setAttribute('aria-activedescendant', `mk-option-${activeHit}`);
+    else searchEl.removeAttribute('aria-activedescendant');
+    resEl.classList.add('show');
+  };
+
+  const chooseHit = (hit) => {
+    if (!hit) return;
+    loadStock(container, hit.code, hit.name);
+    searchHits = [];
+    activeHit = -1;
+    searchEl.value = '';
+    searchEl.setAttribute('aria-expanded', 'false');
+    resEl.classList.remove('show');
+  };
 
   const doSearch = debounce(async (q) => {
-    if (!q) { resEl.classList.remove('show'); return; }
+    const seq = ++searchSeq;
+    if (!q) {
+      searchHits = [];
+      searchEl.setAttribute('aria-expanded', 'false');
+      resEl.classList.remove('show');
+      return;
+    }
     try {
       const hits = await api.search(q);
-      if (!hits.length) {
-        resEl.innerHTML = '<div class="empty">未找到匹配标的</div>';
-      } else {
-        resEl.innerHTML = hits.map(h => `
-          <div class="sr-item" data-code="${esc(h.code)}" data-name="${esc(h.name)}">
-            <span class="sr-name">${esc(h.name)}</span>
-            <span class="sr-code">${esc(h.code)}</span>
-          </div>`).join('');
-      }
-      resEl.classList.add('show');
+      if (seq !== searchSeq) return;
+      searchHits = hits;
+      activeHit = hits.length ? 0 : -1;
+      renderHits();
     } catch (e) { /* 静默 */ }
   }, 260);
 
-  searchEl.addEventListener('input', () => doSearch(searchEl.value.trim()));
+  searchEl.addEventListener('input', () => {
+    searchHits = [];
+    activeHit = -1;
+    doSearch(searchEl.value.trim());
+  });
   searchEl.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!searchHits.length) return;
+      e.preventDefault();
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      activeHit = (activeHit + delta + searchHits.length) % searchHits.length;
+      renderHits();
+      resEl.querySelector(`#mk-option-${activeHit}`)?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
     if (e.key === 'Enter') {
+      e.preventDefault();
       const q = searchEl.value.trim();
-      if (q) loadStock(container, q, q);
+      if (!q) return;
+      if (searchHits.length) {
+        chooseHit(searchHits[Math.max(0, activeHit)]);
+      } else if (/^(?:\d{6}|BK\d{4})$/i.test(q)) {
+        loadStock(container, q, q);
+        resEl.classList.remove('show');
+      } else {
+        api.search(q).then(hits => chooseHit(hits && hits[0])).catch(() => toast('未找到匹配标的', 'err'));
+      }
+    } else if (e.key === 'Escape') {
+      searchEl.setAttribute('aria-expanded', 'false');
       resEl.classList.remove('show');
     }
   });
   resEl.addEventListener('click', e => {
     const it = e.target.closest('.sr-item');
     if (it) {
-      loadStock(container, it.dataset.code, it.dataset.name);
-      searchEl.value = '';
-      resEl.classList.remove('show');
+      chooseHit({ code: it.dataset.code, name: it.dataset.name });
     }
   });
   document.addEventListener('click', e => {
-    if (!e.target.closest('.search-box')) resEl.classList.remove('show');
+    if (!e.target.closest('.search-box')) {
+      searchEl.setAttribute('aria-expanded', 'false');
+      resEl.classList.remove('show');
+    }
   });
 
   container.querySelector('#mk-periods').addEventListener('click', e => {
@@ -224,7 +280,7 @@ function renderQuote(container, q) {
   container.querySelector('#mk-price').textContent = fmtPrice(q.price);
   container.querySelector('#mk-price').className = 'quote-price num ' + cls;
   container.querySelector('#mk-delta').innerHTML =
-    `${fmtPct(q.pct)} <span style="font-size:12.5px;color:var(--text-3)">${q.chg > 0 ? '+' : ''}${q.chg}</span>`;
+    `${fmtPct(q.pct)} <span style="font-size:12.5px;color:var(--text-3)">${Number(q.chg) > 0 ? '+' : ''}${fmtPrice(Number(q.chg))}</span>`;
   container.querySelector('#mk-delta').className = 'quote-delta num ' + cls;
   const M = [
     ['今开', fmtPrice(q.open)], ['最高', fmtPrice(q.high)], ['最低', fmtPrice(q.low)],
