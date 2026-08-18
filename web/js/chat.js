@@ -4,10 +4,10 @@
    配置 DeepSeek API Key（data/config.json）后自动升级为云端大脑。
    ============================================================ */
 
-import { api } from './api.js?v=1.4.2';
-import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.4.2';
-import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.4.2';
-import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.4.2';
+import { api } from './api.js?v=1.5.0';
+import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.5.0';
+import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.5.0';
+import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.5.0';
 
 export const BOT_NAME = '蚂小财';
 const HISTORY_KEY = 'dp_chat_v1';
@@ -26,7 +26,7 @@ const INDEX_MAP = [
 const PAGE_MAP = [
   ['总览', 'overview'], ['首页', 'overview'], ['情绪', 'emotion'], ['周期', 'emotion'],
   ['行情', 'market'], ['梯队', 'ladder'], ['涨停', 'ladder'],
-  ['自选', 'watch'], ['策略', 'strategy'], ['数据', 'datasrc'],
+  ['自选', 'watch'], ['策略', 'strategy'], ['墨水屏', 'epaper'], ['硬件', 'epaper'], ['数据', 'datasrc'],
   ['数据源', 'datasrc'], ['关于', 'about'],
 ];
 
@@ -519,7 +519,7 @@ export async function answer(text) {
       case 'nav': {
         const page = matchPage(text);
         if (page) {
-          const names = { overview: '总览', emotion: '情绪周期', market: '行情', ladder: '涨停梯队', watch: '自选', strategy: '策略', datasrc: '数据源', about: '关于我' };
+          const names = { overview: '总览', emotion: '情绪周期', market: '行情', ladder: '涨停梯队', watch: '自选', strategy: '策略', epaper: '墨水屏', datasrc: '数据源', about: '关于我' };
           return { html: `收到 🫡 已为你打开<b>${names[page]}</b>。`, actions: [{ type: 'nav', page }] };
         }
         return { html: HELP_HTML, actions: [] };
@@ -608,7 +608,7 @@ function botBubble(html, actions, safe, sourceQuestion) {
   const acts = (actions || []).map(a => {
     let label = '';
     if (a.type === 'nav') {
-      const names = { overview: '总览', emotion: '情绪周期', market: '行情', ladder: '涨停梯队', watch: '自选', strategy: '策略', datasrc: '数据源', about: '关于我' };
+      const names = { overview: '总览', emotion: '情绪周期', market: '行情', ladder: '涨停梯队', watch: '自选', strategy: '策略', epaper: '墨水屏', datasrc: '数据源', about: '关于我' };
       label = '打开' + (names[a.page] || a.page);
     } else if (a.type === 'quote') label = `看${a.name || a.code}K线`;
     else if (a.type === 'watch_add') label = '加自选';

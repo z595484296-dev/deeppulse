@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.4.2', capabilities: { tdx_read_only: true } },
+  data: { version: '1.5.0', capabilities: { tdx_read_only: true, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }

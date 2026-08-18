@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.4.2-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.5.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ---
 
@@ -25,12 +25,16 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 可选增强：安装并启动通达信 TQ-Local 后，在“数据源”页点击“检测并接入”。通达信不可用时
 深脉会自动回退，不影响独立运行；详细说明见 [`integrations/tdx-tq-local`](integrations/tdx-tq-local/README.md)。
 
+微雪墨水屏：工作台“墨水屏”页可在没有实物时预览真实 800 × 480 单色帧并演示提醒；收到
+7.5 英寸裸屏与 ESP32 Wi-Fi 驱动板后，按 [`hardware/README-zh.md`](hardware/README-zh.md)
+完成配网和真屏适配。局域网设备网关默认关闭，也不会暴露主应用 API。
+
 > 要求：Python 3.9+（运行时零第三方依赖）和现代浏览器。Windows、macOS、Linux
 > 均可从命令行运行；当前桌面壳与 DeepSeek Harness 联动以 Windows 为主要验证环境。
 
 ## 二、这是什么
 
-**深脉**是为「喜欢情绪周期分析的股票投资者」设计的一体化工作台，九大模块：
+**深脉**是为「喜欢情绪周期分析的股票投资者」设计的一体化工作台，十大模块：
 
 | 模块 | 能力 |
 |---|---|
@@ -41,6 +45,7 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 | 🪜 涨停梯队 | 游资视角战场地图：按连板高度分层、首板折叠、封板时间/封单/炸板次数/题材、真实交易日题材快照与梯队解读 |
 | ⭐ 自选 | 本机自选股雷达（5秒刷新）、情绪标签叠加、备注、导入导出，并通过统一档案在独立版/Harness间共享 |
 | 🧭 策略 | 引擎诊断、仓位矩阵、风险清单、打分贡献榜、权重草稿预览、复盘模板与情绪日记 |
+| 🖥 墨水屏 | 微雪 7.5 英寸 800×480 像素级模拟、关注 K 线、目标价提醒演示、ESP32 配对与只读局域网设备网关 |
 | 🗄 数据源 | 官方/本地终端/市场来源分级、通达信四步连接检测、真实请求观测状态、官方查验入口、手动记录情绪快照 |
 | 💗 关于我 | 产品的自述：我的身体构造与使用指南 |
 
@@ -127,11 +132,12 @@ deeppulse/
 ├─ README.md / 情绪周期方法论.md / PRODUCT_ROADMAP.md
 ├─ integrations/        # DeepSeek Harness 桥接协议和接入说明
 ├─ desktop/             # Windows 桌面 App 的可复现源代码
+├─ hardware/            # 微雪 7.5 英寸协议、ESP32 固件与到货联调说明
 ├─ scripts/sync-all.ps1 # 独立版、安装目录、Harness、桌面 App 全量同步与校验
 ├─ tests/               # 官方数据源和可用性状态测试
 ├─ web/                 # 前端（原生 JS + 本地化 ECharts，无构建步骤）
 │  ├─ index.html  css/app.css
-│  ├─ js/  (app / api / store / util / charts / chat / pages×8)
+│  ├─ js/  (app / api / store / util / charts / chat / pages×9)
 │  └─ assets/ (echarts.min.js 本地化、favicon、图标)
 └─ data/                # 运行时生成并被 Git 忽略：端口、日志、历史、配置
 ```
@@ -149,6 +155,9 @@ deeppulse/
 | `/api/emotion` | 情绪全景（池子+宽度+资金+引擎评分+历史）；`?record=1` 强制记录快照 |
 | `/api/emotion/record` | POST 手动记录快照 |
 | `/api/chat` | POST 蚂小财对话（可配置 DeepSeek 模型 + 市场上下文注入 + 动作解析） |
+| `/api/device/config` | 本机专用的墨水屏配置与设备网关状态；令牌不会由 LAN 主应用接口提供 |
+| `/api/device/preview.bmp` | 本机专用的 800×480 墨水屏预览；`?demo=alert` 演示提醒画面 |
+| `/api/device/frame.bin` | 本机专用的 48,000 字节 1bpp 帧；真机使用受令牌保护的 `/device/v1/frame.bin` |
 | `/api/ladder?type=ZT\|DT\|ZB` | 涨停/跌停/炸板池 |
 | `/api/quote?code=` | 个股实时行情（TQ-Local→东财→腾讯备援） |
 | `/api/kline?code=&klt=&fqt=&n=` | K线（TQ-Local→东财→腾讯；支持 BK0815 板块指数） |

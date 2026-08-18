@@ -1,6 +1,6 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.4.2';
+import { api } from './api.js?v=1.5.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -153,6 +153,7 @@ export function markTriggered(id) {
   const it = list.find(a => a.id === id);
   if (it && !it.triggered) {
     it.triggered = true;
+    it.triggered_at = Date.now();
     saveAlerts(list);
   }
 }

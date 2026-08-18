@@ -1,13 +1,14 @@
 {
   "name": "DeepPulse",
-  "version": "1.4.2",
-  "minimumDesktopVersion": "1.4.2",
+  "version": "1.5.0",
+  "minimumDesktopVersion": "1.5.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "dynamic-local-port",
     "tdx-local-read-only",
     "emotion-engine-v2",
     "confidence-gated-strategy",
-    "emotion-context-full-v1"
+    "emotion-context-full-v1",
+    "epaper-device-gateway-v1"
   ]
 }

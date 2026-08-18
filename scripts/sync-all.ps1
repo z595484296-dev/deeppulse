@@ -100,6 +100,8 @@ if (-not $VerifyOnly) {
     Copy-Tree (Join-Path $repoRoot 'web') $installedWebTarget
     Copy-Tree (Join-Path $repoRoot 'web') (Join-Path $portableRuntime 'web')
     Copy-Tree (Join-Path $repoRoot 'web') $harnessWebTarget
+    Copy-Tree (Join-Path $repoRoot 'hardware') (Join-Path $InstalledRoot 'hardware')
+    Copy-Tree (Join-Path $repoRoot 'hardware') (Join-Path $portableRuntime 'hardware')
     Copy-One $harnessOverlaySource $harnessOverlayTarget
     Copy-One $harnessTestSource $harnessTestTarget
 
@@ -150,6 +152,8 @@ foreach ($relative in $runtimeFiles) {
 Assert-Tree (Join-Path $repoRoot 'web') $installedWebTarget
 Assert-Tree (Join-Path $repoRoot 'web') (Join-Path $portableRuntime 'web')
 Assert-Tree (Join-Path $repoRoot 'web') $harnessWebTarget
+Assert-Tree (Join-Path $repoRoot 'hardware') (Join-Path $InstalledRoot 'hardware')
+Assert-Tree (Join-Path $repoRoot 'hardware') (Join-Path $portableRuntime 'hardware')
 Assert-Same $harnessOverlaySource $harnessOverlayTarget
 Assert-Same $harnessTestSource $harnessTestTarget
 

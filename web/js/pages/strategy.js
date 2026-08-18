@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.4.2';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.4.2';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.4.2';
+import { api } from '../api.js?v=1.5.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.5.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.5.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）

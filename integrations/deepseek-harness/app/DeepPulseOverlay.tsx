@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.4.2'
+const MIN_BACKEND_VERSION = '1.5.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -330,7 +330,7 @@ function deeppulseTargetOf(href: string): { url: string; hash: string } | undefi
 }
 
 /** 深链 hash → 工作台导航指令（免刷新导航） */
-const PAGE_KEYS = ['overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'datasrc', 'about'];
+const PAGE_KEYS = ['overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'epaper', 'datasrc', 'about'];
 
 function navOfHash(hash: string): { page?: string; code?: string } | undefined {
   const h = hash.replace(/^#\/?/, '').trim();

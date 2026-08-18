@@ -16,9 +16,13 @@
 """
 
 import json
+import hashlib
+import hmac
 import os
 import re
+import secrets
 import socket
+import struct
 import sys
 import threading
 import time
@@ -40,6 +44,7 @@ DATA = os.path.join(BASE, 'data')
 HISTORY_FILE = os.path.join(DATA, 'history.json')
 PROFILE_FILE = os.path.join(DATA, 'profile.json')
 SECTOR_HISTORY_FILE = os.path.join(DATA, 'sector_history.json')
+DEVICE_CONFIG_FILE = os.path.join(DATA, 'device_config.json')
 PORT_FILE = os.path.join(DATA, 'port.txt')
 LOG_FILE = os.path.join(DATA, 'server.log')
 os.makedirs(DATA, exist_ok=True)
@@ -56,7 +61,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.4.2'
+VERSION = '1.5.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1365,6 +1370,511 @@ def save_profile(patch):
         return current
 
 
+# ---------------------------------------------------------------- 墨水屏设备网关（ESP32 只读终端）
+
+EPAPER_WIDTH = 800
+EPAPER_HEIGHT = 480
+EPAPER_FRAME_BYTES = EPAPER_WIDTH * EPAPER_HEIGHT // 8
+DEVICE_DEFAULT_PORT = 8988
+DEVICE_ALERT_TTL_SECONDS = 15 * 60
+_device_config_lock = threading.Lock()
+_device_gateway_lock = threading.Lock()
+_device_gateway_server = None
+_device_gateway_thread = None
+_device_runtime = {
+    'running': False, 'started_at': None, 'last_seen': None, 'last_ip': None,
+    'last_user_agent': None, 'requests': 0, 'last_frame_sha256': None,
+    'last_error': None,
+}
+
+
+def _new_device_token():
+    return secrets.token_urlsafe(24)
+
+
+def _device_defaults():
+    return {
+        'schema': 1,
+        'enabled': False,
+        'port': DEVICE_DEFAULT_PORT,
+        'device_name': 'DeepPulse E-Paper',
+        'model': 'waveshare-7in5-v2',
+        'mode': 'focus',
+        'focus_code': '000001',
+        'focus_name': '平安银行',
+        'poll_seconds': 30,
+        'display_seconds': 180,
+        'partial_before_full': 6,
+        'token': _new_device_token(),
+        'revision': 0,
+        'updated_at': None,
+    }
+
+
+def normalize_device_config(value, current=None):
+    """Normalize the local-only device configuration and preserve its pairing token."""
+    base = dict(_device_defaults())
+    if isinstance(current, dict):
+        base.update(current)
+    if not isinstance(value, dict):
+        value = {}
+    clean = dict(base)
+    if 'enabled' in value:
+        clean['enabled'] = bool(value.get('enabled'))
+    clean['port'] = DEVICE_DEFAULT_PORT
+    if 'device_name' in value:
+        name = str(value.get('device_name') or '').strip()[:40]
+        clean['device_name'] = name or 'DeepPulse E-Paper'
+    if 'mode' in value:
+        mode = str(value.get('mode') or '').strip().lower()
+        clean['mode'] = mode if mode in ('overview', 'focus', 'alert') else 'focus'
+    if 'focus_code' in value:
+        code = normalize_code(str(value.get('focus_code') or ''))
+        if len(code) != 6:
+            raise ValueError('device focus_code must be a 6-digit security code')
+        clean['focus_code'] = code
+    if 'focus_name' in value:
+        clean['focus_name'] = str(value.get('focus_name') or '').strip()[:30]
+    for key, low, high in (
+            ('poll_seconds', 15, 300),
+            ('display_seconds', 60, 1800),
+            ('partial_before_full', 2, 20)):
+        if key in value:
+            try:
+                clean[key] = max(low, min(high, int(value.get(key))))
+            except Exception:
+                raise ValueError('device %s must be an integer' % key)
+    token = str(base.get('token') or '')
+    clean['token'] = token if len(token) >= 24 else _new_device_token()
+    clean['schema'] = 1
+    clean['revision'] = int(base.get('revision') or 0)
+    clean['updated_at'] = base.get('updated_at')
+    return clean
+
+
+def load_device_config(persist=False):
+    with _device_config_lock:
+        try:
+            with open(DEVICE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+        except Exception:
+            raw = {}
+        # The persisted file is trusted to supply the current pairing token;
+        # API patches never get that privilege and therefore cannot set it.
+        clean = normalize_device_config(raw, raw)
+        if persist and clean != raw:
+            temp_file = DEVICE_CONFIG_FILE + '.tmp'
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(clean, f, ensure_ascii=False, indent=1)
+            os.replace(temp_file, DEVICE_CONFIG_FILE)
+        return clean
+
+
+def save_device_config(patch, rotate_token=False):
+    if not isinstance(patch, dict):
+        raise ValueError('device config patch must be an object')
+    with _device_config_lock:
+        try:
+            with open(DEVICE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+                current = normalize_device_config(raw, raw)
+        except Exception:
+            current = _device_defaults()
+        clean = normalize_device_config(patch, current)
+        if rotate_token:
+            clean['token'] = _new_device_token()
+        clean['revision'] = int(current.get('revision') or 0) + 1
+        clean['updated_at'] = now_bj().isoformat(timespec='seconds')
+        temp_file = DEVICE_CONFIG_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(clean, f, ensure_ascii=False, indent=1)
+        os.replace(temp_file, DEVICE_CONFIG_FILE)
+    sync_device_gateway(clean)
+    return clean
+
+
+def _local_ipv4_addresses():
+    values = []
+    try:
+        for row in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = row[4][0]
+            if ip and not ip.startswith('127.') and ip not in values:
+                values.append(ip)
+    except Exception:
+        pass
+    return values
+
+
+def device_token_matches(candidate, config=None):
+    expected = str((config or load_device_config()).get('token') or '')
+    actual = str(candidate or '')
+    return bool(expected and actual and hmac.compare_digest(expected, actual))
+
+
+def device_gateway_status(config=None, include_token=True):
+    cfg = dict(config or load_device_config())
+    with _device_gateway_lock:
+        runtime = dict(_device_runtime)
+    result = {
+        'enabled': bool(cfg.get('enabled')),
+        'running': bool(runtime.get('running')),
+        'port': cfg.get('port'),
+        'addresses': _local_ipv4_addresses(),
+        'endpoint_path': '/device/v1/frame.bin',
+        'state_path': '/device/v1/state',
+        'last_seen': runtime.get('last_seen'),
+        'last_ip': runtime.get('last_ip'),
+        'last_user_agent': runtime.get('last_user_agent'),
+        'requests': runtime.get('requests') or 0,
+        'last_frame_sha256': runtime.get('last_frame_sha256'),
+        'last_error': runtime.get('last_error'),
+    }
+    if include_token:
+        result['token'] = cfg.get('token')
+    return result
+
+
+def _market_session_label(now=None):
+    current = now or now_bj()
+    hm = current.hour * 100 + current.minute
+    if current.weekday() >= 5:
+        return 'CLOSED'
+    if 930 <= hm <= 1130 or 1300 <= hm <= 1500:
+        return 'OPEN'
+    if 1130 < hm < 1300:
+        return 'BREAK'
+    if hm < 930:
+        return 'PRE'
+    return 'CLOSED'
+
+
+def build_device_state(config=None, demo=''):
+    """Build a compact, read-only hardware snapshot from DeepPulse's normalized data."""
+    cfg = dict(config or load_device_config())
+    code = cfg.get('focus_code') or '000001'
+    name = cfg.get('focus_name') or code
+    try:
+        emotion = assemble_emotion()
+    except Exception as exc:
+        emotion = {'date': None, 'engine': {'degraded': True, 'flags': [], 'missing': [str(exc)[:80]]}}
+    engine = emotion.get('engine') or {}
+    try:
+        indices = cached('indices', 5, em_indices_any)
+    except Exception:
+        indices = []
+    try:
+        quote = cached('quote_' + code, 4, lambda: quote_with_fallback(code))
+        name = quote.get('name') or name
+    except Exception:
+        quote = {'code': code, 'name': name, 'price': None, 'pct': None}
+    try:
+        kline = cached('device_kline_' + code, 60,
+                       lambda: kline_with_fallback(code, 101, 1, 80))
+    except Exception:
+        kline = {'rows': []}
+    profile = load_profile().get('data') or {}
+    now_ms = int(time.time() * 1000)
+    triggered = [row for row in (profile.get('alerts') or [])
+                 if row.get('triggered') and row.get('triggered_at')
+                 and 0 <= now_ms - int(row.get('triggered_at') or 0)
+                 <= DEVICE_ALERT_TTL_SECONDS * 1000]
+    triggered.sort(key=lambda row: row.get('triggered_at') or row.get('ts') or 0, reverse=True)
+    alert = triggered[0] if triggered else None
+    if demo == 'alert':
+        alert = {
+            'demo': True, 'code': code, 'name': name,
+            'dir': 'up', 'price': quote.get('price') or 12.80,
+            'triggered_at': int(time.time() * 1000),
+        }
+    flags = [str(row.get('text') or '') for row in (engine.get('flags') or []) if row.get('text')]
+    tdx = emotion.get('tdx_local') or {}
+    state = {
+        'schema': 1,
+        'generated_at': now_bj().isoformat(timespec='seconds'),
+        'sequence': int(time.time()),
+        'market_session': _market_session_label(),
+        'data_date': emotion.get('date'),
+        'device': {
+            'name': cfg.get('device_name'), 'model': cfg.get('model'),
+            'width': EPAPER_WIDTH, 'height': EPAPER_HEIGHT, 'bpp': 1,
+            'mode': 'alert' if demo == 'alert' or (
+                alert and cfg.get('mode') == 'alert') else cfg.get('mode'),
+            'poll_seconds': cfg.get('poll_seconds'),
+            'display_seconds': cfg.get('display_seconds'),
+            'partial_before_full': cfg.get('partial_before_full'),
+        },
+        'emotion': {
+            'temperature': engine.get('temp'), 'phase': engine.get('phase'),
+            'coverage': engine.get('coverage'), 'confidence': engine.get('confidence'),
+            'degraded': bool(engine.get('degraded')), 'risk': flags[0] if flags else '',
+        },
+        'focus': {
+            'code': code, 'name': name, 'price': quote.get('price'), 'pct': quote.get('pct'),
+            'open': quote.get('open'), 'high': quote.get('high'), 'low': quote.get('low'),
+            'kline': (kline.get('rows') or [])[-60:],
+        },
+        'indices': [
+            {'code': row.get('code'), 'name': row.get('name'),
+             'price': row.get('price'), 'pct': row.get('pct')}
+            for row in indices[:5] if row.get('code')
+        ],
+        'alert': alert,
+        'quality': {
+            'tdx_status': tdx.get('status') or 'unavailable',
+            'tdx_read_only': True,
+            'missing': (engine.get('missing') or [])[:8],
+            'stale': not bool(emotion.get('date')),
+        },
+        'disclaimer': 'RESEARCH ONLY',
+    }
+    return state
+
+
+_FONT_5X7 = {
+    ' ': (0, 0, 0, 0, 0, 0, 0), '!': (4, 4, 4, 4, 4, 0, 4),
+    '-': (0, 0, 0, 31, 0, 0, 0), '.': (0, 0, 0, 0, 0, 6, 6),
+    ':': (0, 6, 6, 0, 6, 6, 0), '/': (1, 2, 4, 8, 16, 0, 0),
+    '+': (0, 4, 4, 31, 4, 4, 0), '%': (17, 2, 4, 8, 17, 0, 0),
+    '0': (14, 17, 19, 21, 25, 17, 14), '1': (4, 12, 4, 4, 4, 4, 14),
+    '2': (14, 17, 1, 2, 4, 8, 31), '3': (30, 1, 1, 14, 1, 1, 30),
+    '4': (2, 6, 10, 18, 31, 2, 2), '5': (31, 16, 16, 30, 1, 1, 30),
+    '6': (14, 16, 16, 30, 17, 17, 14), '7': (31, 1, 2, 4, 8, 8, 8),
+    '8': (14, 17, 17, 14, 17, 17, 14), '9': (14, 17, 17, 15, 1, 1, 14),
+    'A': (14, 17, 17, 31, 17, 17, 17), 'B': (30, 17, 17, 30, 17, 17, 30),
+    'C': (14, 17, 16, 16, 16, 17, 14), 'D': (30, 17, 17, 17, 17, 17, 30),
+    'E': (31, 16, 16, 30, 16, 16, 31), 'F': (31, 16, 16, 30, 16, 16, 16),
+    'G': (14, 17, 16, 23, 17, 17, 15), 'H': (17, 17, 17, 31, 17, 17, 17),
+    'I': (14, 4, 4, 4, 4, 4, 14), 'J': (7, 2, 2, 2, 2, 18, 12),
+    'K': (17, 18, 20, 24, 20, 18, 17), 'L': (16, 16, 16, 16, 16, 16, 31),
+    'M': (17, 27, 21, 21, 17, 17, 17), 'N': (17, 25, 21, 19, 17, 17, 17),
+    'O': (14, 17, 17, 17, 17, 17, 14), 'P': (30, 17, 17, 30, 16, 16, 16),
+    'Q': (14, 17, 17, 17, 21, 18, 13), 'R': (30, 17, 17, 30, 20, 18, 17),
+    'S': (15, 16, 16, 14, 1, 1, 30), 'T': (31, 4, 4, 4, 4, 4, 4),
+    'U': (17, 17, 17, 17, 17, 17, 14), 'V': (17, 17, 17, 17, 17, 10, 4),
+    'W': (17, 17, 17, 21, 21, 21, 10), 'X': (17, 17, 10, 4, 10, 17, 17),
+    'Y': (17, 17, 10, 4, 4, 4, 4), 'Z': (31, 1, 2, 4, 8, 16, 31),
+}
+
+
+def _epd_pixel(frame, x, y, black=True):
+    x, y = int(x), int(y)
+    if x < 0 or y < 0 or x >= EPAPER_WIDTH or y >= EPAPER_HEIGHT:
+        return
+    index = y * (EPAPER_WIDTH // 8) + x // 8
+    mask = 0x80 >> (x % 8)
+    if black:
+        frame[index] &= ~mask
+    else:
+        frame[index] |= mask
+
+
+def _epd_line(frame, x0, y0, x1, y1, black=True):
+    x0, y0, x1, y1 = map(int, (x0, y0, x1, y1))
+    dx, sx = abs(x1 - x0), 1 if x0 < x1 else -1
+    dy, sy = -abs(y1 - y0), 1 if y0 < y1 else -1
+    err = dx + dy
+    while True:
+        _epd_pixel(frame, x0, y0, black)
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x0 += sx
+        if e2 <= dx:
+            err += dx
+            y0 += sy
+
+
+def _epd_rect(frame, x, y, w, h, fill=False, black=True):
+    if fill:
+        for yy in range(int(y), int(y + h)):
+            _epd_line(frame, x, yy, x + w - 1, yy, black)
+        return
+    _epd_line(frame, x, y, x + w - 1, y, black)
+    _epd_line(frame, x, y + h - 1, x + w - 1, y + h - 1, black)
+    _epd_line(frame, x, y, x, y + h - 1, black)
+    _epd_line(frame, x + w - 1, y, x + w - 1, y + h - 1, black)
+
+
+def _epd_text(frame, x, y, text, scale=2, invert=False):
+    cursor = int(x)
+    for char in str(text or '').upper():
+        rows = _FONT_5X7.get(char, _FONT_5X7[' '])
+        for yy, bits in enumerate(rows):
+            for xx in range(5):
+                on = bool(bits & (1 << (4 - xx)))
+                if on:
+                    _epd_rect(frame, cursor + xx * scale, y + yy * scale,
+                              scale, scale, fill=True, black=not invert)
+        cursor += 6 * scale
+    return cursor
+
+
+def _epd_float(value, digits=2, signed=False):
+    try:
+        number = float(value)
+    except Exception:
+        return '--'
+    prefix = '+' if signed and number > 0 else ''
+    return prefix + ('%%.%df' % digits) % number
+
+
+def _phase_ascii(value):
+    text = str(value or '')
+    for key, label in (
+            ('冰', 'ICE'), ('修复', 'RECOVER'), ('发酵', 'BREW'),
+            ('高潮', 'HIGH'), ('亢奋', 'CLIMAX')):
+        if key in text:
+            return label
+    return re.sub(r'[^A-Za-z0-9-]', '', text).upper()[:10] or '--'
+
+
+def render_epaper_frame(state):
+    """Render the exact 800x480 1-bit frame consumed by the ESP32 firmware."""
+    frame = bytearray([0xFF]) * EPAPER_FRAME_BYTES
+    focus = state.get('focus') or {}
+    emotion = state.get('emotion') or {}
+    alert = state.get('alert')
+    mode = (state.get('device') or {}).get('mode') or 'focus'
+    generated = str(state.get('generated_at') or '')
+
+    _epd_rect(frame, 0, 0, EPAPER_WIDTH, 48, fill=True, black=True)
+    _epd_text(frame, 16, 11, 'DEEPPULSE', 3, invert=True)
+    _epd_text(frame, 592, 14, generated[11:16] or '--:--', 2, invert=True)
+    _epd_text(frame, 680, 14, state.get('market_session') or '--', 2, invert=True)
+
+    if mode == 'alert' and alert:
+        _epd_rect(frame, 18, 70, 764, 380, fill=False)
+        _epd_text(frame, 48, 92, 'ALERT' + (' DEMO' if alert.get('demo') else ''), 6)
+        _epd_text(frame, 50, 180, alert.get('code') or focus.get('code') or '--', 5)
+        direction = 'UP >=' if alert.get('dir') == 'up' else 'DOWN <='
+        _epd_text(frame, 50, 250, direction, 4)
+        _epd_text(frame, 390, 242, _epd_float(alert.get('price'), 2), 6)
+        _epd_text(frame, 50, 340, 'RULE TRIGGERED - VERIFY DATA', 3)
+        _epd_text(frame, 50, 400, 'RESEARCH ONLY', 2)
+        return bytes(frame)
+
+    if mode == 'overview':
+        quality = state.get('quality') or {}
+        _epd_rect(frame, 18, 70, 292, 306, fill=False)
+        _epd_text(frame, 42, 92, 'MARKET TEMP', 3)
+        _epd_text(frame, 62, 145,
+                  str(emotion.get('temperature')
+                      if emotion.get('temperature') is not None else '--'), 10)
+        _epd_text(frame, 42, 250, 'PHASE ' + _phase_ascii(emotion.get('phase')), 2)
+        _epd_text(frame, 42, 288,
+                  'CONF ' + _epd_float(emotion.get('confidence'), 0) + '%', 2)
+        _epd_text(frame, 42, 326,
+                  'DATA ' + ('STALE' if quality.get('stale') else 'OK'), 2)
+
+        _epd_rect(frame, 330, 70, 452, 306, fill=False)
+        _epd_text(frame, 350, 90, 'INDEX PULSE', 3)
+        names = ('SH', 'SZ', 'CY', 'STAR', 'BJ')
+        for index, row in enumerate((state.get('indices') or [])[:5]):
+            y = 135 + index * 43
+            _epd_text(frame, 352, y, names[index], 2)
+            _epd_text(frame, 445, y, _epd_float(row.get('price'), 2), 2)
+            _epd_text(frame, 635, y, _epd_float(row.get('pct'), 2, True) + '%', 2)
+
+        _epd_rect(frame, 18, 394, 764, 66, fill=False)
+        _epd_text(frame, 34, 408,
+                  'FOCUS ' + (focus.get('code') or '------') + ' ' +
+                  _epd_float(focus.get('price'), 2), 2)
+        _epd_text(frame, 452, 408,
+                  'CHG ' + _epd_float(focus.get('pct'), 2, True) + '%', 2)
+        _epd_text(frame, 34, 435, 'RESEARCH ONLY - VERIFY DATA', 2)
+        return bytes(frame)
+
+    _epd_text(frame, 18, 64, (focus.get('code') or '------') + ' KLINE', 3)
+    _epd_text(frame, 18, 93, 'PRICE ' + _epd_float(focus.get('price'), 2), 2)
+    _epd_text(frame, 245, 93, 'CHG ' + _epd_float(focus.get('pct'), 2, True) + '%', 2)
+
+    chart_x, chart_y, chart_w, chart_h = 20, 126, 515, 250
+    _epd_rect(frame, chart_x, chart_y, chart_w, chart_h, fill=False)
+    for ratio in (0.25, 0.5, 0.75):
+        yy = chart_y + int(chart_h * ratio)
+        for xx in range(chart_x + 1, chart_x + chart_w - 1, 6):
+            _epd_pixel(frame, xx, yy)
+    rows = focus.get('kline') or []
+    valid = [row for row in rows if isinstance(row, dict) and all(
+        row.get(key) is not None for key in ('open', 'close', 'high', 'low'))]
+    if valid:
+        lows = [float(row['low']) for row in valid]
+        highs = [float(row['high']) for row in valid]
+        if lows and highs:
+            lo, hi = min(lows), max(highs)
+            span = max(hi - lo, 0.01)
+            step = max(3, (chart_w - 12) // max(1, len(valid)))
+            candle_w = max(1, min(5, step - 1))
+            for index, row in enumerate(valid[-60:]):
+                try:
+                    open_v = float(row['open'])
+                    close_v = float(row['close'])
+                    high_v = float(row['high'])
+                    low_v = float(row['low'])
+                except Exception:
+                    continue
+                xx = chart_x + 7 + index * step
+                to_y = lambda value: chart_y + chart_h - 6 - int((value - lo) / span * (chart_h - 12))
+                y_high, y_low = to_y(high_v), to_y(low_v)
+                y_open, y_close = to_y(open_v), to_y(close_v)
+                _epd_line(frame, xx, y_high, xx, y_low)
+                top, bottom = min(y_open, y_close), max(y_open, y_close)
+                height = max(2, bottom - top + 1)
+                _epd_rect(frame, xx - candle_w // 2, top, candle_w, height,
+                          fill=close_v < open_v)
+    else:
+        _epd_text(frame, 145, 230, 'WAITING FOR KLINE', 3)
+
+    panel_x = 558
+    _epd_rect(frame, panel_x, 64, 224, 312, fill=False)
+    _epd_text(frame, panel_x + 18, 82, 'TEMP', 3)
+    _epd_text(frame, panel_x + 18, 122,
+              str(emotion.get('temperature') if emotion.get('temperature') is not None else '--'), 7)
+    _epd_text(frame, panel_x + 18, 190, 'PHASE ' + _phase_ascii(emotion.get('phase')), 2)
+    _epd_text(frame, panel_x + 18, 225,
+              'CONF ' + _epd_float(emotion.get('confidence'), 0) + '%', 2)
+    quality = state.get('quality') or {}
+    _epd_text(frame, panel_x + 18, 260, 'TDX ' + str(quality.get('tdx_status') or '--')[:9], 2)
+    _epd_text(frame, panel_x + 18, 295,
+              'DATA ' + ('STALE' if quality.get('stale') else 'OK'), 2)
+    _epd_text(frame, panel_x + 18, 330, 'RESEARCH ONLY', 2)
+
+    _epd_rect(frame, 20, 394, 762, 66, fill=False)
+    indices = state.get('indices') or []
+    names = ('SH', 'SZ', 'CY', 'STAR', 'BJ')
+    for index, row in enumerate(indices[:5]):
+        x = 32 + index * 148
+        _epd_text(frame, x, 408, names[index], 2)
+        _epd_text(frame, x, 434, _epd_float(row.get('pct'), 2, True) + '%', 2)
+    return bytes(frame)
+
+
+def epaper_frame_to_bmp(frame):
+    if len(frame) != EPAPER_FRAME_BYTES:
+        raise ValueError('invalid e-paper frame length')
+    pixel_offset = 14 + 40 + 8
+    file_size = pixel_offset + len(frame)
+    file_header = struct.pack('<2sIHHI', b'BM', file_size, 0, 0, pixel_offset)
+    info_header = struct.pack('<IiiHHIIIIII', 40, EPAPER_WIDTH, -EPAPER_HEIGHT,
+                              1, 1, 0, len(frame), 2835, 2835, 2, 0)
+    palette = b'\x00\x00\x00\x00\xff\xff\xff\x00'
+    return file_header + info_header + palette + frame
+
+
+def device_frame_payload(config=None, demo=''):
+    state = build_device_state(config, demo)
+    frame = render_epaper_frame(state)
+    digest = hashlib.sha256(frame).hexdigest()
+    state['frame'] = {
+        'bytes': len(frame), 'sha256': digest,
+        'content_type': 'application/vnd.deeppulse.epaper-1bpp',
+        'white_bit': 1, 'bit_order': 'msb-first',
+    }
+    return state, frame, digest
+
+
 # ---------------------------------------------------------------- 情绪历史记忆
 
 _history_lock = threading.Lock()
@@ -1525,7 +2035,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.4.2'
+    server_version = 'DeepPulse/1.5.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -1562,6 +2072,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         # 只允许本机 Harness 与深脉端口跨源访问，避免任意网页读取本机用户档案。
+        self.add_cors_headers()
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
+    def send_bytes(self, body, content_type, code=200, headers=None):
+        self.send_response(code)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        for key, value in (headers or {}).items():
+            self.send_header(str(key), str(value))
         self.add_cors_headers()
         self.end_headers()
         try:
@@ -1626,6 +2150,8 @@ class Handler(BaseHTTPRequestHandler):
                           'tdx_read_only': True,
                           'bridge_protocol': 2,
                           'emotion_context_full': True,
+                          'epaper_gateway': 1,
+                          'epaper_frame': '800x480-1bpp',
                       }}
             # 顶层字段兼容桌面宿主，data 字段供统一 Web API 客户端使用。
             self.send_json(dict({'ok': True, 'data': health}, **health))
@@ -1663,6 +2189,35 @@ class Handler(BaseHTTPRequestHandler):
                 'model': cfg.get('deepseek_model') or 'deepseek-chat'}})
         elif path == '/api/profile':
             self.send_json({'ok': True, 'data': load_profile()})
+        elif path == '/api/device/config':
+            cfg = load_device_config(persist=True)
+            self.send_json({'ok': True, 'data': {
+                'config': cfg,
+                'gateway': device_gateway_status(cfg, include_token=True),
+            }})
+        elif path == '/api/device/state':
+            demo = qs.get('demo', '')
+            self.send_json({'ok': True, 'data': build_device_state(
+                load_device_config(), demo if demo == 'alert' else '')})
+        elif path == '/api/device/preview.bmp':
+            demo = qs.get('demo', '')
+            state, frame, digest = device_frame_payload(
+                load_device_config(), demo if demo == 'alert' else '')
+            self.send_bytes(epaper_frame_to_bmp(frame), 'image/bmp', headers={
+                'X-DeepPulse-Frame-SHA256': digest,
+                'X-DeepPulse-Sequence': state.get('sequence'),
+            })
+        elif path == '/api/device/frame.bin':
+            demo = qs.get('demo', '')
+            state, frame, digest = device_frame_payload(
+                load_device_config(), demo if demo == 'alert' else '')
+            self.send_bytes(frame, 'application/vnd.deeppulse.epaper-1bpp', headers={
+                'X-DeepPulse-Width': EPAPER_WIDTH,
+                'X-DeepPulse-Height': EPAPER_HEIGHT,
+                'X-DeepPulse-Bpp': '1',
+                'X-DeepPulse-Frame-SHA256': digest,
+                'X-DeepPulse-Sequence': state.get('sequence'),
+            })
         elif path == '/api/indices':
             self.send_json({'ok': True, 'data': cached('indices', 5, em_indices_any)})
         elif path == '/api/emotion':
@@ -1781,10 +2336,168 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 saved = save_profile(body.get('data') or {})
                 self.send_json({'ok': True, 'data': saved})
+            elif u.path == '/api/device/config':
+                body = self.read_json_body()
+                saved = save_device_config(body.get('config') or {})
+                self.send_json({'ok': True, 'data': {
+                    'config': saved,
+                    'gateway': device_gateway_status(saved, include_token=True),
+                }})
+            elif u.path == '/api/device/token/rotate':
+                saved = save_device_config({}, rotate_token=True)
+                self.send_json({'ok': True, 'data': {
+                    'config': saved,
+                    'gateway': device_gateway_status(saved, include_token=True),
+                }})
             else:
                 self.send_json({'ok': False, 'error': 'unknown api'}, 404)
         except Exception as e:
             self.send_json({'ok': False, 'error': str(e)}, 502)
+
+
+# ---------------------------------------------------------------- 独立局域网设备服务（不暴露主应用 API）
+
+class DeviceHTTPServer(DeepPulseHTTPServer):
+    daemon_threads = True
+
+
+class DeviceHandler(BaseHTTPRequestHandler):
+    server_version = 'DeepPulse-Device/1.0'
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def send_json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
+    def _token(self):
+        token = self.headers.get('X-DeepPulse-Device-Token', '')
+        auth = self.headers.get('Authorization', '')
+        if not token and auth.lower().startswith('bearer '):
+            token = auth[7:].strip()
+        return token
+
+    def _record(self, sha256=None):
+        with _device_gateway_lock:
+            _device_runtime['last_seen'] = now_bj().isoformat(timespec='seconds')
+            _device_runtime['last_ip'] = self.client_address[0] if self.client_address else None
+            _device_runtime['last_user_agent'] = str(self.headers.get('User-Agent') or '')[:120]
+            _device_runtime['requests'] = int(_device_runtime.get('requests') or 0) + 1
+            _device_runtime['last_error'] = None
+            if sha256:
+                _device_runtime['last_frame_sha256'] = sha256
+
+    def do_GET(self):
+        cfg = load_device_config()
+        if not cfg.get('enabled'):
+            self.send_json({'ok': False, 'error': 'device gateway disabled'}, 503)
+            return
+        if not device_token_matches(self._token(), cfg):
+            self.send_json({'ok': False, 'error': 'invalid device token'}, 401)
+            return
+        u = urllib.parse.urlparse(self.path)
+        qs = dict(urllib.parse.parse_qsl(u.query))
+        demo = 'alert' if qs.get('demo') == 'alert' else ''
+        try:
+            if u.path == '/device/v1/health':
+                self._record()
+                self.send_json({'ok': True, 'data': {
+                    'service': 'DeepPulse E-Paper Gateway', 'version': VERSION,
+                    'time': now_bj().isoformat(timespec='seconds'),
+                    'model': cfg.get('model'), 'width': EPAPER_WIDTH,
+                    'height': EPAPER_HEIGHT, 'bpp': 1,
+                }})
+            elif u.path == '/device/v1/state':
+                state = build_device_state(cfg, demo)
+                self._record()
+                self.send_json({'ok': True, 'data': state})
+            elif u.path == '/device/v1/frame.bin':
+                state, frame, digest = device_frame_payload(cfg, demo)
+                self._record(digest)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.deeppulse.epaper-1bpp')
+                self.send_header('Content-Length', str(len(frame)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('Connection', 'close')
+                self.send_header('X-DeepPulse-Width', EPAPER_WIDTH)
+                self.send_header('X-DeepPulse-Height', EPAPER_HEIGHT)
+                self.send_header('X-DeepPulse-Bpp', '1')
+                self.send_header('X-DeepPulse-Frame-SHA256', digest)
+                self.send_header('X-DeepPulse-Sequence', state.get('sequence'))
+                device = state.get('device') or {}
+                self.send_header('X-DeepPulse-Mode', device.get('mode') or 'focus')
+                self.send_header('X-DeepPulse-Poll-Seconds', device.get('poll_seconds') or 30)
+                self.send_header('X-DeepPulse-Display-Seconds', device.get('display_seconds') or 180)
+                self.send_header('X-DeepPulse-Partial-Before-Full',
+                                 device.get('partial_before_full') or 6)
+                self.end_headers()
+                self.wfile.write(frame)
+            else:
+                self.send_json({'ok': False, 'error': 'unknown device endpoint'}, 404)
+        except Exception as exc:
+            with _device_gateway_lock:
+                _device_runtime['last_error'] = str(exc)[:200]
+            self.send_json({'ok': False, 'error': str(exc)}, 502)
+
+
+def stop_device_gateway():
+    global _device_gateway_server, _device_gateway_thread
+    with _device_gateway_lock:
+        server = _device_gateway_server
+        _device_gateway_server = None
+        _device_gateway_thread = None
+        _device_runtime['running'] = False
+    if server:
+        try:
+            server.shutdown()
+            server.server_close()
+        except Exception:
+            pass
+
+
+def sync_device_gateway(config=None):
+    """Start or stop the restricted LAN listener according to local configuration."""
+    global _device_gateway_server, _device_gateway_thread
+    cfg = dict(config or load_device_config())
+    enabled = bool(cfg.get('enabled'))
+    port = int(cfg.get('port') or DEVICE_DEFAULT_PORT)
+    with _device_gateway_lock:
+        current = _device_gateway_server
+        current_port = current.server_address[1] if current else None
+    if current and (not enabled or current_port != port):
+        stop_device_gateway()
+        current = None
+    if not enabled or current:
+        return device_gateway_status(cfg, include_token=False)
+    try:
+        server = DeviceHTTPServer(('0.0.0.0', port), DeviceHandler)
+        thread = threading.Thread(target=server.serve_forever,
+                                  name='deeppulse-epaper-gateway', daemon=True)
+        with _device_gateway_lock:
+            _device_gateway_server = server
+            _device_gateway_thread = thread
+            _device_runtime['running'] = True
+            _device_runtime['started_at'] = now_bj().isoformat(timespec='seconds')
+            _device_runtime['last_error'] = None
+        thread.start()
+        log('e-paper device gateway start on 0.0.0.0:%d' % port)
+    except Exception as exc:
+        with _device_gateway_lock:
+            _device_runtime['running'] = False
+            _device_runtime['last_error'] = str(exc)[:200]
+        log('e-paper device gateway fail: %s' % exc)
+    return device_gateway_status(cfg, include_token=False)
 
 
 # ---------------------------------------------------------------- 入口
@@ -1792,6 +2505,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     os.makedirs(DATA, exist_ok=True)
     ensure_config()
+    device_config = load_device_config(persist=True)
     port = 8971
     for p in range(8971, 8981):
         if port_is_listening('127.0.0.1', p):
@@ -1814,6 +2528,7 @@ def main():
         pass
     log('=== DeepPulse server start on 127.0.0.1:%d ===' % port)
     print('深脉 DeepPulse 已启动: http://127.0.0.1:%d  (Ctrl+C 退出)' % port)
+    sync_device_gateway(device_config)
 
     # 预热线程：启动 2s 后后台装配一次情绪全景，让首个页面请求命中热缓存
     def warmup():
@@ -1831,6 +2546,8 @@ def main():
     except KeyboardInterrupt:
         log('server stopped')
         print('\n已退出。')
+    finally:
+        stop_device_gateway()
 
 
 if __name__ == '__main__':

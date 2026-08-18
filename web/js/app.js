@@ -1,20 +1,21 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.4.2';
-import { state, marketState, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.4.2';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.4.2';
+import { api } from './api.js?v=1.5.0';
+import { state, marketState, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.5.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.5.0';
 
-import * as pageOverview from './pages/overview.js?v=1.4.2';
-import * as pageEmotion from './pages/emotion.js?v=1.4.2';
-import * as pageMarket from './pages/market.js?v=1.4.2';
-import * as pageLadder from './pages/ladder.js?v=1.4.2';
-import * as pageWatch from './pages/watch.js?v=1.4.2';
-import * as pageStrategy from './pages/strategy.js?v=1.4.2';
-import * as pageDatasrc from './pages/datasrc.js?v=1.4.2';
-import * as pageAbout from './pages/about.js?v=1.4.2';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.4.2';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.4.2';
-import { initOnboarding } from './onboarding.js?v=1.4.2';
+import * as pageOverview from './pages/overview.js?v=1.5.0';
+import * as pageEmotion from './pages/emotion.js?v=1.5.0';
+import * as pageMarket from './pages/market.js?v=1.5.0';
+import * as pageLadder from './pages/ladder.js?v=1.5.0';
+import * as pageWatch from './pages/watch.js?v=1.5.0';
+import * as pageStrategy from './pages/strategy.js?v=1.5.0';
+import * as pageEpaper from './pages/epaper.js?v=1.5.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.5.0';
+import * as pageAbout from './pages/about.js?v=1.5.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.5.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.5.0';
+import { initOnboarding } from './onboarding.js?v=1.5.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -23,6 +24,7 @@ const PAGES = {
   ladder: { title: '涨停梯队', mod: pageLadder, freq: 'ladder' },
   watch: { title: '自选', mod: pageWatch, freq: 'none' },
   strategy: { title: '策略', mod: pageStrategy, freq: 'emotion' },
+  epaper: { title: '墨水屏', mod: pageEpaper, freq: 'manual' },
   datasrc: { title: '数据源', mod: pageDatasrc, freq: 'manual' },
   about: { title: '关于我', mod: pageAbout, freq: 'none' },
 };
@@ -507,8 +509,8 @@ async function boot() {
   document.body.appendChild(banner);
 
   // ---- 快捷键体系 + 帮助面板 ----
-  const PAGE_KEYS = ['overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'datasrc', 'about'];
-  const PAGE_NAMES = { overview: '总览', emotion: '情绪周期', market: '行情', ladder: '涨停梯队', watch: '自选', strategy: '策略', datasrc: '数据源', about: '关于我' };
+  const PAGE_KEYS = ['overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'epaper', 'datasrc', 'about'];
+  const PAGE_NAMES = { overview: '总览', emotion: '情绪周期', market: '行情', ladder: '涨停梯队', watch: '自选', strategy: '策略', epaper: '墨水屏', datasrc: '数据源', about: '关于我' };
   const helpEl = document.createElement('div');
   helpEl.id = 'help-overlay';
   helpEl.innerHTML = `
@@ -540,7 +542,7 @@ async function boot() {
       if (inp) { goto('market'); setTimeout(() => inp.focus(), 80); }
       return;
     }
-    if (e.key >= '1' && e.key <= '8' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (e.key >= '1' && e.key <= '9' && !e.ctrlKey && !e.altKey && !e.metaKey) {
       goto(PAGE_KEYS[Number(e.key) - 1]);
     }
   });

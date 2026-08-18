@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.4.2';
+const MIN_VERSION = '1.5.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -56,7 +56,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.4.2+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.5.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -105,6 +105,12 @@ async function post(path, payload, timeoutMs = 20000) {
   return body.data;
 }
 
+async function requestBlob(path, timeoutMs = 60000) {
+  const response = await fetchLocal(path, {}, timeoutMs);
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  return response.blob();
+}
+
 export const api = {
   health: () => request('/api/health'),
   sources: () => request('/api/sources'),
@@ -113,6 +119,12 @@ export const api = {
   brain: () => request('/api/brain'),
   profile: () => request('/api/profile', 5000),
   saveProfile: (data) => post('/api/profile', { data }, 5000),
+  deviceConfig: () => request('/api/device/config', 10000),
+  saveDeviceConfig: (config) => post('/api/device/config', { config }, 15000),
+  rotateDeviceToken: () => post('/api/device/token/rotate', undefined, 15000),
+  deviceState: (demo = '') => request('/api/device/state' + (demo ? `?demo=${encodeURIComponent(demo)}` : ''), 60000),
+  devicePreview: (demo = '') => requestBlob('/api/device/preview.bmp' + (demo ? `?demo=${encodeURIComponent(demo)}` : ''), 60000),
+  deviceFrame: (demo = '') => requestBlob('/api/device/frame.bin' + (demo ? `?demo=${encodeURIComponent(demo)}` : ''), 60000),
   indices: () => request('/api/indices'),
   emotion: (record) => request('/api/emotion' + (record ? '?record=1' : ''), 60000),
   recordSnapshot: () => post('/api/emotion/record'),
