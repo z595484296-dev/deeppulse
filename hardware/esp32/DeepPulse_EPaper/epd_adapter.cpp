@@ -8,22 +8,27 @@
 #endif
 
 #if DEEPPULSE_WAVESHARE_7IN5_V2
-#include <epd7in5_V2.h>
-static Epd epd;
+#include <DEV_Config.h>
+#include <EPD.h>
+
+static bool panelAwake = false;
 #endif
 
 static const size_t FRAME_BYTES = 800UL * 480UL / 8UL;
 
 bool deepPulseEpdBegin() {
 #if DEEPPULSE_WAVESHARE_7IN5_V2
-  return epd.Init() == 0;
+  // The ESP32 driver-board library owns the fixed GPIO mapping and bit-banged
+  // SPI setup. Panel power-up is deferred until an authenticated frame has
+  // passed the length and SHA-256 checks.
+  return DEV_Module_Init() == 0;
 #else
   Serial.println("EPD adapter: dry-run (physical panel disabled)");
   return true;
 #endif
 }
 
-DeepPulseRefreshKind deepPulseEpdDisplay(const uint8_t *frame, size_t length,
+DeepPulseRefreshKind deepPulseEpdDisplay(uint8_t *frame, size_t length,
                                          bool requestPartial) {
   if (frame == nullptr || length != FRAME_BYTES) {
     return DEEPPULSE_REFRESH_FAILED;
@@ -31,12 +36,14 @@ DeepPulseRefreshKind deepPulseEpdDisplay(const uint8_t *frame, size_t length,
 #if DEEPPULSE_WAVESHARE_7IN5_V2
   // Re-initialize after sleep. Full refresh is intentionally enforced until the
   // exact panel generation and LUT have been validated on the physical unit.
-  if (epd.Init() != 0) {
+  if (EPD_7IN5_V2_Init() != 0) {
     return DEEPPULSE_REFRESH_FAILED;
   }
+  panelAwake = true;
   (void)requestPartial;
-  epd.DisplayFrame(frame);
-  epd.Sleep();
+  EPD_7IN5_V2_Display(frame);
+  EPD_7IN5_V2_Sleep();
+  panelAwake = false;
   return DEEPPULSE_REFRESH_FULL;
 #else
   (void)requestPartial;
@@ -47,7 +54,10 @@ DeepPulseRefreshKind deepPulseEpdDisplay(const uint8_t *frame, size_t length,
 
 void deepPulseEpdSleep() {
 #if DEEPPULSE_WAVESHARE_7IN5_V2
-  epd.Sleep();
+  if (panelAwake) {
+    EPD_7IN5_V2_Sleep();
+    panelAwake = false;
+  }
 #endif
 }
 
@@ -58,4 +68,3 @@ bool deepPulseEpdIsPhysical() {
   return false;
 #endif
 }
-

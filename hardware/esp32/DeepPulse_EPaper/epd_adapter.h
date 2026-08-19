@@ -10,8 +10,9 @@ enum DeepPulseRefreshKind {
 };
 
 bool deepPulseEpdBegin();
-DeepPulseRefreshKind deepPulseEpdDisplay(const uint8_t *frame, size_t length,
+// The Waveshare V2 display routine inverts the supplied frame buffer in place,
+// so callers must treat the buffer as consumed after a successful refresh.
+DeepPulseRefreshKind deepPulseEpdDisplay(uint8_t *frame, size_t length,
                                          bool requestPartial);
 void deepPulseEpdSleep();
 bool deepPulseEpdIsPhysical();
-
