@@ -233,16 +233,6 @@ export function init(container) {
         </div>
       </div>
 
-      <div class="card span-5">
-        <div class="card-head"><div><div class="card-title">到货后只剩这些工作</div><div class="card-sub">软件侧无需推倒重来</div></div></div>
-        <ol class="ep-checklist">
-          <li><b>识别屏幕批次</b><span>核对背面 V2 标签和完整物料型号</span></li>
-          <li><b>确认排线与拨码</b><span>先断电连接，按屏幕型号选择 A/B 档</span></li>
-          <li><b>测全刷与局刷</b><span>校准 LUT、残影阈值与温度影响</span></li>
-          <li><b>接入提醒外设</b><span>可选蜂鸣器、LED和实体确认键</span></li>
-        </ol>
-      </div>
-
       <div class="card span-12 ep-safety-note">
         <b>产品边界：</b>墨水屏是低频决策仪表盘，不用于秒级交易。所有“提醒”展示触发条件、数据时点与失效条件，均为研究工具输出，不构成投资建议。
       </div>
@@ -336,4 +326,3 @@ export async function refresh(container) {
   init(container);
   await Promise.allSettled([loadConfig(container), renderPreview(container)]);
 }
-
