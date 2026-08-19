@@ -4,7 +4,7 @@
 // Dry-run still verifies Wi-Fi, authorization, byte count and SHA-256.
 #define DEEPPULSE_WAVESHARE_7IN5_V2 0
 
-// The current physical adapter deliberately uses full refresh only. A panel-specific
-// partial/fast refresh path will be enabled after the real panel and LUT are verified.
+// Keep both at 0 for unknown/old panels. For the verified post-2023 7.5 V2 panel,
+// copy hardware_config.v2-smart.example.h to hardware_config.h instead.
 #define DEEPPULSE_ALLOW_PARTIAL_REFRESH 0
-
+#define DEEPPULSE_ALLOW_FAST_REFRESH 0

@@ -20,6 +20,12 @@ const MODE_META = {
   alert: { label: '提醒优先', help: '触发关注价提醒时占满画面，未触发时回到个股专注。' },
 };
 
+const REFRESH_META = {
+  stable: { label: '稳定全刷', help: '每次更新都全刷，残影最少，但会出现完整黑白闪烁。' },
+  smart: { label: '智能混合', help: '无实质变化不刷；小区域局刷；模式或结构变化全刷。推荐。' },
+  fast: { label: '快速全屏', help: '优先使用约 1.5 秒快刷，并定期全刷清理残影。' },
+};
+
 function selectedMode(container) {
   return container.querySelector('#ep-layout')?.value || 'focus';
 }
@@ -33,6 +39,12 @@ function updateModeHelp(container) {
   const meta = MODE_META[mode] || MODE_META.focus;
   const help = container.querySelector('#ep-mode-help');
   if (help) help.textContent = meta.help;
+}
+
+function updateRefreshHelp(container) {
+  const policy = container.querySelector('#ep-refresh-policy')?.value || 'smart';
+  const help = container.querySelector('#ep-refresh-help');
+  if (help) help.textContent = (REFRESH_META[policy] || REFRESH_META.smart).help;
 }
 
 function revokePreview() {
@@ -55,6 +67,8 @@ function renderConfig(container, data) {
   stock.dataset.name = cfg.focus_name || '';
   container.querySelector('#ep-layout').value = cfg.mode || 'focus';
   updateModeHelp(container);
+  container.querySelector('#ep-refresh-policy').value = cfg.refresh_policy || 'smart';
+  updateRefreshHelp(container);
   container.querySelector('#ep-poll').value = cfg.poll_seconds || 30;
   container.querySelector('#ep-display').value = cfg.display_seconds || 180;
   container.querySelector('#ep-partial').value = cfg.partial_before_full || 6;
@@ -63,8 +77,18 @@ function renderConfig(container, data) {
   const endpoint = gatewayEndpoint(gateway);
   const stateClass = gateway.running ? 'ok' : gateway.enabled ? 'warn' : 'idle';
   const stateText = gateway.running ? '局域网网关运行中' : gateway.enabled ? '已启用但监听失败' : '未启用（安全默认）';
+  const firmwareAgent = gateway.last_user_agent || '';
+  const firmwareMatch = firmwareAgent.match(/DeepPulse-EPaper\/(\d+\.\d+)/);
+  const firmwareVersion = firmwareMatch?.[1] || '';
+  const firmwareReady = firmwareVersion && Number(firmwareVersion) >= 1.1;
+  const firmwareText = firmwareVersion
+    ? `${firmwareVersion}${firmwareReady ? ' · 智能刷新就绪' : ' · 需 USB 升级'}`
+    : '等待设备上报';
+  const refreshMeta = REFRESH_META[cfg.refresh_policy] || REFRESH_META.smart;
   container.querySelector('#ep-gateway-state').innerHTML = `
     <div class="ep-gateway-line"><span class="ep-gateway-dot ${stateClass}"></span><b>${esc(stateText)}</b></div>
+    <div class="ep-kv"><span>刷新策略</span><code>${esc(refreshMeta.label)}</code></div>
+    <div class="ep-kv"><span>设备固件</span><code>${esc(firmwareText)}</code></div>
     <div class="ep-kv"><span>设备帧地址</span><code>${esc(endpoint)}</code></div>
     <div class="ep-kv"><span>配对令牌</span><code id="ep-token-value" data-token="${esc(gateway.token || '')}">••••••••••••••••••••••••</code></div>
     <div class="ep-kv"><span>最近设备</span><code>${esc(gateway.last_seen ? `${gateway.last_ip || '--'} · ${gateway.last_seen}` : '尚无 ESP32 连接')}</code></div>
@@ -169,6 +193,7 @@ async function saveConfig(container) {
       focus_code: stock.dataset.code,
       focus_name: stock.dataset.name,
       mode: container.querySelector('#ep-layout').value,
+      refresh_policy: container.querySelector('#ep-refresh-policy').value,
       poll_seconds: Number(container.querySelector('#ep-poll').value),
       display_seconds: Number(container.querySelector('#ep-display').value),
       partial_before_full: Number(container.querySelector('#ep-partial').value),
@@ -243,6 +268,11 @@ export function init(container) {
           <option value="hotspot">热点雷达</option>
           <option value="alert">提醒优先</option>
         </select><small class="ep-mode-help" id="ep-mode-help"></small></label>
+        <label class="ep-field"><span>刷新方式</span><select id="ep-refresh-policy">
+          <option value="smart">智能混合（推荐）</option>
+          <option value="stable">稳定全刷</option>
+          <option value="fast">快速全屏</option>
+        </select><small class="ep-mode-help" id="ep-refresh-help"></small></label>
         <div class="ep-field-row">
           <label class="ep-field"><span>数据轮询</span><select id="ep-poll">
             <option value="15">15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option>
@@ -251,7 +281,7 @@ export function init(container) {
             <option value="60">1 分钟</option><option value="180">3 分钟</option><option value="300">5 分钟</option>
           </select></label>
         </div>
-        <label class="ep-field"><span>局刷后全刷</span><select id="ep-partial">
+        <label class="ep-field"><span>轻刷后全刷</span><select id="ep-partial">
           <option value="4">4 次</option><option value="6">6 次</option><option value="8">8 次</option><option value="10">10 次</option>
         </select></label>
         <label class="ep-toggle-row">
@@ -327,6 +357,9 @@ export function init(container) {
   container.querySelector('#ep-layout').addEventListener('change', async () => {
     updateModeHelp(container);
     if (previewScene === 'selected') await renderPreview(container);
+  });
+  container.querySelector('#ep-refresh-policy').addEventListener('change', () => {
+    updateRefreshHelp(container);
   });
   container.querySelector('#ep-refresh-preview').addEventListener('click', () => renderPreview(container));
   container.querySelector('#ep-download-frame').addEventListener('click', async event => {

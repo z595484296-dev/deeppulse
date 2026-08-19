@@ -67,6 +67,7 @@ class DeviceConfigTests(unittest.TestCase):
         self.assertEqual(config['poll_seconds'], 15)
         self.assertEqual(config['display_seconds'], 1800)
         self.assertEqual(config['partial_before_full'], 2)
+        self.assertEqual(config['refresh_policy'], 'smart')
         self.assertGreaterEqual(len(config['token']), 24)
         self.assertFalse(server._device_defaults()['enabled'])
 
@@ -78,6 +79,13 @@ class DeviceConfigTests(unittest.TestCase):
         for mode in server.DEVICE_MODES:
             self.assertEqual(server.normalize_device_config({'mode': mode})['mode'], mode)
         self.assertEqual(server.normalize_device_config({'mode': 'unknown'})['mode'], 'focus')
+
+    def test_refresh_policy_is_allowlisted(self):
+        for policy in server.DEVICE_REFRESH_POLICIES:
+            config = server.normalize_device_config({'refresh_policy': policy})
+            self.assertEqual(config['refresh_policy'], policy)
+        config = server.normalize_device_config({'refresh_policy': 'unsafe-custom-lut'})
+        self.assertEqual(config['refresh_policy'], 'smart')
 
     def test_token_is_preserved_until_explicit_rotation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,6 +145,20 @@ class FrameTests(unittest.TestCase):
         empty['focus']['kline'] = []
         without_rows = server.render_epaper_frame(empty)
         self.assertNotEqual(with_rows, without_rows)
+
+    def test_content_hash_ignores_clock_but_tracks_decision_changes(self):
+        first = sample_state()
+        second = sample_state()
+        second['generated_at'] = '2026-08-18T10:31:00+08:00'
+        first_frame = server.render_epaper_frame(first)
+        second_frame = server.render_epaper_frame(second)
+        self.assertNotEqual(first_frame, second_frame)
+        self.assertEqual(server.epaper_content_sha256(first_frame),
+                         server.epaper_content_sha256(second_frame))
+        second['focus']['price'] = 13.14
+        changed_frame = server.render_epaper_frame(second)
+        self.assertNotEqual(server.epaper_content_sha256(first_frame),
+                            server.epaper_content_sha256(changed_frame))
 
 
 class DeviceStateTests(unittest.TestCase):

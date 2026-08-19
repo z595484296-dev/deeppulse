@@ -1378,6 +1378,7 @@ EPAPER_FRAME_BYTES = EPAPER_WIDTH * EPAPER_HEIGHT // 8
 DEVICE_DEFAULT_PORT = 8988
 DEVICE_ALERT_TTL_SECONDS = 15 * 60
 DEVICE_MODES = ('focus', 'overview', 'emotion', 'watch', 'hotspot', 'alert')
+DEVICE_REFRESH_POLICIES = ('stable', 'smart', 'fast')
 _device_config_lock = threading.Lock()
 _device_gateway_lock = threading.Lock()
 _device_gateway_server = None
@@ -1406,6 +1407,7 @@ def _device_defaults():
         'poll_seconds': 30,
         'display_seconds': 180,
         'partial_before_full': 6,
+        'refresh_policy': 'smart',
         'token': _new_device_token(),
         'revision': 0,
         'updated_at': None,
@@ -1436,6 +1438,9 @@ def normalize_device_config(value, current=None):
         clean['focus_code'] = code
     if 'focus_name' in value:
         clean['focus_name'] = str(value.get('focus_name') or '').strip()[:30]
+    if 'refresh_policy' in value:
+        policy = str(value.get('refresh_policy') or '').strip().lower()
+        clean['refresh_policy'] = policy if policy in DEVICE_REFRESH_POLICIES else 'smart'
     for key, low, high in (
             ('poll_seconds', 15, 300),
             ('display_seconds', 60, 1800),
@@ -1652,6 +1657,7 @@ def build_device_state(config=None, demo=''):
             'poll_seconds': cfg.get('poll_seconds'),
             'display_seconds': cfg.get('display_seconds'),
             'partial_before_full': cfg.get('partial_before_full'),
+            'refresh_policy': cfg.get('refresh_policy'),
         },
         'emotion': {
             'temperature': engine.get('temp'), 'phase': engine.get('phase'),
@@ -2050,12 +2056,26 @@ def epaper_frame_to_bmp(frame):
     return file_header + info_header + palette + frame
 
 
+def epaper_content_sha256(frame):
+    """Hash decision content while ignoring the volatile header clock/session area."""
+    if len(frame) != EPAPER_FRAME_BYTES:
+        raise ValueError('invalid e-paper frame length')
+    normalized = bytearray(frame)
+    row_bytes = EPAPER_WIDTH // 8
+    volatile_x_byte = 560 // 8
+    for y in range(48):
+        start = y * row_bytes + volatile_x_byte
+        normalized[start:(y + 1) * row_bytes] = b'\xff' * (row_bytes - volatile_x_byte)
+    return hashlib.sha256(normalized).hexdigest()
+
+
 def device_frame_payload(config=None, demo=''):
     state = build_device_state(config, demo)
     frame = render_epaper_frame(state)
     digest = hashlib.sha256(frame).hexdigest()
+    content_digest = epaper_content_sha256(frame)
     state['frame'] = {
-        'bytes': len(frame), 'sha256': digest,
+        'bytes': len(frame), 'sha256': digest, 'content_sha256': content_digest,
         'content_type': 'application/vnd.deeppulse.epaper-1bpp',
         'white_bit': 1, 'bit_order': 'msb-first',
     }
@@ -2392,6 +2412,7 @@ class Handler(BaseHTTPRequestHandler):
                 load_device_config(), demo if demo in DEVICE_MODES else '')
             self.send_bytes(epaper_frame_to_bmp(frame), 'image/bmp', headers={
                 'X-DeepPulse-Frame-SHA256': digest,
+                'X-DeepPulse-Content-SHA256': state['frame']['content_sha256'],
                 'X-DeepPulse-Sequence': state.get('sequence'),
             })
         elif path == '/api/device/frame.bin':
@@ -2403,6 +2424,7 @@ class Handler(BaseHTTPRequestHandler):
                 'X-DeepPulse-Height': EPAPER_HEIGHT,
                 'X-DeepPulse-Bpp': '1',
                 'X-DeepPulse-Frame-SHA256': digest,
+                'X-DeepPulse-Content-SHA256': state['frame']['content_sha256'],
                 'X-DeepPulse-Sequence': state.get('sequence'),
             })
         elif path == '/api/indices':
@@ -2621,6 +2643,8 @@ class DeviceHandler(BaseHTTPRequestHandler):
                 self.send_header('X-DeepPulse-Height', EPAPER_HEIGHT)
                 self.send_header('X-DeepPulse-Bpp', '1')
                 self.send_header('X-DeepPulse-Frame-SHA256', digest)
+                self.send_header('X-DeepPulse-Content-SHA256',
+                                 state['frame']['content_sha256'])
                 self.send_header('X-DeepPulse-Sequence', state.get('sequence'))
                 device = state.get('device') or {}
                 self.send_header('X-DeepPulse-Mode', device.get('mode') or 'focus')
@@ -2628,6 +2652,8 @@ class DeviceHandler(BaseHTTPRequestHandler):
                 self.send_header('X-DeepPulse-Display-Seconds', device.get('display_seconds') or 180)
                 self.send_header('X-DeepPulse-Partial-Before-Full',
                                  device.get('partial_before_full') or 6)
+                self.send_header('X-DeepPulse-Refresh-Policy',
+                                 device.get('refresh_policy') or 'smart')
                 self.end_headers()
                 self.wfile.write(frame)
             else:

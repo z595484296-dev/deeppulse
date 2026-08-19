@@ -36,14 +36,16 @@ X-DeepPulse-Width: 800
 X-DeepPulse-Height: 480
 X-DeepPulse-Bpp: 1
 X-DeepPulse-Frame-SHA256: <lowercase hex>
+X-DeepPulse-Content-SHA256: <lowercase hex, volatile clock area excluded>
 X-DeepPulse-Sequence: <unix seconds>
 X-DeepPulse-Mode: focus|overview|emotion|watch|hotspot|alert
+X-DeepPulse-Refresh-Policy: stable|smart|fast
 X-DeepPulse-Poll-Seconds: 15..300
 X-DeepPulse-Display-Seconds: 60..1800
 X-DeepPulse-Partial-Before-Full: 2..20
 ```
 
-Consumers must reject a response if the status, byte count, dimensions or SHA-256 do not match. A transition into `alert` mode may bypass the normal display interval once; repeated alert frames should follow the configured interval.
+Consumers must reject a response if the status, byte count, dimensions or frame SHA-256 do not match. `Content-SHA256` is a refresh-decision hint, not a replacement for frame integrity: it masks only the volatile header clock/session area so a clock-only change can be skipped. A transition into `alert` mode or a display-mode change may bypass the normal display interval once; repeated alert frames should follow the configured interval.
 
 ## Security boundary
 
