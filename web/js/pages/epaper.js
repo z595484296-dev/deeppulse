@@ -6,9 +6,34 @@ import { esc, debounce, toast } from '../util.js?v=1.5.0';
 let built = false;
 let snapshot = null;
 let previewUrl = '';
-let demoMode = '';
+let previewScene = 'selected';
+let previewRequest = 0;
 let searchResults = [];
 let searchIndex = -1;
+
+const MODE_META = {
+  focus: { label: '个股专注', help: '关注股票、日K线、情绪温度与五大指数，适合日常常驻。' },
+  overview: { label: '市场总览', help: '指数、市场温度和数据状态，快速判断整体环境。' },
+  emotion: { label: '情绪周期', help: '温度、阶段、六维结构与涨跌停等核心指标，适合复盘。' },
+  watch: { label: '自选组合', help: '同屏查看最多 6 只自选股的价格和涨跌幅。' },
+  hotspot: { label: '热点雷达', help: '展示领涨行业、强度与市场结构，捕捉当下热点。' },
+  alert: { label: '提醒优先', help: '触发关注价提醒时占满画面，未触发时回到个股专注。' },
+};
+
+function selectedMode(container) {
+  return container.querySelector('#ep-layout')?.value || 'focus';
+}
+
+function previewMode(container) {
+  return previewScene === 'alert' ? 'alert' : selectedMode(container);
+}
+
+function updateModeHelp(container) {
+  const mode = selectedMode(container);
+  const meta = MODE_META[mode] || MODE_META.focus;
+  const help = container.querySelector('#ep-mode-help');
+  if (help) help.textContent = meta.help;
+}
 
 function revokePreview() {
   if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -29,6 +54,7 @@ function renderConfig(container, data) {
   stock.dataset.code = cfg.focus_code || '';
   stock.dataset.name = cfg.focus_name || '';
   container.querySelector('#ep-layout').value = cfg.mode || 'focus';
+  updateModeHelp(container);
   container.querySelector('#ep-poll').value = cfg.poll_seconds || 30;
   container.querySelector('#ep-display').value = cfg.display_seconds || 180;
   container.querySelector('#ep-partial').value = cfg.partial_before_full || 6;
@@ -61,20 +87,29 @@ async function loadConfig(container) {
 }
 
 async function renderPreview(container) {
+  const requestId = ++previewRequest;
   const image = container.querySelector('#ep-preview-image');
   const loading = container.querySelector('#ep-preview-loading');
   const meta = container.querySelector('#ep-preview-meta');
   loading.style.display = 'grid';
   image.classList.add('loading');
   try {
-    const [state, blob] = await Promise.all([api.deviceState(demoMode), api.devicePreview(demoMode)]);
+    const mode = previewMode(container);
+    const [state, blob] = await Promise.all([api.deviceState(mode), api.devicePreview(mode)]);
+    if (requestId !== previewRequest) return;
     revokePreview();
     previewUrl = URL.createObjectURL(blob);
     image.src = previewUrl;
     const em = state.emotion || {};
     const focus = state.focus || {};
     const quality = state.quality || {};
+    const modeMeta = MODE_META[state.device?.mode] || MODE_META[mode] || MODE_META.focus;
+    const modeDetail = mode === 'watch'
+      ? ` · ${state.watch?.length || 0} 只`
+      : mode === 'hotspot' && state.hotspots?.[0]
+        ? ` · ${state.hotspots[0].name || state.hotspots[0].code}` : '';
     meta.innerHTML = `
+      <span><b>${esc(modeMeta.label)}</b>${esc(modeDetail)}</span>
       <span><b>${esc(focus.code || '--')}</b> ${esc(focus.name || '')}</span>
       <span>温度 <b>${em.temperature ?? '--'}°</b> · ${esc(em.phase || '--')}</span>
       <span>通达信 <b>${esc(quality.tdx_status || '--')}</b></span>
@@ -82,11 +117,15 @@ async function renderPreview(container) {
     `;
     container.querySelector('#ep-frame-hash').textContent = '帧已按 1bpp / MSB-first 生成 · ESP32 实际接收 48,000 bytes';
   } catch (error) {
-    meta.innerHTML = `<span class="up">预览生成失败：${esc(error.message)}</span>`;
-    container.querySelector('#ep-frame-hash').textContent = '可稍后重试；预览失败不会修改任何设备配置';
+    if (requestId === previewRequest) {
+      meta.innerHTML = `<span class="up">预览生成失败：${esc(error.message)}</span>`;
+      container.querySelector('#ep-frame-hash').textContent = '可稍后重试；预览失败不会修改任何设备配置';
+    }
   } finally {
-    loading.style.display = 'none';
-    image.classList.remove('loading');
+    if (requestId === previewRequest) {
+      loading.style.display = 'none';
+      image.classList.remove('loading');
+    }
   }
 }
 
@@ -151,11 +190,11 @@ export function init(container) {
   container.innerHTML = `
     <div class="epaper-hero">
       <div>
-        <span class="epaper-kicker">HARDWARE LAB · 无实物开发模式</span>
+        <span class="epaper-kicker">HARDWARE DEVICE · 微雪 7.5 V2</span>
         <h2>微雪 7.5 英寸墨水屏</h2>
         <p>800 × 480 黑白裸屏 · ESP32 WiFi 驱动板 · 深脉负责数据与画面，设备只读显示</p>
       </div>
-      <span class="epaper-ready">软件链路可测试</span>
+      <span class="epaper-ready">实机已联动</span>
     </div>
 
     <div class="grid g12 epaper-grid">
@@ -166,8 +205,8 @@ export function init(container) {
             <div class="card-sub">与 ESP32 下载内容完全相同 · 1 bit 黑白 · 48,000 bytes</div>
           </div>
           <div class="ep-preview-tabs" role="tablist" aria-label="模拟场景">
-            <button class="ep-preview-tab active" data-demo="" role="tab" aria-selected="true">常规看板</button>
-            <button class="ep-preview-tab" data-demo="alert" role="tab" aria-selected="false">提醒演示</button>
+            <button class="ep-preview-tab active" data-scene="selected" role="tab" aria-selected="true">所选模式</button>
+            <button class="ep-preview-tab" data-scene="alert" role="tab" aria-selected="false">提醒演示</button>
           </div>
         </div>
         <div class="ep-screen-shell">
@@ -187,7 +226,7 @@ export function init(container) {
       </div>
 
       <div class="card span-4 epaper-config-card">
-        <div class="card-head"><div><div class="card-title">显示配置</div><div class="card-sub">现在保存，实物到货后直接复用</div></div></div>
+        <div class="card-head"><div><div class="card-title">显示配置</div><div class="card-sub">保存后同步到真实设备</div></div></div>
         <label class="ep-field">
           <span>关注标的</span>
           <div class="ep-search-wrap">
@@ -199,8 +238,11 @@ export function init(container) {
         <label class="ep-field"><span>默认画面</span><select id="ep-layout">
           <option value="focus">关注标的 + K线</option>
           <option value="overview">市场总览</option>
+          <option value="emotion">情绪周期</option>
+          <option value="watch">自选组合</option>
+          <option value="hotspot">热点雷达</option>
           <option value="alert">提醒优先</option>
-        </select></label>
+        </select><small class="ep-mode-help" id="ep-mode-help"></small></label>
         <div class="ep-field-row">
           <label class="ep-field"><span>数据轮询</span><select id="ep-poll">
             <option value="15">15 秒</option><option value="30">30 秒</option><option value="60">60 秒</option>
@@ -274,7 +316,7 @@ export function init(container) {
   });
 
   container.querySelectorAll('.ep-preview-tab').forEach(button => button.addEventListener('click', async () => {
-    demoMode = button.dataset.demo || '';
+    previewScene = button.dataset.scene || 'selected';
     container.querySelectorAll('.ep-preview-tab').forEach(row => {
       const active = row === button;
       row.classList.toggle('active', active);
@@ -282,15 +324,20 @@ export function init(container) {
     });
     await renderPreview(container);
   }));
+  container.querySelector('#ep-layout').addEventListener('change', async () => {
+    updateModeHelp(container);
+    if (previewScene === 'selected') await renderPreview(container);
+  });
   container.querySelector('#ep-refresh-preview').addEventListener('click', () => renderPreview(container));
   container.querySelector('#ep-download-frame').addEventListener('click', async event => {
     const button = event.currentTarget;
     button.disabled = true;
     try {
-      const blob = await api.deviceFrame(demoMode);
+      const mode = previewMode(container);
+      const blob = await api.deviceFrame(mode);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
-      anchor.href = url; anchor.download = `deeppulse-800x480-${demoMode || 'focus'}.bin`; anchor.click();
+      anchor.href = url; anchor.download = `deeppulse-800x480-${mode}.bin`; anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
       toast('已下载 48,000 字节 ESP32 单色帧');
     } catch (error) { toast('下载失败：' + error.message, 'err'); }
@@ -319,10 +366,11 @@ export function init(container) {
     } catch (error) { toast('重置失败：' + error.message, 'err'); }
   });
 
-  Promise.allSettled([loadConfig(container), renderPreview(container)]);
+  loadConfig(container).catch(() => {}).finally(() => renderPreview(container));
 }
 
 export async function refresh(container) {
   init(container);
-  await Promise.allSettled([loadConfig(container), renderPreview(container)]);
+  await loadConfig(container).catch(() => {});
+  await renderPreview(container);
 }

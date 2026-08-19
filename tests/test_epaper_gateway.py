@@ -22,12 +22,32 @@ def sample_state(alert=None):
         'sequence': 1,
         'market_session': 'OPEN',
         'device': {'mode': 'alert' if alert else 'focus'},
-        'emotion': {'temperature': 68, 'phase': '高潮期', 'confidence': 86},
+        'emotion': {
+            'temperature': 68, 'phase': '高潮期', 'confidence': 86, 'coverage': 92,
+            'dimensions': [
+                {'key': 'earning', 'value': 66},
+                {'key': 'loss_control', 'value': 58},
+                {'key': 'continuity', 'value': 72},
+                {'key': 'breadth', 'value': 63},
+                {'key': 'liquidity', 'value': 55},
+                {'key': 'quality', 'value': 69},
+            ],
+        },
         'focus': {'code': '000001', 'price': 12.34, 'pct': 1.25, 'kline': rows},
         'indices': [
             {'code': '000001', 'pct': 1.1}, {'code': '399001', 'pct': 1.8},
             {'code': '399006', 'pct': 2.2}, {'code': '000688', 'pct': 2.6},
             {'code': '899050', 'pct': 0.9},
+        ],
+        'market': {'zt': 79, 'dt': 5, 'zb_rate': 0.225, 'height': 4,
+                   'up': 4280, 'down': 885, 'flow_yi': 138.6},
+        'watch': [
+            {'code': '601138', 'name': '工业富联', 'price': 61.82, 'pct': -6.50},
+            {'code': '000001', 'name': '平安银行', 'price': 12.34, 'pct': 1.25},
+        ],
+        'hotspots': [
+            {'code': 'BK1452', 'name': '卫浴电器', 'pct': 7.19},
+            {'code': 'BK1492', 'name': '焦炭Ⅲ', 'pct': 6.53},
         ],
         'quality': {'tdx_status': 'connected', 'stale': False},
         'alert': alert,
@@ -53,6 +73,11 @@ class DeviceConfigTests(unittest.TestCase):
     def test_invalid_focus_code_is_rejected(self):
         with self.assertRaises(ValueError):
             server.normalize_device_config({'focus_code': 'not-a-security'})
+
+    def test_all_six_display_modes_are_supported(self):
+        for mode in server.DEVICE_MODES:
+            self.assertEqual(server.normalize_device_config({'mode': mode})['mode'], mode)
+        self.assertEqual(server.normalize_device_config({'mode': 'unknown'})['mode'], 'focus')
 
     def test_token_is_preserved_until_explicit_rotation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +122,15 @@ class FrameTests(unittest.TestCase):
         self.assertNotEqual(server.render_epaper_frame(focus_state),
                             server.render_epaper_frame(overview_state))
 
+    def test_new_decision_modes_render_distinct_full_frames(self):
+        frames = {}
+        for mode in ('focus', 'emotion', 'watch', 'hotspot'):
+            state = sample_state()
+            state['device']['mode'] = mode
+            frames[mode] = server.render_epaper_frame(state)
+            self.assertEqual(len(frames[mode]), 48000)
+        self.assertEqual(len(set(frames.values())), len(frames))
+
     def test_dictionary_kline_rows_are_rendered(self):
         with_rows = server.render_epaper_frame(sample_state())
         empty = sample_state()
@@ -114,6 +148,17 @@ class DeviceStateTests(unittest.TestCase):
             state = server.build_device_state(config, demo='alert')
         self.assertEqual(state['device']['mode'], 'alert')
         self.assertTrue(state['alert']['demo'])
+
+    def test_preview_mode_overrides_saved_mode_without_persisting(self):
+        config = server.normalize_device_config({'mode': 'focus', 'focus_code': '000001'})
+        emotion = {'engine': {'dimensions': [{'key': 'earning', 'value': 70}], 'raw': {}}}
+        with patch.object(server, 'assemble_emotion', return_value=emotion), \
+                patch.object(server, 'cached', side_effect=RuntimeError('offline')), \
+                patch.object(server, 'load_profile', return_value={'data': {}}):
+            state = server.build_device_state(config, demo='emotion')
+        self.assertEqual(config['mode'], 'focus')
+        self.assertEqual(state['device']['mode'], 'emotion')
+        self.assertEqual(state['emotion']['dimensions'][0]['value'], 70)
 
     def test_only_recent_triggered_alert_is_sent_to_hardware(self):
         config = server.normalize_device_config({'mode': 'alert', 'focus_code': '000001'})

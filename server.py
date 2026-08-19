@@ -1377,6 +1377,7 @@ EPAPER_HEIGHT = 480
 EPAPER_FRAME_BYTES = EPAPER_WIDTH * EPAPER_HEIGHT // 8
 DEVICE_DEFAULT_PORT = 8988
 DEVICE_ALERT_TTL_SECONDS = 15 * 60
+DEVICE_MODES = ('focus', 'overview', 'emotion', 'watch', 'hotspot', 'alert')
 _device_config_lock = threading.Lock()
 _device_gateway_lock = threading.Lock()
 _device_gateway_server = None
@@ -1427,7 +1428,7 @@ def normalize_device_config(value, current=None):
         clean['device_name'] = name or 'DeepPulse E-Paper'
     if 'mode' in value:
         mode = str(value.get('mode') or '').strip().lower()
-        clean['mode'] = mode if mode in ('overview', 'focus', 'alert') else 'focus'
+        clean['mode'] = mode if mode in DEVICE_MODES else 'focus'
     if 'focus_code' in value:
         code = normalize_code(str(value.get('focus_code') or ''))
         if len(code) != 6:
@@ -1573,6 +1574,7 @@ def build_device_state(config=None, demo=''):
     except Exception:
         kline = {'rows': []}
     profile = load_profile().get('data') or {}
+    preview_mode = demo if demo in DEVICE_MODES else ''
     now_ms = int(time.time() * 1000)
     triggered = [row for row in (profile.get('alerts') or [])
                  if row.get('triggered') and row.get('triggered_at')
@@ -1580,7 +1582,7 @@ def build_device_state(config=None, demo=''):
                  <= DEVICE_ALERT_TTL_SECONDS * 1000]
     triggered.sort(key=lambda row: row.get('triggered_at') or row.get('ts') or 0, reverse=True)
     alert = triggered[0] if triggered else None
-    if demo == 'alert':
+    if preview_mode == 'alert':
         alert = {
             'demo': True, 'code': code, 'name': name,
             'dir': 'up', 'price': quote.get('price') or 12.80,
@@ -1588,6 +1590,53 @@ def build_device_state(config=None, demo=''):
         }
     flags = [str(row.get('text') or '') for row in (engine.get('flags') or []) if row.get('text')]
     tdx = emotion.get('tdx_local') or {}
+    watch = []
+    if (preview_mode or cfg.get('mode')) == 'watch':
+        candidates = list(profile.get('watchlist') or [])
+        if not candidates:
+            candidates = [{'code': code, 'name': name}]
+        seen = set()
+        for item in candidates:
+            item_code = normalize_code(str(item.get('code') or ''))
+            if len(item_code) != 6 or item_code in seen:
+                continue
+            seen.add(item_code)
+            item_name = str(item.get('name') or item_code)
+            try:
+                item_quote = cached('quote_' + item_code, 4,
+                                    lambda c=item_code: quote_with_fallback(c))
+            except Exception:
+                item_quote = {}
+            watch.append({
+                'code': item_code,
+                'name': item_quote.get('name') or item_name,
+                'price': item_quote.get('price'),
+                'pct': item_quote.get('pct'),
+            })
+            if len(watch) >= 6:
+                break
+
+    hotspots, headlines = [], []
+    if (preview_mode or cfg.get('mode')) == 'hotspot':
+        try:
+            hotspots = [
+                {'code': row.get('code'), 'name': row.get('name'),
+                 'price': row.get('price'), 'pct': row.get('pct')}
+                for row in cached('sectors', 25, em_sectors)[:6]
+                if row.get('code')
+            ]
+        except Exception:
+            hotspots = []
+        try:
+            headlines = [
+                {'time': row.get('time'), 'title': row.get('title'),
+                 'source_name': row.get('source_name')}
+                for row in cached('news', 90, em_news)[:3]
+            ]
+        except Exception:
+            headlines = []
+
+    raw = engine.get('raw') or {}
     state = {
         'schema': 1,
         'generated_at': now_bj().isoformat(timespec='seconds'),
@@ -1597,8 +1646,9 @@ def build_device_state(config=None, demo=''):
         'device': {
             'name': cfg.get('device_name'), 'model': cfg.get('model'),
             'width': EPAPER_WIDTH, 'height': EPAPER_HEIGHT, 'bpp': 1,
-            'mode': 'alert' if demo == 'alert' or (
-                alert and cfg.get('mode') == 'alert') else cfg.get('mode'),
+            'mode': 'alert' if preview_mode == 'alert' or (
+                alert and not preview_mode and cfg.get('mode') == 'alert')
+            else preview_mode or cfg.get('mode'),
             'poll_seconds': cfg.get('poll_seconds'),
             'display_seconds': cfg.get('display_seconds'),
             'partial_before_full': cfg.get('partial_before_full'),
@@ -1607,6 +1657,11 @@ def build_device_state(config=None, demo=''):
             'temperature': engine.get('temp'), 'phase': engine.get('phase'),
             'coverage': engine.get('coverage'), 'confidence': engine.get('confidence'),
             'degraded': bool(engine.get('degraded')), 'risk': flags[0] if flags else '',
+            'dimensions': [
+                {'key': row.get('key'), 'name': row.get('name'),
+                 'value': row.get('value'), 'coverage': row.get('coverage')}
+                for row in (engine.get('dimensions') or [])[:6]
+            ],
         },
         'focus': {
             'code': code, 'name': name, 'price': quote.get('price'), 'pct': quote.get('pct'),
@@ -1618,6 +1673,14 @@ def build_device_state(config=None, demo=''):
              'price': row.get('price'), 'pct': row.get('pct')}
             for row in indices[:5] if row.get('code')
         ],
+        'market': {
+            key: raw.get(key) for key in (
+                'zt', 'dt', 'zb', 'zb_rate', 'height', 'lb_count',
+                'up', 'down', 'flat', 'turnover_yi', 'vol_ratio', 'flow_yi')
+        },
+        'watch': watch,
+        'hotspots': hotspots,
+        'headlines': headlines,
         'alert': alert,
         'quality': {
             'tdx_status': tdx.get('status') or 'unavailable',
@@ -1697,6 +1760,18 @@ def _epd_rect(frame, x, y, w, h, fill=False, black=True):
     _epd_line(frame, x + w - 1, y, x + w - 1, y + h - 1, black)
 
 
+def _epd_bar(frame, x, y, w, h, value):
+    """Draw a bounded 0-100 bar that stays legible on a 1-bit panel."""
+    _epd_rect(frame, x, y, w, h, fill=False)
+    try:
+        ratio = max(0.0, min(100.0, float(value))) / 100.0
+    except Exception:
+        ratio = 0.0
+    fill_w = int((w - 4) * ratio)
+    if fill_w > 0:
+        _epd_rect(frame, x + 2, y + 2, fill_w, max(1, h - 4), fill=True)
+
+
 def _epd_text(frame, x, y, text, scale=2, invert=False):
     cursor = int(x)
     for char in str(text or '').upper():
@@ -1753,6 +1828,118 @@ def render_epaper_frame(state):
         _epd_text(frame, 390, 242, _epd_float(alert.get('price'), 2), 6)
         _epd_text(frame, 50, 340, 'RULE TRIGGERED - VERIFY DATA', 3)
         _epd_text(frame, 50, 400, 'RESEARCH ONLY', 2)
+        return bytes(frame)
+
+    if mode == 'emotion':
+        market = state.get('market') or {}
+        quality = state.get('quality') or {}
+        _epd_rect(frame, 18, 70, 250, 306, fill=False)
+        _epd_text(frame, 38, 90, 'CYCLE TEMP', 3)
+        _epd_text(frame, 62, 137,
+                  str(emotion.get('temperature')
+                      if emotion.get('temperature') is not None else '--'), 9)
+        _epd_text(frame, 38, 225, 'PHASE ' + _phase_ascii(emotion.get('phase')), 2)
+        _epd_text(frame, 38, 264,
+                  'CONF ' + _epd_float(emotion.get('confidence'), 0) + '%', 2)
+        _epd_text(frame, 38, 303,
+                  'COVER ' + _epd_float(emotion.get('coverage'), 0) + '%', 2)
+        _epd_text(frame, 38, 342,
+                  'DATA ' + ('STALE' if quality.get('stale') else 'OK'), 2)
+
+        _epd_rect(frame, 285, 70, 497, 306, fill=False)
+        _epd_text(frame, 305, 88, '6D STRUCTURE', 3)
+        labels = {
+            'earning': 'EARN', 'loss_control': 'DEFENSE',
+            'continuity': 'CONT', 'breadth': 'BREADTH',
+            'liquidity': 'LIQ', 'quality': 'QUALITY',
+        }
+        for index, row in enumerate((emotion.get('dimensions') or [])[:6]):
+            y = 132 + index * 38
+            value = row.get('value')
+            _epd_text(frame, 305, y, labels.get(row.get('key'), row.get('key') or '--'), 2)
+            _epd_text(frame, 420, y, str(value if value is not None else '--'), 2)
+            _epd_bar(frame, 474, y + 1, 280, 15, value)
+
+        _epd_rect(frame, 18, 394, 764, 66, fill=False)
+        metrics = (
+            ('ZT', market.get('zt')), ('DT', market.get('dt')),
+            ('BREAK', (float(market.get('zb_rate')) * 100
+                       if market.get('zb_rate') is not None else None)),
+            ('HIGH', market.get('height')), ('UP', market.get('up')),
+            ('DOWN', market.get('down')),
+        )
+        for index, (label, value) in enumerate(metrics):
+            x = 34 + index * 124
+            suffix = '%' if label == 'BREAK' and value is not None else ''
+            _epd_text(frame, x, 410, label, 1)
+            _epd_text(frame, x, 430, _epd_float(value, 0) + suffix, 2)
+        return bytes(frame)
+
+    if mode == 'watch':
+        rows = state.get('watch') or []
+        _epd_text(frame, 18, 68, 'WATCHLIST PULSE', 3)
+        _epd_rect(frame, 18, 106, 548, 316, fill=False)
+        _epd_text(frame, 34, 121, 'CODE', 2)
+        _epd_text(frame, 235, 121, 'PRICE', 2)
+        _epd_text(frame, 414, 121, 'CHG', 2)
+        _epd_line(frame, 18, 151, 565, 151)
+        for index, row in enumerate(rows[:6]):
+            y = 168 + index * 41
+            _epd_text(frame, 34, y, row.get('code') or '------', 2)
+            _epd_text(frame, 235, y, _epd_float(row.get('price'), 2), 2)
+            _epd_text(frame, 414, y, _epd_float(row.get('pct'), 2, True) + '%', 2)
+            if index < 5:
+                _epd_line(frame, 28, y + 28, 555, y + 28)
+        if not rows:
+            _epd_text(frame, 115, 260, 'WATCHLIST EMPTY', 3)
+
+        quality = state.get('quality') or {}
+        _epd_rect(frame, 584, 70, 198, 352, fill=False)
+        _epd_text(frame, 602, 88, 'TEMP', 3)
+        _epd_text(frame, 602, 130,
+                  str(emotion.get('temperature')
+                      if emotion.get('temperature') is not None else '--'), 7)
+        _epd_text(frame, 602, 202, 'PHASE', 2)
+        _epd_text(frame, 602, 232, _phase_ascii(emotion.get('phase')), 2)
+        _epd_text(frame, 602, 278,
+                  'CONF ' + _epd_float(emotion.get('confidence'), 0) + '%', 2)
+        _epd_text(frame, 602, 320,
+                  'DATA ' + ('STALE' if quality.get('stale') else 'OK'), 2)
+        _epd_text(frame, 602, 374, 'RESEARCH', 2)
+        _epd_text(frame, 602, 397, 'ONLY', 2)
+        return bytes(frame)
+
+    if mode == 'hotspot':
+        market = state.get('market') or {}
+        rows = state.get('hotspots') or []
+        _epd_text(frame, 18, 68, 'HOT RADAR', 3)
+        _epd_rect(frame, 18, 106, 520, 316, fill=False)
+        for index, row in enumerate(rows[:6]):
+            y = 126 + index * 45
+            pct = row.get('pct')
+            _epd_text(frame, 34, y, str(index + 1), 2)
+            _epd_text(frame, 70, y, row.get('code') or '------', 2)
+            _epd_text(frame, 230, y, _epd_float(pct, 2, True) + '%', 2)
+            strength = max(0.0, min(100.0, 50.0 + (float(pct) * 7
+                                                   if pct is not None else 0.0)))
+            _epd_bar(frame, 365, y + 1, 150, 15, strength)
+        if not rows:
+            _epd_text(frame, 110, 260, 'HOTSPOT DATA WAIT', 3)
+
+        _epd_rect(frame, 556, 70, 226, 352, fill=False)
+        _epd_text(frame, 574, 88, 'MARKET', 3)
+        values = (
+            ('ZT', market.get('zt')), ('DT', market.get('dt')),
+            ('BREAK', (float(market.get('zb_rate')) * 100
+                       if market.get('zb_rate') is not None else None)),
+            ('HIGH', market.get('height')), ('FLOW', market.get('flow_yi')),
+        )
+        for index, (label, value) in enumerate(values):
+            y = 135 + index * 48
+            suffix = '%' if label == 'BREAK' and value is not None else ''
+            _epd_text(frame, 574, y, label, 2)
+            _epd_text(frame, 670, y, _epd_float(value, 0) + suffix, 2)
+        _epd_text(frame, 574, 390, 'RESEARCH ONLY', 2)
         return bytes(frame)
 
     if mode == 'overview':
@@ -2198,11 +2385,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/device/state':
             demo = qs.get('demo', '')
             self.send_json({'ok': True, 'data': build_device_state(
-                load_device_config(), demo if demo == 'alert' else '')})
+                load_device_config(), demo if demo in DEVICE_MODES else '')})
         elif path == '/api/device/preview.bmp':
             demo = qs.get('demo', '')
             state, frame, digest = device_frame_payload(
-                load_device_config(), demo if demo == 'alert' else '')
+                load_device_config(), demo if demo in DEVICE_MODES else '')
             self.send_bytes(epaper_frame_to_bmp(frame), 'image/bmp', headers={
                 'X-DeepPulse-Frame-SHA256': digest,
                 'X-DeepPulse-Sequence': state.get('sequence'),
@@ -2210,7 +2397,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/device/frame.bin':
             demo = qs.get('demo', '')
             state, frame, digest = device_frame_payload(
-                load_device_config(), demo if demo == 'alert' else '')
+                load_device_config(), demo if demo in DEVICE_MODES else '')
             self.send_bytes(frame, 'application/vnd.deeppulse.epaper-1bpp', headers={
                 'X-DeepPulse-Width': EPAPER_WIDTH,
                 'X-DeepPulse-Height': EPAPER_HEIGHT,

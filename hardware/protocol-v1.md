@@ -37,7 +37,7 @@ X-DeepPulse-Height: 480
 X-DeepPulse-Bpp: 1
 X-DeepPulse-Frame-SHA256: <lowercase hex>
 X-DeepPulse-Sequence: <unix seconds>
-X-DeepPulse-Mode: focus|overview|alert
+X-DeepPulse-Mode: focus|overview|emotion|watch|hotspot|alert
 X-DeepPulse-Poll-Seconds: 15..300
 X-DeepPulse-Display-Seconds: 60..1800
 X-DeepPulse-Partial-Before-Full: 2..20
@@ -50,4 +50,3 @@ Consumers must reject a response if the status, byte count, dimensions or SHA-25
 The v1 transport is intended only for a trusted private LAN. It is HTTP because the small ESP32 endpoint cannot safely validate a self-signed local TLS identity without an out-of-band certificate workflow. Do not expose port 8988 through NAT, a public reverse proxy, VPN sharing, or a guest Wi-Fi. Rotate the pairing token after loss or suspected disclosure.
 
 The protocol is presentation-only. It has no mutation, account, position, order, cancellation or credential endpoint.
-

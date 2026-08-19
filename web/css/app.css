@@ -539,6 +539,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   color: var(--text); background: var(--panel-2); border: 1px solid var(--line); font: 12px var(--font);
 }
 .ep-field input:focus, .ep-field select:focus { border-color: rgba(79, 140, 255, .55); box-shadow: 0 0 0 3px rgba(79, 140, 255, .1); }
+.ep-mode-help { color: var(--text-3); font-size: 10.5px; line-height: 1.55; }
 .ep-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .ep-search-wrap { position: relative; }
 .ep-stock-results { display: none; position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; padding: 4px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--panel-3); box-shadow: var(--shadow); }
