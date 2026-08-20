@@ -1983,7 +1983,10 @@ def render_epaper_frame(state):
     _epd_text(frame, 18, 93, 'PRICE ' + _epd_float(focus.get('price'), 2), 2)
     _epd_text(frame, 245, 93, 'CHG ' + _epd_float(focus.get('pct'), 2, True) + '%', 2)
 
-    chart_x, chart_y, chart_w, chart_h = 20, 126, 515, 250
+    # Let the chart use the full remaining height.  The former 66px index
+    # footer became an empty bordered strip whenever index data was missing.
+    # Market context now lives in the always-populated right rail instead.
+    chart_x, chart_y, chart_w, chart_h = 20, 126, 550, 334
     _epd_rect(frame, chart_x, chart_y, chart_w, chart_h, fill=False)
     for ratio in (0.25, 0.5, 0.75):
         yy = chart_y + int(chart_h * ratio)
@@ -2020,27 +2023,44 @@ def render_epaper_frame(state):
     else:
         _epd_text(frame, 145, 230, 'WAITING FOR KLINE', 3)
 
-    panel_x = 558
-    _epd_rect(frame, panel_x, 64, 224, 312, fill=False)
+    panel_x = 588
+    _epd_rect(frame, panel_x, 64, 194, 396, fill=False)
     _epd_text(frame, panel_x + 18, 82, 'TEMP', 3)
     _epd_text(frame, panel_x + 18, 122,
               str(emotion.get('temperature') if emotion.get('temperature') is not None else '--'), 7)
-    _epd_text(frame, panel_x + 18, 190, 'PHASE ' + _phase_ascii(emotion.get('phase')), 2)
-    _epd_text(frame, panel_x + 18, 225,
+    _epd_text(frame, panel_x + 18, 186, 'PHASE ' + _phase_ascii(emotion.get('phase')), 2)
+    _epd_text(frame, panel_x + 18, 216,
               'CONF ' + _epd_float(emotion.get('confidence'), 0) + '%', 2)
     quality = state.get('quality') or {}
-    _epd_text(frame, panel_x + 18, 260, 'TDX ' + str(quality.get('tdx_status') or '--')[:9], 2)
-    _epd_text(frame, panel_x + 18, 295,
-              'DATA ' + ('STALE' if quality.get('stale') else 'OK'), 2)
-    _epd_text(frame, panel_x + 18, 330, 'RESEARCH ONLY', 2)
+    _epd_text(frame, panel_x + 18, 246,
+              'TDX ' + str(quality.get('tdx_status') or '--')[:12], 1)
+    _epd_text(frame, panel_x + 18, 263,
+              'DATA ' + ('STALE' if quality.get('stale') else 'OK'), 1)
+    _epd_line(frame, panel_x + 14, 282, panel_x + 179, 282)
 
-    _epd_rect(frame, 20, 394, 762, 66, fill=False)
     indices = state.get('indices') or []
     names = ('SH', 'SZ', 'CY', 'STAR', 'BJ')
-    for index, row in enumerate(indices[:5]):
-        x = 32 + index * 148
-        _epd_text(frame, x, 408, names[index], 2)
-        _epd_text(frame, x, 434, _epd_float(row.get('pct'), 2, True) + '%', 2)
+    if indices:
+        _epd_text(frame, panel_x + 18, 294, 'INDEX PULSE', 2)
+        pulse_rows = [
+            (names[index], _epd_float(row.get('pct'), 2, True) + '%')
+            for index, row in enumerate(indices[:5])
+        ]
+    else:
+        market = state.get('market') or {}
+        _epd_text(frame, panel_x + 18, 294, 'MARKET PULSE', 2)
+        pulse_rows = [
+            ('ZT', _epd_float(market.get('zt'), 0)),
+            ('DT', _epd_float(market.get('dt'), 0)),
+            ('UP', _epd_float(market.get('up'), 0)),
+            ('DOWN', _epd_float(market.get('down'), 0)),
+            ('FLOW', _epd_float(market.get('flow_yi'), 0)),
+        ]
+    for index, (label, value) in enumerate(pulse_rows[:5]):
+        y = 320 + index * 27
+        _epd_text(frame, panel_x + 18, y, label, 1)
+        _epd_text(frame, panel_x + 72, y - 2, value, 2)
+    _epd_text(frame, panel_x + 18, 448, 'RESEARCH ONLY', 1)
     return bytes(frame)
 
 

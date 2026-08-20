@@ -107,6 +107,11 @@ class DeviceConfigTests(unittest.TestCase):
 
 
 class FrameTests(unittest.TestCase):
+    @staticmethod
+    def _is_black(frame, x, y):
+        byte = frame[y * (server.EPAPER_WIDTH // 8) + x // 8]
+        return not bool(byte & (0x80 >> (x % 8)))
+
     def test_focus_frame_is_exact_display_size_and_bmp_is_valid(self):
         frame = server.render_epaper_frame(sample_state())
         bmp = server.epaper_frame_to_bmp(frame)
@@ -145,6 +150,23 @@ class FrameTests(unittest.TestCase):
         empty['focus']['kline'] = []
         without_rows = server.render_epaper_frame(empty)
         self.assertNotEqual(with_rows, without_rows)
+
+    def test_focus_layout_uses_the_former_footer_space(self):
+        frame = server.render_epaper_frame(sample_state())
+        chart_right_edge = sum(
+            self._is_black(frame, 569, y) for y in range(126, 460))
+        self.assertGreaterEqual(chart_right_edge, 330)
+
+    def test_focus_layout_has_market_fallback_when_indices_are_missing(self):
+        state = sample_state()
+        state['indices'] = []
+        frame = server.render_epaper_frame(state)
+        black = sum(
+            self._is_black(frame, x, y)
+            for y in range(286, 448)
+            for x in range(600, 770)
+        )
+        self.assertGreater(black, 300)
 
     def test_content_hash_ignores_clock_but_tracks_decision_changes(self):
         first = sample_state()
