@@ -3,10 +3,12 @@
    桥协议（window.postMessage）：
      工作台 → 壳层： {type:'dp-exit'} 返回会话视图
                     {type:'dp-ask', version:2, requestId, question, context}
+                    {type:'dp-generate', version:3, requestId, question, context}
      壳层 → 工作台： {type:'dp-ask-result', requestId, ok, error?}
+                    {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.5.0';
+import { applyChartTheme } from './charts.js?v=1.5.2';
 
 export const EMBEDDED = (() => {
   try {
@@ -17,6 +19,8 @@ export const EMBEDDED = (() => {
 })();
 
 let contextProvider = () => ({});
+const pendingGenerations = new Map();
+const GENERATION_TIMEOUT_MS = 190000;
 
 /** 注册当前页面上下文提供器；发送时读取，避免把轮询数据复制到桥状态。 */
 export function setBridgeContextProvider(provider) {
@@ -107,6 +111,34 @@ export function askDeepSeek(input) {
   return id;
 }
 
+/**
+ * 请求 Harness 在当前会话中完成一轮生成，并把最终正文回传给工作台。
+ * 调用方只负责把正文放入编辑框；保存仍由用户明确确认。
+ */
+export function generateWithDeepSeek(input, options = {}) {
+  if (!EMBEDDED) {
+    return Promise.resolve({ ok: false, error: '当前为独立运行模式，未连接 DeepSeek Harness' });
+  }
+  const spec = typeof input === 'string' ? { question: input } : (input || {});
+  const question = String(spec.question ?? spec.text ?? '').trim().slice(0, 2000);
+  if (!question) return Promise.resolve({ ok: false, error: '生成内容不能为空' });
+  let provided = {};
+  try { provided = contextProvider() || {}; } catch { /* 提供器失败不阻断发送 */ }
+  const id = requestId();
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs) || GENERATION_TIMEOUT_MS);
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      pendingGenerations.delete(id);
+      resolve({ ok: false, error: '等待 Harness 回填超时，请稍后重试' });
+    }, timeoutMs);
+    pendingGenerations.set(id, { resolve, timer });
+    post({
+      type: 'dp-generate', version: 3, requestId: id, question,
+      context: boundedContext({ ...provided, ...(spec.context || {}) }),
+    });
+  });
+}
+
 /** 壳层导航指令（主应用深链 → 工作台页面）与主题同步。 */
 export function initBridge() {
   window.addEventListener('message', (e) => {
@@ -120,6 +152,20 @@ export function initBridge() {
     }
     if (d.type === 'dp-ask-result') {
       document.dispatchEvent(new CustomEvent('harness-ask-result', { detail: d }));
+      return;
+    }
+    if (d.type === 'dp-generate-result') {
+      const id = String(d.requestId || '');
+      const pending = pendingGenerations.get(id);
+      if (!pending) return;
+      pendingGenerations.delete(id);
+      clearTimeout(pending.timer);
+      const reply = typeof d.reply === 'string' ? d.reply.trim().slice(0, 16000) : '';
+      const error = typeof d.error === 'string' ? d.error.trim().slice(0, 500) : '';
+      pending.resolve(d.ok === true && reply
+        ? { ok: true, reply }
+        : { ok: false, error: error || 'DeepSeek 没有返回可回填的正文' });
+      document.dispatchEvent(new CustomEvent('harness-generate-result', { detail: d }));
       return;
     }
     if (d.type !== 'dp-nav') return;

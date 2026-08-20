@@ -61,7 +61,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.5.0'
+VERSION = '1.5.2'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -2262,7 +2262,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.5.0'
+    server_version = 'DeepPulse/1.5.2'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -2375,7 +2375,7 @@ class Handler(BaseHTTPRequestHandler):
                       'capabilities': {
                           'tdx_local': tdx_status(probe=False),
                           'tdx_read_only': True,
-                          'bridge_protocol': 2,
+                          'bridge_protocol': 3,
                           'emotion_context_full': True,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',

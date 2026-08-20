@@ -1,10 +1,10 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.5.0';
-import { state, bus } from '../store.js?v=1.5.0';
-import { loadJournal } from '../store.js?v=1.5.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.5.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.5.0';
+import { api } from '../api.js?v=1.5.2';
+import { state, bus } from '../store.js?v=1.5.2';
+import { loadJournal } from '../store.js?v=1.5.2';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.5.2';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.5.2';
 
 let built = false;
 let sparksAt = 0;

@@ -1,6 +1,6 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.5.0';
+import { api } from './api.js?v=1.5.2';
 
 export const state = {
   emotion: null,      // /api/emotion 数据

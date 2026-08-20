@@ -1,8 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.5.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.5.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.5.0';
+import { api } from '../api.js?v=1.5.2';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.5.2';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.5.2';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.5.2';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -24,6 +25,28 @@ const TEMPLATE = `【复盘模板 · 情绪周期版】
 5. 情绪归因：是什么事件或资金行为驱动了今天的情绪变化？
 6. 明日计划：温度若升/若降，仓位如何调整？候选标的是什么？
 `;
+
+/** Harness 内优先使用当前会话生成并回填；独立版或 Harness 失败时使用本地大脑接口。 */
+async function generateReviewBody(prompt, intent) {
+  let harnessError = '';
+  if (EMBEDDED) {
+    const generated = await generateWithDeepSeek({ question: prompt, context: { intent } });
+    if (generated && generated.ok && generated.reply) {
+      return { reply: generated.reply.trim(), source: 'harness' };
+    }
+    harnessError = (generated && generated.error) || 'Harness 未返回正文';
+  }
+
+  try {
+    const local = await api.chat([{ role: 'user', content: prompt }]);
+    if (local && local.mode === 'llm' && local.reply) {
+      return { reply: local.reply.trim(), source: 'local' };
+    }
+  } catch (error) {
+    if (!harnessError) throw error;
+  }
+  throw new Error(harnessError || '尚未配置可用的 DeepSeek 大脑，请先在 Harness 打开会话或配置独立版 API');
+}
 
 export function init(container) {
   if (built) return;
@@ -175,23 +198,22 @@ export function init(container) {
     const box = container.querySelector('#st-jtext');
     btn.disabled = true;
     const prev = btn.textContent;
-    btn.textContent = 'DeepSeek 撰写中…';
+    btn.textContent = '生成中，完成后自动回填…';
     try {
       const PROMPT = '请基于今日市场上下文，为我生成一份结构化的 A 股情绪周期复盘，包含：'
         + '①今日情绪概况（温度/阶段/关键数据）②主线与梯队 ③风险点 ④明日策略与仓位。'
         + '用 Markdown，300 字以内，直接输出复盘正文。';
-      const r = await api.chat([{ role: 'user', content: PROMPT }]);
-      if (r && r.mode === 'llm' && r.reply) {
-        box.value = r.reply.trim();
-        toast('复盘已生成，检查后可保存');
-      } else {
-        toast('云端大脑暂不可用，请稍后再试', 'err');
-      }
+      const generated = await generateReviewBody(PROMPT, 'strategy-today-review-fill');
+      box.value = generated.reply;
+      toast(generated.source === 'harness'
+        ? 'DeepSeek 已回填复盘，检查后可保存'
+        : '复盘已由独立版大脑生成，检查后可保存');
     } catch (e) {
       toast('生成失败：' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
     }
-    btn.disabled = false;
-    btn.textContent = prev;
   });
 
   container.querySelector('#st-jlist').addEventListener('click', e => {
@@ -379,7 +401,7 @@ export function init(container) {
     const r = snap.raw || {};
     btn.disabled = true;
     const prev = btn.textContent;
-    btn.textContent = 'DeepSeek 撰写中…';
+    btn.textContent = '生成中，完成后自动回填…';
     try {
       const prompt = `请基于以下 ${selDate} 的情绪快照数据，生成一份结构化的 A 股情绪周期复盘`
         + `（①概况 ②主线与梯队 ③风险 ④次日策略，Markdown，250字内，直接输出正文）：`
@@ -388,20 +410,19 @@ export function init(container) {
         + `昨涨停指数 ${r.zt_idx_pct ?? '-'}%，昨连板指数 ${r.lb_idx_pct ?? '-'}%，`
         + `上涨 ${r.up} / 下跌 ${r.down}，成交 ${r.turnover_yi ?? '-'} 亿，主力净流入 ${r.flow_yi ?? '-'} 亿，`
         + `上证 vs MA20 ${r.trend_pct ?? '-'}%，研究仓位区间 ${(snap.advice || {}).position || '-'}`;
-      const resp = await api.chat([{ role: 'user', content: prompt }]);
-      if (resp && resp.mode === 'llm' && resp.reply) {
-        calText.value = resp.reply.trim();
-        toast('复盘已生成，检查后可保存');
-      } else {
-        toast('云端大脑暂不可用', 'err');
-      }
+      const generated = await generateReviewBody(prompt, 'strategy-calendar-review-fill');
+      calText.value = generated.reply;
+      toast(generated.source === 'harness'
+        ? 'DeepSeek 已回填该日复盘，检查后可保存'
+        : '复盘已由独立版大脑生成，检查后可保存');
     } catch (e) {
       toast('生成失败：' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
     }
-    btn.disabled = false;
-    btn.textContent = prev;
   });
-  calNote.textContent = '格子颜色 = 当日情绪阶段（蓝冰点/青修复/金发酵/红高潮/紫亢奋），📔 = 你写过的复盘。点击任意一天，可补写或让 DeepSeek 基于当日快照生成复盘。';
+  calNote.textContent = '格子颜色 = 当日情绪阶段（蓝冰点/青修复/金发酵/红高潮/紫亢奋），📔 = 你写过的复盘。点击任意一天，可补写或让 DeepSeek 基于当日快照生成复盘；生成期间可查看会话，正文完整后会自动回填。';
   calRender = renderCal;
   renderCal();
 }

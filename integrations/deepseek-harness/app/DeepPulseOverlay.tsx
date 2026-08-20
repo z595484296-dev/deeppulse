@@ -90,6 +90,8 @@ function PulseLogo({ size }: { size: number }): ReactNode {
 
 interface SessionFaceLike {
   prompt(content: Array<{ type: 'text'; text: string }>, mode: 'queue' | 'steer'): Promise<unknown>
+  getSnapshot(): SessionSnapshotLike
+  subscribe(listener: () => void): () => void
 }
 
 interface SessionsLike {
@@ -98,6 +100,22 @@ interface SessionsLike {
 }
 
 type BridgeRecord = Record<string, unknown>
+
+interface SessionSnapshotLike {
+  nodes?: readonly unknown[]
+  turnEnds?: ReadonlyMap<number, number>
+  removed?: boolean
+}
+
+export type HarnessReplyState =
+  | { status: 'pending' }
+  | { status: 'complete'; reply: string }
+  | { status: 'error'; error: string }
+
+const GENERATION_TIMEOUT_MS = 180_000
+const MAX_GENERATED_REPLY = 16_000
+const FILL_OPEN = '<deeppulse_fill>'
+const FILL_CLOSE = '</deeppulse_fill>'
 
 export interface DeepPulseAsk {
   requestId: string
@@ -140,7 +158,7 @@ const RAW_EMOTION_KEYS = [
 /** Validate the iframe wire message and retain only context fields owned by DeepPulse. */
 export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined {
   const data = recordOf(value)
-  if (data['type'] !== 'dp-ask') return undefined
+  if (data['type'] !== 'dp-ask' && data['type'] !== 'dp-generate') return undefined
   const question = short(data['question'] ?? data['text'], 2000)
   if (!question) return undefined
   const raw = recordOf(data['context'])
@@ -271,6 +289,105 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   }
 }
 
+function nodeSeq(value: unknown): number {
+  const seq = finite(recordOf(value)['seq'])
+  return seq ?? -1
+}
+
+function contentText(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((part) => {
+      const block = recordOf(part)
+      return block['type'] === 'text' ? (short(block['text'], 100_000) ?? '') : ''
+    })
+    .join('')
+}
+
+function assistantText(value: unknown): string {
+  const node = recordOf(value)
+  if (!Array.isArray(node['blocks'])) return ''
+  return node['blocks']
+    .map((part) => {
+      const block = recordOf(part)
+      return block['kind'] === 'text' ? (short(block['text'], 100_000) ?? '') : ''
+    })
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+/** Extract a model-declared complete editor body, ignoring any later analysis. */
+function completedFillBody(value: string): string | undefined {
+  const start = value.indexOf(FILL_OPEN)
+  if (start < 0) return undefined
+  const bodyStart = start + FILL_OPEN.length
+  const end = value.indexOf(FILL_CLOSE, bodyStart)
+  if (end < 0) return undefined
+  const body = value.slice(bodyStart, end).trim().slice(0, MAX_GENERATED_REPLY)
+  return body || undefined
+}
+
+/** Highest visible conversation sequence before a generated prompt is admitted. */
+export function harnessSnapshotCursor(snapshot: SessionSnapshotLike): number {
+  const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : []
+  let cursor = -1
+  for (const node of nodes) cursor = Math.max(cursor, nodeSeq(node))
+  if (snapshot.turnEnds !== undefined) {
+    for (const seq of snapshot.turnEnds.values()) cursor = Math.max(cursor, seq)
+  }
+  return cursor
+}
+
+/**
+ * Resolve only the completed assistant turn that follows the exact generated prompt.
+ * This correlation prevents an answer from an already-running turn from being
+ * returned to DeepPulse when the requested prompt had to wait in the queue.
+ */
+export function completedHarnessReply(
+  snapshot: SessionSnapshotLike,
+  promptText: string,
+  afterSeq: number,
+): HarnessReplyState {
+  if (snapshot.removed) return { status: 'error', error: '当前会话已被移除' }
+  const nodes = (Array.isArray(snapshot.nodes) ? snapshot.nodes : [])
+    .map(recordOf)
+    .filter(node => finite(node['seq']) !== undefined)
+    .sort((a, b) => (finite(a['seq']) ?? 0) - (finite(b['seq']) ?? 0))
+  const promptNode = nodes.find(node =>
+    node['kind'] === 'user'
+    && (finite(node['seq']) ?? -1) > afterSeq
+    && contentText(node['content']) === promptText)
+  if (!promptNode) return { status: 'pending' }
+
+  const promptSeq = finite(promptNode['seq']) ?? afterSeq
+  const nextUserSeq = nodes.find(node =>
+    node['kind'] === 'user' && (finite(node['seq']) ?? -1) > promptSeq)?.['seq']
+  const upperBound = finite(nextUserSeq) ?? Number.POSITIVE_INFINITY
+  const inReplyWindow = nodes.filter((node) => {
+    const seq = finite(node['seq']) ?? -1
+    return seq > promptSeq && seq < upperBound
+  })
+  const turnError = inReplyWindow.find(node => node['kind'] === 'turn-error')
+  if (turnError) {
+    return { status: 'error', error: short(turnError['message'], 500) ?? 'DeepSeek 生成失败' }
+  }
+
+  const firstAssistant = inReplyWindow.find(node => node['kind'] === 'assistant')
+  const turn = finite(firstAssistant?.['turn'])
+  if (turn === undefined) return { status: 'pending' }
+  const assistants = inReplyWindow.filter(node => node['kind'] === 'assistant' && finite(node['turn']) === turn)
+  if (assistants.some(node => node['interrupted'] === true)) {
+    return { status: 'error', error: 'DeepSeek 生成已被中止' }
+  }
+  const reply = assistants.map(assistantText).filter(Boolean).join('\n\n').trim().slice(0, MAX_GENERATED_REPLY)
+  const completedFill = completedFillBody(reply)
+  if (completedFill !== undefined) return { status: 'complete', reply: completedFill }
+  if (!(snapshot.turnEnds instanceof Map) || !snapshot.turnEnds.has(turn)) return { status: 'pending' }
+  return reply
+    ? { status: 'complete', reply }
+    : { status: 'error', error: 'DeepSeek 已完成本轮，但没有返回可回填的正文' }
+}
+
 /** Build one self-contained Harness prompt; iframe data is quoted as data, never interpreted as instructions. */
 export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
   const context = JSON.stringify(ask.context, null, 2)
@@ -290,6 +407,17 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '5. emotionAnalysis 已披露模型版本、公式、阶段阈值、11项指标、历史和缺失项；存在这些字段时不得再称其口径未披露。',
     '6. officialDisclosuresScope=not-applicable-no-security-selected 表示当前页面没有选中个股，不代表官方公告源缺失。',
     '7. transitionCalibrated=false 时只能称为启发式状态倾向，不得称为经过校准的预测概率。',
+  ].join('\n')
+}
+
+/** Add an explicit completion envelope so editor fills need not wait for unrelated post-analysis. */
+export function formatDeepPulseGeneratePrompt(ask: DeepPulseAsk): string {
+  return [
+    formatDeepPulsePrompt(ask),
+    '',
+    '这是需要回填到深脉编辑框的生成请求。',
+    `请只把最终正文放在 ${FILL_OPEN} 与 ${FILL_CLOSE} 之间；闭合标签代表正文已经完整。`,
+    '标签之外不要补充说明。',
   ].join('\n')
 }
 
@@ -313,6 +441,72 @@ async function askHarness(ctx: Context, text: string): Promise<{ ok: boolean; er
     return { ok: false, error: error instanceof Error ? error.message : '发送到 Harness 失败' }
   }
   return { ok: false, error: '请先在 DeepSeek Harness 中打开一个会话' }
+}
+
+function waitForHarnessReply(
+  face: SessionFaceLike,
+  promptText: string,
+  afterSeq: number,
+  timeoutMs = GENERATION_TIMEOUT_MS,
+): { promise: Promise<{ ok: boolean; reply?: string; error?: string }>; cancel(): void } {
+  let stop = (): void => {}
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let settled = false
+  let settle: ((value: { ok: boolean; reply?: string; error?: string }) => void) | undefined
+  const finish = (value: { ok: boolean; reply?: string; error?: string }): void => {
+    if (settled) return
+    settled = true
+    stop()
+    if (timer !== undefined) clearTimeout(timer)
+    settle?.(value)
+  }
+  const check = (): void => {
+    try {
+      const state = completedHarnessReply(face.getSnapshot(), promptText, afterSeq)
+      if (state.status === 'complete') finish({ ok: true, reply: state.reply })
+      else if (state.status === 'error') finish({ ok: false, error: state.error })
+    } catch (error) {
+      finish({ ok: false, error: error instanceof Error ? error.message : '读取 DeepSeek 回答失败' })
+    }
+  }
+  const promise = new Promise<{ ok: boolean; reply?: string; error?: string }>((resolve) => {
+    settle = resolve
+    stop = face.subscribe(check)
+    timer = setTimeout(() => { finish({ ok: false, error: 'DeepSeek 生成超时，请稍后重试' }) }, timeoutMs)
+    check()
+  })
+  return { promise, cancel: () => { finish({ ok: false, error: '生成请求未被当前会话接收' }) } }
+}
+
+async function generateHarness(
+  ctx: Context,
+  text: string,
+): Promise<{ ok: boolean; reply?: string; error?: string }> {
+  try {
+    const sessions = ctx.get('sessions') as SessionsLike | undefined
+    const cur = sessions?.list.getSnapshot().current
+    if (!sessions || !cur) return { ok: false, error: '请先在 DeepSeek Harness 中打开一个会话' }
+    const face = sessions.binding(cur)?.session
+    if (!face) return { ok: false, error: '当前会话尚未准备好' }
+
+    const waiter = waitForHarnessReply(face, text, harnessSnapshotCursor(face.getSnapshot()))
+    let result: unknown
+    try {
+      result = await face.prompt([{ type: 'text', text }], 'queue')
+    } catch (error) {
+      waiter.cancel()
+      throw error
+    }
+    const response = recordOf(result)
+    if (response['ok'] === false) {
+      waiter.cancel()
+      const failure = recordOf(response['error'])
+      return { ok: false, error: short(failure['message'], 300) ?? '当前会话暂时无法接收生成请求' }
+    }
+    return await waiter.promise
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : '通过 Harness 生成失败' }
+  }
 }
 
 /** 深脉链接识别：会话中出现的任何工作台深链。 */
@@ -412,10 +606,9 @@ export function DeepPulseView({ ctx }: DeepPulseViewProps): ReactNode {
   useEffect(() => {
     const onMessage = (e: MessageEvent): void => {
       const d = recordOf(e.data)
-      if (d.type !== 'dp-exit' && d.type !== 'dp-ask') return
+      if (d.type !== 'dp-exit' && d.type !== 'dp-ask' && d.type !== 'dp-generate') return
       const fw = frameRef.current?.contentWindow ?? null
-      const fromIframe = fw !== null && e.source === fw
-      if (!fromIframe) {
+      if (fw === null || e.source !== fw) {
         // 拦截：来源不是深脉工作台 iframe 的消息，绝不触发切回
         setExitReason(`已拦截来源不明的返回指令（origin: ${e.origin || '未知'}）`)
         return
@@ -430,7 +623,7 @@ export function DeepPulseView({ ctx }: DeepPulseViewProps): ReactNode {
         if (!ask) return
         void (async () => {
           const result = await askHarness(ctx, formatDeepPulsePrompt(ask))
-          fw?.postMessage({
+          fw.postMessage({
             type: 'dp-ask-result', version: 2, requestId: ask.requestId,
             ok: result.ok, error: result.error,
           }, '*')
@@ -441,10 +634,23 @@ export function DeepPulseView({ ctx }: DeepPulseViewProps): ReactNode {
             setExitReason(result.error ?? '发送到当前会话失败')
           }
         })()
+      } else {
+        const ask = normalizeDeepPulseAsk(d)
+        if (!ask) return
+        void (async () => {
+          const result = await generateHarness(ctx, formatDeepPulseGeneratePrompt(ask))
+          fw.postMessage({
+            type: 'dp-generate-result', version: 3, requestId: ask.requestId,
+            ok: result.ok, reply: result.reply, error: result.error,
+          }, '*')
+          setExitReason(result.ok
+            ? 'DeepSeek 生成内容已回填到深脉，等待确认保存'
+            : (result.error ?? 'DeepSeek 生成失败'))
+        })()
       }
     }
     window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
+    return () => { window.removeEventListener('message', onMessage) }
   }, [ctx])
 
   // 会话 → 工作台：拦截深脉深链点击，转入工作台对应页面（免刷新导航）
