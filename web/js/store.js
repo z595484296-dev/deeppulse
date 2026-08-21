@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.8.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.8.0';
+import { api } from './api.js?v=1.9.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.9.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -12,6 +12,7 @@ export const state = {
   degraded: false,
   sparks: null,       // 指数迷你K线
   monitor: null,
+  routine: null,
 };
 
 export const bus = new EventTarget();
@@ -29,8 +30,9 @@ const PROFILE_KEYS = {
   attention_inbox: 'dp_attention_inbox_v1',
   attention_preferences: 'dp_attention_preferences_v1',
   background_monitor: 'dp_background_monitor_v1',
+  market_routine: 'dp_market_routine_v1',
 };
-const PROFILE_OBJECT_KEYS = new Set(['attention_preferences', 'background_monitor']);
+const PROFILE_OBJECT_KEYS = new Set(['attention_preferences', 'background_monitor', 'market_routine']);
 const profileTimers = new Map();
 
 function persistProfile(key, value) {
@@ -72,6 +74,7 @@ export async function syncProfile() {
   emit('attention', loadAttentionInbox());
   emit('attention-preferences', loadAttentionPreferences());
   emit('background-monitor', loadBackgroundMonitor());
+  emit('market-routine', loadMarketRoutine());
   document.dispatchEvent(new CustomEvent('profile-synced'));
   return profile;
 }
@@ -317,6 +320,15 @@ const BACKGROUND_MONITOR_KEY = 'dp_background_monitor_v1';
 export function loadBackgroundMonitor() {
   try {
     const value = JSON.parse(localStorage.getItem(BACKGROUND_MONITOR_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+const MARKET_ROUTINE_KEY = 'dp_market_routine_v1';
+
+export function loadMarketRoutine() {
+  try {
+    const value = JSON.parse(localStorage.getItem(MARKET_ROUTINE_KEY) || '{}');
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   } catch { return {}; }
 }

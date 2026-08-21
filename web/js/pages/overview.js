@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.8.0';
-import { state, bus } from '../store.js?v=1.8.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.8.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.8.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.8.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.8.0';
+import { api } from '../api.js?v=1.9.0';
+import { state, bus, syncProfile } from '../store.js?v=1.9.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.9.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.9.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.9.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.9.0';
 
 let built = false;
 let sparksAt = 0;
@@ -49,6 +49,22 @@ export function init(container) {
           </div>
         </div>
       </div>
+    </section>
+
+    <section class="card routine-card" id="ov-routine" aria-labelledby="ov-routine-title">
+      <div class="routine-main">
+        <div class="routine-heading">
+          <div><span class="routine-dot" aria-hidden="true"></span><b id="ov-routine-title">主动服务日程</b></div>
+          <span class="routine-state" id="ov-routine-state">正在读取</span>
+          <span class="routine-next" id="ov-routine-next">下一次服务时间待确认</span>
+        </div>
+        <div class="routine-options" role="group" aria-label="选择深脉主动服务时段">
+          <label><input type="checkbox" data-routine-task="pre_market"><span><b>盘前准备</b><small>08:45 后整理观察清单</small></span></label>
+          <label><input type="checkbox" data-routine-task="intraday"><span><b>盘中检查</b><small>只做一次结构检查</small></span></label>
+          <label><input type="checkbox" data-routine-task="close_review"><span><b>收盘复盘</b><small>15:10 后生成复盘待办</small></span></label>
+        </div>
+      </div>
+      <p class="routine-boundary">逐项授权，关闭网页后仍由本机服务执行；关闭本机服务即停止。按北京时间工作日窗口运行，每条提醒都会注明数据日，不会把旧数据冒充实时行情。</p>
     </section>
 
     <div class="grid idx-grid" id="ov-indices" style="margin-top:14px"></div>
@@ -207,6 +223,31 @@ export function init(container) {
   bus.addEventListener('alerts', rerenderBrief);
   bus.addEventListener('journal', rerenderBrief);
   bus.addEventListener('brief-receipts', rerenderBrief);
+  bus.addEventListener('market-routine', e => renderRoutine(container, e.detail));
+
+  container.querySelector('#ov-routine').addEventListener('change', async e => {
+    const input = e.target.closest('[data-routine-task]');
+    if (!input) return;
+    const inputs = [...container.querySelectorAll('[data-routine-task]')];
+    const tasks = Object.fromEntries(inputs.map(node => [node.dataset.routineTask, node.checked]));
+    inputs.forEach(node => { node.disabled = true; });
+    try {
+      const result = await api.saveRoutineConfig({ tasks });
+      state.routine = result.routine;
+      await syncProfile();
+      renderRoutine(container, result.routine);
+      toast(tasks[input.dataset.routineTask]
+        ? `${input.parentElement.querySelector('b').textContent}已开启`
+        : `${input.parentElement.querySelector('b').textContent}已关闭`);
+    } catch {
+      input.checked = !input.checked;
+      toast('主动服务设置失败，请确认本机深脉服务正在运行', 'err');
+      renderRoutine(container, state.routine);
+    } finally {
+      inputs.forEach(node => { node.disabled = false; });
+    }
+  });
+  refreshRoutine(container);
 
   // 今日异动流（新涨停/炸板，app.js 差分后推送）
   const movesEl = container.querySelector('#ov-moves');
@@ -224,6 +265,55 @@ export function init(container) {
   };
   renderMoves([]);
   bus.addEventListener('moves', e => renderMoves(e.detail));
+}
+
+const ROUTINE_STATES = {
+  disabled: '未开启',
+  waiting: '等待下一时段',
+  non_trading_day: '非交易日等待',
+  due: '正在准备',
+  published: '已生成提醒',
+  completed_window: '本时段已完成',
+  error: '需要检查',
+  stopped: '服务已停止',
+};
+
+function renderRoutine(container, routine) {
+  const root = container.querySelector('#ov-routine');
+  if (!root) return;
+  const value = routine || {};
+  const tasks = value.config && value.config.tasks || {};
+  root.querySelectorAll('[data-routine-task]').forEach(input => {
+    input.checked = tasks[input.dataset.routineTask] === true;
+  });
+  const stateName = value.runtime && value.runtime.state || 'disabled';
+  root.dataset.state = stateName;
+  root.querySelector('#ov-routine-state').textContent = ROUTINE_STATES[stateName] || '等待服务';
+  const next = value.next_service;
+  if (next && next.at) {
+    const at = new Date(next.at);
+    const day = at.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+    const time = at.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    root.querySelector('#ov-routine-next').textContent = `下一次：${day} ${time} · ${next.label}`;
+  } else {
+    root.querySelector('#ov-routine-next').textContent = value.config && value.config.enabled
+      ? '等待下一个已授权时段' : '选择时段后由本机主动服务';
+  }
+}
+
+async function refreshRoutine(container) {
+  try {
+    const routine = await api.routineStatus();
+    state.routine = routine;
+    renderRoutine(container, routine);
+  } catch {
+    const root = container.querySelector('#ov-routine');
+    if (root) {
+      root.dataset.state = 'error';
+      root.querySelector('#ov-routine-state').textContent = '连接失败';
+      root.querySelector('#ov-routine-next').textContent = '请确认本机深脉服务正在运行';
+    }
+  }
 }
 
 function renderProactiveBrief(container, data) {

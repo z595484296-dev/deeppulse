@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.8.0';
-import { esc, toast, downloadText } from '../util.js?v=1.8.0';
+import { api } from '../api.js?v=1.9.0';
+import { esc, toast, downloadText } from '../util.js?v=1.9.0';
 
 let built = false;
 
@@ -58,6 +58,24 @@ export function init(container) {
         <div class="tdx-safety">🔒 深脉适配器只允许行情、K线、证券信息与市场统计查询；账户、持仓、下单和撤单接口均未开放。</div>
       </div>
 
+      <div class="card span-12 akshare-integration">
+        <div class="card-head">
+          <div>
+            <div class="card-title">🧭 AKShare 补充层</div>
+            <div class="card-sub">交易日历优先接入 · 后续用于宏观、跨市场与行业数据补充</div>
+          </div>
+          <span class="source-tier enrichment">补充数据</span>
+        </div>
+        <div class="tdx-grid">
+          <div id="ds-akshare-status" class="tdx-status"><div class="empty">正在读取本机环境…</div></div>
+          <div class="tdx-actions">
+            <button class="btn primary" id="ds-akshare-probe">核对交易日历</button>
+            <a class="btn" href="https://akshare.akfamily.xyz/" target="_blank" rel="noopener noreferrer">官方文档</a>
+          </div>
+        </div>
+        <div class="tdx-safety">分层原则：AKShare 不替代交易所公告、通达信本地行情或实时行情主链路；接口异常时回退为工作日判断，并明确标注“未确认”。</div>
+      </div>
+
       <div class="card span-12">
         <div class="card-head"><div class="card-title">免责声明</div></div>
         <div style="font-size:12px;color:var(--text-2);line-height:2">
@@ -88,6 +106,13 @@ export function init(container) {
     await renderTdxStatus(container, true);
     await renderSources(container);
     btn.disabled = false; btn.textContent = '重新检测';
+  });
+  container.querySelector('#ds-akshare-probe').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = '核对中…';
+    await renderAkshareStatus(container, true);
+    await renderSources(container);
+    btn.disabled = false; btn.textContent = '重新核对';
   });
   // 导出情绪历史快照
   const exportHistory = async (fmt) => {
@@ -129,7 +154,7 @@ const STATUS_LABELS = {
   unavailable: '本地服务不可用', unsupported: '当前系统不支持', disabled: '已关闭',
 };
 
-const TIER_LABELS = { official: '一级官方', local: '本地终端', market: '市场聚合' };
+const TIER_LABELS = { official: '一级官方', local: '本地终端', market: '市场聚合', enrichment: '补充数据' };
 
 async function renderSources(container) {
   const body = container.querySelector('#ds-sources');
@@ -185,6 +210,33 @@ async function renderTdxStatus(container, fresh = false) {
   }
 }
 
+async function renderAkshareStatus(container, probe = false) {
+  const el = container.querySelector('#ds-akshare-status');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">正在核对 AKShare 与交易日历…</div>';
+  try {
+    const s = await api.akshareStatus(probe);
+    const calendar = s.calendar || {};
+    const tone = s.status === 'ok' ? 'ok' : s.status === 'not_installed' ? 'warn' : 'warn';
+    const label = s.status === 'ok' ? '交易日历已接入'
+      : s.status === 'not_installed' ? '本机未安装 AKShare'
+        : s.status === 'degraded' ? '交易日历降级' : '已安装，尚未核对';
+    const details = [
+      `版本：${esc(s.version || (s.installed ? '等待载入' : '--'))}`,
+      calendar.date ? `日期：${esc(calendar.date)} · ${calendar.is_trade_date ? '交易日' : '非交易日'}` : '日历：等待主动服务调用',
+      `定位：${esc(s.role || '补充数据层')}`,
+    ];
+    el.innerHTML = `
+      <div class="tdx-state ${tone}"><i class="dot ${tone}"></i>${esc(label)}</div>
+      <div class="tdx-detail">${details.map(x => `<span>${x}</span>`).join('')}</div>
+      ${(s.error || calendar.error) ? `<div class="tdx-error">${esc(s.error || calendar.error)}</div>` : ''}
+    `;
+    if (s.status === 'ok') toast('AKShare 交易日历核对成功', 'ok');
+  } catch (e) {
+    el.innerHTML = `<div class="tdx-state err"><i class="dot err"></i>核对失败</div><div class="tdx-error">${esc(e.message)}</div>`;
+  }
+}
+
 async function renderStatus(container) {
   const el = container.querySelector('#ds-status');
   el.innerHTML = '<div class="v">正在检测本地服务…</div>';
@@ -218,5 +270,7 @@ async function renderStatus(container) {
 
 export async function refresh(container) {
   init(container);
-  await Promise.allSettled([renderSources(container), renderStatus(container), renderTdxStatus(container)]);
+  await Promise.allSettled([
+    renderSources(container), renderStatus(container), renderTdxStatus(container), renderAkshareStatus(container),
+  ]);
 }

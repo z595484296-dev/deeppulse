@@ -18,6 +18,8 @@
 import json
 import hashlib
 import hmac
+import importlib
+import importlib.util
 import os
 import re
 import secrets
@@ -36,6 +38,9 @@ try:
     import tdx_local as tdx_local_api
 except Exception:
     tdx_local_api = None
+
+_akshare_module = None
+_akshare_error = None
 
 # ---------------------------------------------------------------- 基础配置
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -61,7 +66,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.8.0'
+VERSION = '1.9.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -161,7 +166,87 @@ SOURCE_CATALOG = [
         'homepage': 'https://gu.qq.com/',
         'hosts': ['qt.gtimg.cn', 'web.ifzq.gtimg.cn'], 'mode': 'fallback',
     },
+    {
+        'id': 'akshare', 'name': 'AKShare', 'tier': 'enrichment',
+        'role': '交易日历、宏观与跨市场公开数据补充；不作为实时行情或官方披露主源',
+        'homepage': 'https://akshare.akfamily.xyz/',
+        'hosts': [], 'mode': 'optional_local',
+    },
 ]
+
+
+def load_akshare():
+    global _akshare_module, _akshare_error
+    if _akshare_module is not None:
+        return _akshare_module
+    try:
+        _akshare_module = importlib.import_module('akshare')
+        _akshare_error = None
+        return _akshare_module
+    except Exception as exc:
+        _akshare_error = str(exc)[:200]
+        return None
+
+
+def akshare_trade_dates():
+    module = load_akshare()
+    if module is None or not hasattr(module, 'tool_trade_date_hist_sina'):
+        raise RuntimeError('AKShare 交易日历接口不可用')
+    started = time.monotonic()
+    try:
+        frame = module.tool_trade_date_hist_sina()
+        values = frame['trade_date'].tolist()
+        dates = {str(value)[:10] for value in values}
+        _record_source('akshare:tool_trade_date_hist_sina', True,
+                       (time.monotonic() - started) * 1000)
+        return dates
+    except Exception as exc:
+        _record_source('akshare:tool_trade_date_hist_sina', False,
+                       (time.monotonic() - started) * 1000, exc)
+        raise
+
+
+def market_calendar_info(current=None):
+    value = (current or now_bj()).astimezone(BJC)
+    day = value.strftime('%Y-%m-%d')
+    if value.weekday() >= 5:
+        return {'date': day, 'is_trade_date': False, 'confirmed': True,
+                'basis': 'weekend', 'source': 'system-calendar'}
+    if importlib.util.find_spec('akshare') is not None:
+        try:
+            dates = cached('akshare_trade_calendar', 12 * 3600, akshare_trade_dates)
+            return {'date': day, 'is_trade_date': day in dates, 'confirmed': True,
+                    'basis': 'AKShare 交易日历', 'source': 'akshare'}
+        except Exception as exc:
+            return {'date': day, 'is_trade_date': True, 'confirmed': False,
+                    'basis': '工作日降级判断', 'source': 'system-calendar',
+                    'error': str(exc)[:160]}
+    return {'date': day, 'is_trade_date': True, 'confirmed': False,
+            'basis': '工作日降级判断', 'source': 'system-calendar',
+            'error': 'AKShare 未安装'}
+
+
+def akshare_status(probe=False):
+    installed = importlib.util.find_spec('akshare') is not None
+    module = load_akshare() if probe and installed else _akshare_module
+    status = 'not_installed' if not installed else 'unobserved'
+    calendar = None
+    if probe and module is not None:
+        calendar = market_calendar_info()
+        status = 'ok' if calendar.get('confirmed') else 'degraded'
+    else:
+        with _source_lock:
+            observation = dict(_source_stats.get('akshare:tool_trade_date_hist_sina') or {})
+        if observation:
+            status = 'ok' if observation.get('ok') else 'degraded'
+    return {
+        'installed': installed,
+        'version': str(getattr(module, '__version__', '') or '') or None,
+        'status': status,
+        'calendar': calendar,
+        'role': '补充层：交易日历、宏观与跨市场公开数据；不提升为官方或实时主源',
+        'error': _akshare_error,
+    }
 
 
 def _record_source(host, ok, latency_ms, error=''):
@@ -253,6 +338,12 @@ def source_catalog():
                     status = 'ok' if last.get('ok') else 'unavailable'
                 else:
                     status = 'unobserved'
+        elif src['id'] == 'akshare':
+            environment = akshare_status(probe=False)
+            status = environment['status']
+            observation = stats.get('akshare:tool_trade_date_hist_sina')
+            if observation:
+                last = observation
         elif src['mode'] == 'reference':
             status = 'reference'
         elif circuit:
@@ -276,7 +367,7 @@ def source_catalog():
     return {
         'generated_at': now_bj().isoformat(timespec='seconds'),
         'items': items,
-        'policy': '官方披露优先；通达信本地源仅作只读行情增强和交叉验证；市场聚合用于备援与线索；未观测不等于可用。',
+        'policy': '官方披露优先；通达信用于本地只读行情增强；AKShare 只作交易日历、宏观与跨市场补充；市场聚合用于备援与线索；未观测不等于可用。',
     }
 
 
@@ -1321,10 +1412,12 @@ PROFILE_LIST_LIMITS = {
     'chat_history': 60,
     'brief_receipts': 200,
     'attention_inbox': 200,
+    'routine_receipts': 180,
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
     'background_monitor': 16 * 1024,
+    'market_routine': 16 * 1024,
 }
 
 
@@ -1684,6 +1777,340 @@ def stop_background_monitor():
     _monitor_stop.set()
     _monitor_wake.set()
     thread = _monitor_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=3)
+
+
+# ---------------------------------------------------------------- 交易日主动服务（盘前 / 盘中 / 收盘，逐项授权）
+
+_routine_lock = threading.Lock()
+_routine_stop = threading.Event()
+_routine_wake = threading.Event()
+_routine_thread = None
+_routine_runtime = {
+    'thread_running': False,
+    'state': 'disabled',
+    'last_check_at': None,
+    'last_run_at': None,
+    'last_run_kind': None,
+    'next_service_at': None,
+    'last_error': None,
+    'checks': 0,
+    'published_count': 0,
+}
+ROUTINE_LABELS = {
+    'pre_market': '盘前准备',
+    'intraday': '盘中检查',
+    'close_review': '收盘复盘',
+}
+
+
+def normalize_routine_config(value=None):
+    source = value if isinstance(value, dict) else {}
+    tasks = source.get('tasks') if isinstance(source.get('tasks'), dict) else source
+    normalized = {key: tasks.get(key) is True for key in ROUTINE_LABELS}
+    return {
+        'tasks': normalized,
+        'enabled': any(normalized.values()),
+        'market_hours_basis': 'Asia/Shanghai weekday windows; data date is always disclosed',
+        'enabled_at': str(source.get('enabled_at') or source.get('enabledAt') or '')[:40] or None,
+    }
+
+
+def load_routine_config():
+    profile = load_profile().get('data') or {}
+    return normalize_routine_config(profile.get('market_routine'))
+
+
+def save_routine_config(value):
+    cfg = normalize_routine_config(value)
+    previous = load_routine_config()
+    if cfg['enabled'] and not previous['enabled']:
+        cfg['enabled_at'] = now_bj().isoformat(timespec='seconds')
+    elif not cfg['enabled']:
+        cfg['enabled_at'] = None
+    saved = save_profile({'market_routine': cfg})
+    _routine_wake.set()
+    return saved
+
+
+def _routine_due_kind(current, calendar_loader=None):
+    """Return the currently due service window. Confirmed non-trading dates are skipped."""
+    calendar = (calendar_loader or market_calendar_info)(current)
+    if not calendar.get('is_trade_date'):
+        return None
+    minute = current.hour * 60 + current.minute
+    if 8 * 60 + 45 <= minute <= 9 * 60 + 25:
+        return 'pre_market'
+    if 10 * 60 + 15 <= minute <= 11 * 60 + 30 or 13 * 60 <= minute <= 14 * 60 + 45:
+        return 'intraday'
+    if 15 * 60 + 10 <= minute <= 21 * 60 + 30:
+        return 'close_review'
+    return None
+
+
+def _routine_occurrences(start, days=8):
+    windows = (
+        ('pre_market', 8, 45),
+        ('intraday', 10, 15),
+        ('close_review', 15, 10),
+    )
+    base = start.astimezone(BJC)
+    for offset in range(days):
+        day = (base + timedelta(days=offset)).date()
+        if day.weekday() >= 5:
+            continue
+        anchor = datetime(day.year, day.month, day.day, 8, 0, tzinfo=BJC)
+        if not market_calendar_info(anchor).get('is_trade_date'):
+            continue
+        for kind, hour, minute in windows:
+            yield kind, datetime(day.year, day.month, day.day, hour, minute, tzinfo=BJC)
+
+
+def _routine_receipt_ids(profile=None):
+    data = profile if isinstance(profile, dict) else (load_profile().get('data') or {})
+    return {str(row.get('id')) for row in (data.get('routine_receipts') or [])
+            if isinstance(row, dict) and row.get('id')}
+
+
+def next_routine_service(current=None, config=None, profile=None):
+    now = (current or now_bj()).astimezone(BJC)
+    cfg = config or load_routine_config()
+    receipts = _routine_receipt_ids(profile)
+    due = _routine_due_kind(now)
+    if due and cfg['tasks'].get(due):
+        receipt_id = 'routine:%s:%s' % (due, now.strftime('%Y-%m-%d'))
+        if receipt_id not in receipts:
+            return {'kind': due, 'label': ROUTINE_LABELS[due],
+                    'at': now.isoformat(timespec='minutes'), 'due_now': True}
+    for kind, at in _routine_occurrences(now):
+        if not cfg['tasks'].get(kind) or at < now:
+            continue
+        receipt_id = 'routine:%s:%s' % (kind, at.strftime('%Y-%m-%d'))
+        if receipt_id not in receipts:
+            return {'kind': kind, 'label': ROUTINE_LABELS[kind], 'at': at.isoformat(timespec='minutes')}
+    return None
+
+
+def _journal_has_date(rows, data_date):
+    compact = str(data_date or '').replace('-', '')
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        value = str(row.get('date') or row.get('dataDate') or row.get('data_date') or '')
+        if value.replace('-', '') == compact:
+            return True
+    return False
+
+
+def build_routine_attention(kind, current=None, emotion_loader=None):
+    now = (current or now_bj()).astimezone(BJC)
+    profile = load_profile().get('data') or {}
+    created = int(now.timestamp() * 1000)
+    day = now.strftime('%Y-%m-%d')
+    common = {
+        'id': 'routine:%s:%s' % (kind, day),
+        'fingerprint': 'routine:%s:%s' % (kind, day),
+        'kind': 'routine',
+        'priority': 'medium',
+        'delivery': 'digest',
+        'createdAt': created,
+        'readAt': None,
+        'routineKind': kind,
+        'serviceDate': day,
+    }
+    if kind == 'pre_market':
+        snapshots = load_history()
+        latest = snapshots[-1] if snapshots else {}
+        pending = sum(1 for row in (profile.get('alerts') or [])
+                      if isinstance(row, dict) and not row.get('triggered'))
+        watched = len(profile.get('watchlist') or [])
+        data_date = latest.get('date') or None
+        if latest:
+            detail = ('上一交易日 %s：情绪 %s°，%s；%d 只自选、%d 条待触发提醒。'
+                      '先核对隔夜信息与数据时点，再形成今日观察清单。' % (
+                          data_date, latest.get('temp', '--'), latest.get('phase', '阶段待确认'),
+                          watched, pending))
+        else:
+            detail = ('尚无可用收盘快照；已发现 %d 只自选、%d 条待触发提醒。'
+                      '请先检查数据源，再建立今日观察清单。' % (watched, pending))
+        return dict(common, title='盘前研究清单已准备', detail=detail,
+                    reason='你已授权深脉在工作日盘前整理研究任务', page='overview',
+                    dataDate=data_date, degraded=not bool(latest),
+                    evidence='最近收盘快照 + 本机自选与提醒；不把工作日等同于已确认交易日')
+
+    loader = emotion_loader or assemble_emotion
+    payload = loader(kind == 'close_review')
+    engine = payload.get('engine') or {}
+    raw = engine.get('raw') or {}
+    data_date = payload.get('date') or engine.get('date') or None
+    same_day = data_date == day
+    degraded = bool(engine.get('degraded') or not same_day)
+    temp = engine.get('temp')
+    phase = engine.get('phase') or '阶段待确认'
+    temp_text = '%s°' % temp if temp is not None else '温度待确认'
+    breadth = payload.get('breadth') or {}
+    structure = '涨停 %s / 跌停 %s / 炸板 %s；上涨 %s / 下跌 %s' % (
+        raw.get('zt', '--'), raw.get('dt', '--'), raw.get('zb', '--'),
+        breadth.get('up', raw.get('up', '--')), breadth.get('down', raw.get('down', '--')))
+    quality = ('最新可用数据日为 %s，并非今日；不生成当日方向结论。' % (data_date or '待确认')
+               if not same_day else ('数据受限，先修复数据源；' if degraded else ''))
+    if kind == 'intraday':
+        title = ('盘中结构检查：%s · %s' % (phase, temp_text)
+                 if same_day else '盘中数据尚未更新')
+        return dict(common, title=title,
+                    detail='%s%s。数据日 %s；只提示结构变化，不追逐分时噪声。' % (
+                        quality, structure, data_date or '待确认'),
+                    reason='你已授权深脉在盘中形成一次结构检查',
+                    page='emotion' if same_day else 'datasrc',
+                    dataDate=data_date, degraded=degraded,
+                    evidence='情绪引擎聚合快照；事实与推断需在详情页分开核对')
+
+    has_journal = same_day and _journal_has_date(profile.get('journal') or [], data_date)
+    journal_text = (('今日复盘已保存，建议核对反证条件与明日观察点。' if has_journal
+                     else '今日复盘尚未保存，建议补充判断、反证条件与明日观察点。')
+                    if same_day else '未确认今日存在新收盘数据，因此不催写当日复盘。')
+    title = ('收盘复盘：%s · %s' % (phase, temp_text)
+             if same_day else '收盘数据尚未更新')
+    return dict(common, title=title,
+                detail='%s%s。数据日 %s；%s' % (quality, structure, data_date or '待确认', journal_text),
+                reason='你已授权深脉在收盘后整理复盘任务',
+                page='strategy' if same_day else 'datasrc',
+                dataDate=data_date, degraded=degraded, journalSaved=has_journal,
+                evidence='收盘后情绪快照 + 本机复盘记录；不构成投资建议')
+
+
+def commit_routine_attention(item):
+    """Publish at most one item per service kind and calendar date."""
+    if not isinstance(item, dict) or not item.get('id'):
+        raise ValueError('routine attention item is required')
+    item_id = str(item['id'])[:160]
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        receipts = [row for row in (current['data'].get('routine_receipts') or [])
+                    if isinstance(row, dict)]
+        if any(row.get('id') == item_id for row in receipts):
+            return False
+        inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict) and row.get('id') != item_id]
+        clean = json.loads(json.dumps(item, ensure_ascii=False))
+        clean['id'] = item_id
+        inbox.append(clean)
+        receipts.append({
+            'id': item_id,
+            'kind': clean.get('routineKind'),
+            'serviceDate': clean.get('serviceDate'),
+            'dataDate': clean.get('dataDate'),
+            'createdAt': clean.get('createdAt'),
+        })
+        current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+        current['data']['routine_receipts'] = receipts[-PROFILE_LIST_LIMITS['routine_receipts']:]
+        _write_profile_unlocked(current)
+        return True
+
+
+def process_market_routine_once(current=None, emotion_loader=None):
+    now = (current or now_bj()).astimezone(BJC)
+    cfg = load_routine_config()
+    kind = _routine_due_kind(now)
+    if not cfg['enabled']:
+        return {'state': 'disabled', 'published': 0, 'kind': None}
+    if not kind or not cfg['tasks'].get(kind):
+        return {'state': 'waiting', 'published': 0, 'kind': kind}
+    receipt_id = 'routine:%s:%s' % (kind, now.strftime('%Y-%m-%d'))
+    if receipt_id in _routine_receipt_ids():
+        return {'state': 'completed_window', 'published': 0, 'kind': kind}
+    item = build_routine_attention(kind, now, emotion_loader)
+    published = 1 if commit_routine_attention(item) else 0
+    return {'state': 'published' if published else 'completed_window',
+            'published': published, 'kind': kind, 'item': item if published else None}
+
+
+def market_routine_status(current=None):
+    now = (current or now_bj()).astimezone(BJC)
+    cfg = load_routine_config()
+    profile = load_profile().get('data') or {}
+    due = _routine_due_kind(now)
+    calendar = market_calendar_info(now)
+    today = now.strftime('%Y-%m-%d')
+    completed = [row.get('kind') for row in (profile.get('routine_receipts') or [])
+                 if isinstance(row, dict) and row.get('serviceDate') == today]
+    next_service = next_routine_service(now, cfg, profile)
+    with _routine_lock:
+        runtime = dict(_routine_runtime)
+    state = runtime.get('state') or 'disabled'
+    if not cfg['enabled']:
+        state = 'disabled'
+    elif not calendar.get('is_trade_date'):
+        state = 'non_trading_day'
+    elif due and cfg['tasks'].get(due) and due in completed:
+        state = 'completed_window'
+    elif due and cfg['tasks'].get(due):
+        state = 'due'
+    elif state not in ('error',):
+        state = 'waiting'
+    return {
+        'config': cfg,
+        'runtime': dict(runtime, state=state,
+                        next_service_at=next_service.get('at') if next_service else None),
+        'due_kind': due,
+        'completed_today': completed,
+        'next_service': next_service,
+        'calendar': calendar,
+        'service_continues_when_page_closed': True,
+        'service_stops_when_local_server_stops': True,
+        'calendar_note': ('按北京时间与%s运行；每条提醒明确数据日，旧快照不会冒充当日行情。'
+                          % calendar.get('basis', '交易日历')),
+    }
+
+
+def _market_routine_loop():
+    with _routine_lock:
+        _routine_runtime['thread_running'] = True
+    while not _routine_stop.is_set():
+        checked_at = now_bj()
+        wait_seconds = 30
+        try:
+            result = process_market_routine_once(checked_at)
+            next_service = next_routine_service(checked_at)
+            with _routine_lock:
+                _routine_runtime.update(
+                    state=result['state'],
+                    last_check_at=checked_at.isoformat(timespec='seconds'),
+                    last_run_at=(checked_at.isoformat(timespec='seconds')
+                                 if result.get('published') else _routine_runtime.get('last_run_at')),
+                    last_run_kind=(result.get('kind')
+                                   if result.get('published') else _routine_runtime.get('last_run_kind')),
+                    next_service_at=next_service.get('at') if next_service else None,
+                    last_error=None,
+                    checks=int(_routine_runtime.get('checks') or 0) + 1,
+                    published_count=int(_routine_runtime.get('published_count') or 0)
+                    + int(result.get('published') or 0),
+                )
+        except Exception as exc:
+            with _routine_lock:
+                _routine_runtime.update(state='error', last_check_at=checked_at.isoformat(timespec='seconds'),
+                                        last_error=str(exc)[:240])
+        _routine_wake.wait(wait_seconds)
+        _routine_wake.clear()
+    with _routine_lock:
+        _routine_runtime.update(thread_running=False, state='stopped', next_service_at=None)
+
+
+def start_market_routine():
+    global _routine_thread
+    if _routine_thread and _routine_thread.is_alive():
+        return
+    _routine_stop.clear()
+    _routine_thread = threading.Thread(target=_market_routine_loop,
+                                       name='deeppulse-market-routine', daemon=True)
+    _routine_thread.start()
+
+
+def stop_market_routine():
+    _routine_stop.set()
+    _routine_wake.set()
+    thread = _routine_thread
     if thread and thread.is_alive():
         thread.join(timeout=3)
 
@@ -2580,7 +3007,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.8.0'
+    server_version = 'DeepPulse/1.9.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -2700,6 +3127,8 @@ class Handler(BaseHTTPRequestHandler):
                           'attention_center': 1,
                           'profile_attention': 1,
                           'background_monitor': 1,
+                          'market_routine': 1,
+                          'akshare_enrichment': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -2711,6 +3140,8 @@ class Handler(BaseHTTPRequestHandler):
             probe = qs.get('probe', '1') != '0'
             fresh = qs.get('fresh') == '1'
             self.send_json({'ok': True, 'data': tdx_status(probe=probe, fresh=fresh)})
+        elif path == '/api/akshare/status':
+            self.send_json({'ok': True, 'data': akshare_status(probe=qs.get('probe', '1') != '0')})
         elif path == '/api/disclosures':
             code = normalize_code(qs.get('code', ''))
             if not code:
@@ -2741,6 +3172,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': load_profile()})
         elif path == '/api/monitor/status':
             self.send_json({'ok': True, 'data': background_monitor_status()})
+        elif path == '/api/routine/status':
+            self.send_json({'ok': True, 'data': market_routine_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -2904,6 +3337,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'data': {
                     'profile': saved,
                     'monitor': background_monitor_status(),
+                }})
+            elif u.path == '/api/routine/config':
+                body = self.read_json_body()
+                saved = save_routine_config(body.get('config') or {})
+                self.send_json({'ok': True, 'data': {
+                    'profile': saved,
+                    'routine': market_routine_status(),
                 }})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()
@@ -3103,6 +3543,7 @@ def main():
     print('深脉 DeepPulse 已启动: http://127.0.0.1:%d  (Ctrl+C 退出)' % port)
     sync_device_gateway(device_config)
     start_background_monitor()
+    start_market_routine()
 
     # 预热线程：启动 2s 后后台装配一次情绪全景，让首个页面请求命中热缓存
     def warmup():
@@ -3121,6 +3562,7 @@ def main():
         log('server stopped')
         print('\n已退出。')
     finally:
+        stop_market_routine()
         stop_background_monitor()
         stop_device_gateway()
 

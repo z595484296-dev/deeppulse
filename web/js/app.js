@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.8.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.8.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.8.0';
+import { api } from './api.js?v=1.9.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.9.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.9.0';
 
-import * as pageOverview from './pages/overview.js?v=1.8.0';
-import * as pageEmotion from './pages/emotion.js?v=1.8.0';
-import * as pageMarket from './pages/market.js?v=1.8.0';
-import * as pageLadder from './pages/ladder.js?v=1.8.0';
-import * as pageWatch from './pages/watch.js?v=1.8.0';
-import * as pageStrategy from './pages/strategy.js?v=1.8.0';
-import * as pageEpaper from './pages/epaper.js?v=1.8.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.8.0';
-import * as pageAbout from './pages/about.js?v=1.8.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.8.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.8.0';
-import { initOnboarding } from './onboarding.js?v=1.8.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.8.0';
+import * as pageOverview from './pages/overview.js?v=1.9.0';
+import * as pageEmotion from './pages/emotion.js?v=1.9.0';
+import * as pageMarket from './pages/market.js?v=1.9.0';
+import * as pageLadder from './pages/ladder.js?v=1.9.0';
+import * as pageWatch from './pages/watch.js?v=1.9.0';
+import * as pageStrategy from './pages/strategy.js?v=1.9.0';
+import * as pageEpaper from './pages/epaper.js?v=1.9.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.9.0';
+import * as pageAbout from './pages/about.js?v=1.9.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.9.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.9.0';
+import { initOnboarding } from './onboarding.js?v=1.9.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.9.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -31,7 +31,7 @@ const PAGES = {
 };
 
 let currentPage = 'overview';
-let emotionTimer = null, indicesTimer = null, newsTimer = null, alertTimer = null;
+let emotionTimer = null, indicesTimer = null, newsTimer = null, alertTimer = null, routineTimer = null;
 let booted = false;
 let lastPhase = null;      // 情绪阶段变化提醒
 let netFailures = 0;       // 连续失败计数 → 全局断线横幅
@@ -166,12 +166,24 @@ function currentHarnessContext() {
         lastError: state.monitor.runtime?.last_error || null,
         pageClosedCoverage: state.monitor.service_continues_when_page_closed === true,
       } : null,
+      marketRoutine: state.routine ? {
+        enabled: !!state.routine.config?.enabled,
+        tasks: state.routine.config?.tasks || {},
+        state: state.routine.runtime?.state || null,
+        completedToday: state.routine.completed_today || [],
+        nextService: state.routine.next_service || null,
+        lastRunAt: state.routine.runtime?.last_run_at || null,
+        lastRunKind: state.routine.runtime?.last_run_kind || null,
+        lastError: state.routine.runtime?.last_error || null,
+        pageClosedCoverage: state.routine.service_continues_when_page_closed === true,
+      } : null,
     },
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
       { name: '上交所/深交所/证监会', tier: 'official', role: '官方查验入口' },
       { name: '通达信 TQ-Local', tier: 'local', role: '本地只读行情与市场统计交叉验证', status: tdx.status || 'unavailable' },
       { name: '东方财富/腾讯行情', tier: 'market', role: '行情与市场线索' },
+      { name: 'AKShare', tier: 'enrichment', role: '交易日历、宏观与跨市场公开数据补充，不作为官方或实时主源' },
     ],
     disclaimer: '数据仅供研究参考，不构成投资建议。',
   };
@@ -410,6 +422,18 @@ async function pollAlerts() {
   }
 }
 
+let lastRoutineRunAt = null;
+async function pollRoutine() {
+  try {
+    const routine = await api.routineStatus();
+    const runAt = routine.runtime && routine.runtime.last_run_at;
+    state.routine = routine;
+    emit('market-routine', routine);
+    if (runAt && runAt !== lastRoutineRunAt) await syncProfile();
+    lastRoutineRunAt = runAt || lastRoutineRunAt;
+  } catch { /* 主行情与页面交互不受主动日程状态影响 */ }
+}
+
 /** 异动差分：新涨停 / 炸板（仅交易时段播报，防止盘后修订误报） */
 function diffMoves(data) {
   const ztPool = (data.pools && data.pools.ZT && data.pools.ZT.pool) || [];
@@ -478,12 +502,15 @@ function schedule() {
   if (indicesTimer) clearInterval(indicesTimer);
   if (newsTimer) clearInterval(newsTimer);
   if (alertTimer) clearInterval(alertTimer);
+  if (routineTimer) clearInterval(routineTimer);
   const open = tradingState().state === 'open';
   emotionTimer = setInterval(pollEmotion, open ? 30000 : 120000);
   indicesTimer = setInterval(pollIndices, open ? 8000 : 60000);
   newsTimer = setInterval(pollNews, open ? 60000 : 300000);
   alertTimer = setInterval(pollAlerts, 10000);
+  routineTimer = setInterval(pollRoutine, 30000);
   if (open) pollAlerts();
+  pollRoutine();
 }
 
 /* ---------------- 时钟 ---------------- */

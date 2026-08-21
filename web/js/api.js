@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.8.0';
+const MIN_VERSION = '1.9.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -48,7 +48,9 @@ async function probeBase(base, signal) {
       && capabilities.profile_brief_receipts === 1
       && capabilities.attention_center === 1
       && capabilities.profile_attention === 1
-      && capabilities.background_monitor === 1 ? base : '';
+      && capabilities.background_monitor === 1
+      && capabilities.market_routine === 1
+      && capabilities.akshare_enrichment === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -62,7 +64,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.8.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.9.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -121,6 +123,7 @@ export const api = {
   health: () => request('/api/health'),
   sources: () => request('/api/sources'),
   tdxStatus: (fresh = false) => request('/api/tdx/status?probe=1' + (fresh ? '&fresh=1' : ''), 10000),
+  akshareStatus: (probe = true) => request('/api/akshare/status?probe=' + (probe ? '1' : '0'), 30000),
   disclosures: (code, n = 8) => request(`/api/disclosures?code=${encodeURIComponent(code)}&n=${n}`),
   brain: () => request('/api/brain'),
   profile: () => request('/api/profile', 5000),
@@ -129,6 +132,8 @@ export const api = {
   saveAttentionItem: (item, remove = false) => post('/api/profile/attention-item', { item, remove }, 5000),
   monitorStatus: () => request('/api/monitor/status', 5000),
   saveMonitorConfig: (config) => post('/api/monitor/config', { config }, 5000),
+  routineStatus: () => request('/api/routine/status', 5000),
+  saveRoutineConfig: (config) => post('/api/routine/config', { config }, 5000),
   deviceConfig: () => request('/api/device/config', 10000),
   saveDeviceConfig: (config) => post('/api/device/config', { config }, 15000),
   rotateDeviceToken: () => post('/api/device/token/rotate', undefined, 15000),
