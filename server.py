@@ -66,7 +66,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.9.0'
+VERSION = '1.10.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1412,6 +1412,7 @@ PROFILE_LIST_LIMITS = {
     'chat_history': 60,
     'brief_receipts': 200,
     'attention_inbox': 200,
+    'attention_feedback': 500,
     'routine_receipts': 180,
 }
 PROFILE_OBJECT_LIMITS = {
@@ -1550,6 +1551,123 @@ def update_attention_item(item, remove=False):
         return current
 
 
+ATTENTION_FEEDBACK_SIGNALS = {'helpful', 'done', 'too_frequent', 'irrelevant'}
+
+
+def _attention_learning_status_from_data(data):
+    """Build a small, explainable summary from explicit user feedback only."""
+    feedback = [row for row in (data.get('attention_feedback') or [])
+                if isinstance(row, dict) and row.get('signal') in ATTENTION_FEEDBACK_SIGNALS]
+    preferences = data.get('attention_preferences') or {}
+    controls = preferences.get('kindControls') or {}
+    kinds = {}
+    for row in feedback:
+        kind = str(row.get('kind') or 'system')[:32]
+        bucket = kinds.setdefault(kind, {
+            'kind': kind, 'helpful': 0, 'done': 0, 'too_frequent': 0, 'irrelevant': 0,
+        })
+        bucket[row['signal']] += 1
+    for kind, control in controls.items():
+        if not isinstance(control, dict):
+            continue
+        bucket = kinds.setdefault(str(kind)[:32], {
+            'kind': str(kind)[:32], 'helpful': 0, 'done': 0, 'too_frequent': 0, 'irrelevant': 0,
+        })
+        bucket['control'] = {
+            'delivery': control.get('delivery'),
+            'reason': control.get('reason'),
+            'updatedAt': control.get('updatedAt'),
+        }
+    counts = {signal: sum(1 for row in feedback if row.get('signal') == signal)
+              for signal in ATTENTION_FEEDBACK_SIGNALS}
+    return {
+        'feedbackCount': len(feedback),
+        'counts': counts,
+        'kinds': sorted(kinds.values(), key=lambda row: row['kind']),
+        'activeControls': sum(1 for row in kinds.values() if row.get('control')),
+        'basis': 'explicit-user-feedback-only',
+        'automaticTradingActions': False,
+    }
+
+
+def attention_learning_status():
+    return _attention_learning_status_from_data(load_profile().get('data') or {})
+
+
+def update_attention_feedback(item_id, signal, surface='web'):
+    """Persist one explicit outcome and apply only the matching reversible noise control."""
+    clean_id = str(item_id or '').strip()[:160]
+    clean_signal = str(signal or '').strip()
+    if not clean_id:
+        raise ValueError('attention item id is required')
+    if clean_signal not in ATTENTION_FEEDBACK_SIGNALS:
+        raise ValueError('unsupported attention feedback signal')
+    timestamp = int(time.time() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        items = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict)]
+        target = next((row for row in items if str(row.get('id') or '') == clean_id), None)
+        if not target:
+            raise ValueError('attention item was not found')
+        kind = str(target.get('kind') or 'system').strip()[:32] or 'system'
+        target['feedback'] = clean_signal
+        target['feedbackAt'] = timestamp
+        if clean_signal == 'done':
+            target['doneAt'] = timestamp
+            target['readAt'] = target.get('readAt') or timestamp
+        feedback = [row for row in (current['data'].get('attention_feedback') or [])
+                    if isinstance(row, dict) and str(row.get('itemId') or '') != clean_id]
+        feedback.append({
+            'itemId': clean_id,
+            'kind': kind,
+            'signal': clean_signal,
+            'at': timestamp,
+            'surface': str(surface or 'web').strip()[:40],
+        })
+        current['data']['attention_feedback'] = feedback[-PROFILE_LIST_LIMITS['attention_feedback']:]
+        preferences = current['data'].get('attention_preferences') or {}
+        preferences = json.loads(json.dumps(preferences, ensure_ascii=False))
+        controls = preferences.get('kindControls') or {}
+        controls = controls if isinstance(controls, dict) else {}
+        # A user-created price condition stays high priority. Global pause/mode still remains available.
+        if kind != 'price' and clean_signal in {'too_frequent', 'irrelevant'}:
+            controls[kind] = {
+                'delivery': 'digest' if clean_signal == 'too_frequent' else 'center_only',
+                'reason': clean_signal,
+                'updatedAt': timestamp,
+            }
+        preferences['kindControls'] = controls
+        current['data']['attention_preferences'] = preferences
+        saved = _write_profile_unlocked(current)
+        return saved, _attention_learning_status_from_data(saved['data'])
+
+
+def reset_attention_learning(kind=None, clear_history=False):
+    """Restore learned delivery controls, optionally deleting explicit feedback history."""
+    clean_kind = str(kind or '').strip()[:32]
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        preferences = current['data'].get('attention_preferences') or {}
+        preferences = json.loads(json.dumps(preferences, ensure_ascii=False))
+        controls = preferences.get('kindControls') or {}
+        controls = controls if isinstance(controls, dict) else {}
+        if clean_kind:
+            controls.pop(clean_kind, None)
+        else:
+            controls = {}
+        preferences['kindControls'] = controls
+        current['data']['attention_preferences'] = preferences
+        if clear_history:
+            current['data']['attention_feedback'] = []
+            for row in current['data'].get('attention_inbox') or []:
+                if isinstance(row, dict):
+                    row.pop('feedback', None)
+                    row.pop('feedbackAt', None)
+        saved = _write_profile_unlocked(current)
+        return saved, _attention_learning_status_from_data(saved['data'])
+
+
 # ---------------------------------------------------------------- 后台主动监控（显式授权、仅本机、仅交易时段）
 
 _monitor_lock = threading.Lock()
@@ -1663,6 +1781,7 @@ def commit_background_alert(alert_id, quote, triggered_at=None):
             'page': 'watch',
             'delivery': 'immediate',
             'createdAt': timestamp,
+            'expiresAt': timestamp + 24 * 60 * 60 * 1000,
             'readAt': None,
         }
         inbox = [row for row in (current['data'].get('attention_inbox') or [])
@@ -1915,6 +2034,8 @@ def build_routine_attention(kind, current=None, emotion_loader=None):
         'priority': 'medium',
         'delivery': 'digest',
         'createdAt': created,
+        'expiresAt': created + ({'pre_market': 8, 'intraday': 4, 'close_review': 36}.get(kind, 24)
+                                * 60 * 60 * 1000),
         'readAt': None,
         'routineKind': kind,
         'serviceDate': day,
@@ -3007,7 +3128,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.9.0'
+    server_version = 'DeepPulse/1.10.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -3126,6 +3247,7 @@ class Handler(BaseHTTPRequestHandler):
                           'profile_brief_receipts': 1,
                           'attention_center': 1,
                           'profile_attention': 1,
+                          'attention_learning': 1,
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,
@@ -3170,6 +3292,8 @@ class Handler(BaseHTTPRequestHandler):
                 'model': cfg.get('deepseek_model') or 'deepseek-chat'}})
         elif path == '/api/profile':
             self.send_json({'ok': True, 'data': load_profile()})
+        elif path == '/api/attention/learning':
+            self.send_json({'ok': True, 'data': attention_learning_status()})
         elif path == '/api/monitor/status':
             self.send_json({'ok': True, 'data': background_monitor_status()})
         elif path == '/api/routine/status':
@@ -3331,6 +3455,16 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 saved = update_attention_item(body.get('item') or {}, body.get('remove') is True)
                 self.send_json({'ok': True, 'data': saved})
+            elif u.path == '/api/profile/attention-feedback':
+                body = self.read_json_body()
+                saved, learning = update_attention_feedback(
+                    body.get('itemId'), body.get('signal'), body.get('surface') or 'web')
+                self.send_json({'ok': True, 'data': {'profile': saved, 'learning': learning}})
+            elif u.path == '/api/attention/learning/reset':
+                body = self.read_json_body()
+                saved, learning = reset_attention_learning(
+                    body.get('kind'), body.get('clearHistory') is True)
+                self.send_json({'ok': True, 'data': {'profile': saved, 'learning': learning}})
             elif u.path == '/api/monitor/config':
                 body = self.read_json_body()
                 saved = save_monitor_config(body.get('config') or {})

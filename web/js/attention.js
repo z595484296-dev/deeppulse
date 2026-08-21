@@ -7,6 +7,7 @@ export const DEFAULT_ATTENTION_PREFERENCES = Object.freeze({
   quietEnd: '08:00',
   pausedUntil: null,
   systemDigestMinutes: 15,
+  kindControls: {},
 });
 
 const MODES = new Set(['balanced', 'high_only', 'center_only']);
@@ -19,6 +20,20 @@ function cleanTime(value, fallback) {
 export function normalizeAttentionPreferences(value = {}) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const paused = Number(source.pausedUntil);
+  const rawControls = source.kindControls && typeof source.kindControls === 'object' && !Array.isArray(source.kindControls)
+    ? source.kindControls : {};
+  const kindControls = {};
+  Object.entries(rawControls).slice(0, 24).forEach(([kind, control]) => {
+    if (!/^[a-z0-9_-]{1,32}$/i.test(kind) || !control || typeof control !== 'object') return;
+    const delivery = control.delivery === 'center_only' ? 'center_only'
+      : control.delivery === 'digest' ? 'digest' : null;
+    if (!delivery) return;
+    kindControls[kind] = {
+      delivery,
+      reason: control.reason === 'irrelevant' ? 'irrelevant' : 'too_frequent',
+      updatedAt: Number(control.updatedAt) || null,
+    };
+  });
   return {
     mode: MODES.has(source.mode) ? source.mode : DEFAULT_ATTENTION_PREFERENCES.mode,
     quietEnabled: source.quietEnabled !== false,
@@ -26,7 +41,13 @@ export function normalizeAttentionPreferences(value = {}) {
     quietEnd: cleanTime(source.quietEnd, DEFAULT_ATTENTION_PREFERENCES.quietEnd),
     pausedUntil: Number.isFinite(paused) && paused > 0 ? paused : null,
     systemDigestMinutes: Math.max(5, Math.min(60, Number(source.systemDigestMinutes) || 15)),
+    kindControls,
   };
+}
+
+function defaultExpiry(kind, createdAt) {
+  const hours = kind === 'move' ? 2 : kind === 'phase' ? 24 : kind === 'price' ? 24 : 36;
+  return createdAt + hours * 60 * 60 * 1000;
 }
 
 function minuteOfDay(text) {
@@ -49,6 +70,7 @@ export function makeAttentionItem(input = {}, now = Date.now()) {
   const kind = String(input.kind || 'system').slice(0, 32);
   const priority = PRIORITIES.has(input.priority) ? input.priority : 'medium';
   const fingerprint = String(input.fingerprint || `${kind}:${input.title || ''}:${input.detail || ''}`).slice(0, 180);
+  const expiresAt = Number(input.expiresAt) || defaultExpiry(kind, createdAt);
   return {
     id: String(input.id || `${createdAt.toString(36)}:${fingerprint}`).slice(0, 240),
     fingerprint,
@@ -60,7 +82,10 @@ export function makeAttentionItem(input = {}, now = Date.now()) {
     page: String(input.page || 'overview').slice(0, 24),
     delivery: input.delivery === 'immediate' ? 'immediate' : 'digest',
     createdAt,
+    expiresAt,
     readAt: Number(input.readAt) || null,
+    doneAt: Number(input.doneAt) || null,
+    feedback: ['helpful', 'done', 'too_frequent', 'irrelevant'].includes(input.feedback) ? input.feedback : null,
   };
 }
 
@@ -68,11 +93,15 @@ export function makeAttentionItem(input = {}, now = Date.now()) {
 export function attentionDecision(item, preferences, now = new Date()) {
   const prefs = normalizeAttentionPreferences(preferences);
   const timestamp = now instanceof Date ? now.getTime() : Number(now);
+  if (Number(item.expiresAt) > 0 && timestamp >= Number(item.expiresAt)) return { interrupt: false, reason: 'expired' };
   if (prefs.pausedUntil && timestamp < prefs.pausedUntil) return { interrupt: false, reason: 'paused' };
   if (prefs.mode === 'center_only') return { interrupt: false, reason: 'center_only' };
   if (prefs.mode === 'high_only' && item.priority !== 'high') return { interrupt: false, reason: 'priority' };
   // 用户亲自设置的到价条件，在平衡模式下不受系统安静时段影响；“暂停到明天”仍会阻止弹出。
   if (item.kind === 'price' && item.priority === 'high') return { interrupt: true, reason: 'user_price_alert' };
+  const learned = prefs.kindControls[item.kind];
+  if (learned?.delivery === 'center_only') return { interrupt: false, reason: 'learned_center_only' };
+  if (learned?.delivery === 'digest') return { interrupt: false, reason: 'digest' };
   if (isQuietTime(prefs, now)) return { interrupt: false, reason: 'quiet' };
   if (item.delivery !== 'immediate') return { interrupt: false, reason: 'digest' };
   return { interrupt: true, reason: 'immediate' };

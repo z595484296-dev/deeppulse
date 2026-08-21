@@ -7,7 +7,7 @@
 <meta name="dsh-deeppulse-entry" content="workbench">
 <title>深脉 DeepPulse · 金融工作台</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/app.css?v=1.9.0">
+<link rel="stylesheet" href="css/app.css?v=1.10.0">
 </head>
 <body>
 <div class="shell">
@@ -185,12 +185,22 @@
     <div class="attention-time"><label>开始<input type="time" id="attention-quiet-start"></label><label>结束<input type="time" id="attention-quiet-end"></label></div>
     <p>你设置的价格到达属于高优先级；阶段和盘中异动默认合并摘要，减少打扰。</p>
   </details>
+  <details class="attention-preferences attention-learning">
+    <summary>深脉学到了什么</summary>
+    <p id="attention-learning-summary">还没有学习记录。你的明确反馈才会改变提醒方式。</p>
+    <div id="attention-learning-controls"></div>
+    <div class="attention-learning-actions">
+      <button class="btn sm ghost" id="attention-learning-reset">恢复全部调整</button>
+      <button class="btn sm ghost danger" id="attention-learning-clear">清除学习记录</button>
+    </div>
+    <p>“少一点”会把同类提醒合并为摘要；“不相关”只收入中心。价格条件不会被自动降级，也不会触发交易操作。</p>
+  </details>
   <div class="attention-list" id="attention-list"></div>
 </aside>
 
 <div class="toast-wrap" id="toast-wrap"></div>
 
 <script src="assets/echarts.min.js"></script>
-<script type="module" src="js/app.js?v=1.9.0"></script>
+<script type="module" src="js/app.js?v=1.10.0"></script>
 </body>
 </html>

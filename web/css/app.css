@@ -191,15 +191,26 @@ a { color: var(--accent); text-decoration: none; }
 .attention-time { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .attention-time label { align-items: flex-start; flex-direction: column; }
 .attention-preferences p { margin: 9px 0 1px; line-height: 1.5; color: var(--text-3); }
-.attention-list { overflow-y: auto; padding: 0 14px 14px; }
+.attention-list { flex: 1; min-height: 80px; overflow-y: auto; padding: 0 14px 14px; }
 .attention-item { margin-top: 8px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
 .attention-item.unread { border-color: rgba(79, 140, 255, .42); box-shadow: inset 3px 0 0 var(--blue); }
+.attention-item.expired { opacity: .68; }
 .attention-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .attention-item-head b { font-size: 12px; }
 .attention-item-head time { flex: 0 0 auto; color: var(--text-3); font-size: 9.5px; }
 .attention-item p { margin: 5px 0; color: var(--text-2); font-size: 11px; line-height: 1.5; }
 .attention-item small { display: block; color: var(--text-3); line-height: 1.45; }
 .attention-item-actions { display: flex; gap: 6px; margin-top: 8px; }
+.attention-item-feedback { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.attention-feedback-btn { min-height: 25px; padding: 0 8px; border: 1px solid var(--line); border-radius: 13px; background: transparent; color: var(--text-3); font: 500 10px var(--font); cursor: pointer; }
+.attention-feedback-btn:hover { color: var(--text); border-color: var(--line-strong); }
+.attention-feedback-btn.selected { color: #dbeafe; border-color: rgba(79, 140, 255, .6); background: rgba(79, 140, 255, .18); }
+.attention-learning-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 7px 8px; border-radius: 8px; background: var(--panel-3); }
+.attention-learning-row > span { display: flex; flex-direction: column; gap: 2px; }
+.attention-learning-row small, .attention-learning-empty { color: var(--text-3); font-size: 10px; }
+.attention-learning-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.attention-learning-actions .danger { color: var(--down); }
+.attention-learning button:disabled { opacity: .45; cursor: not-allowed; }
 .attention-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 22px; text-align: center; color: var(--text-3); }
 .attention-empty b { color: var(--text-2); }
 body.light .attention-panel { background: rgba(249, 251, 255, .98); }

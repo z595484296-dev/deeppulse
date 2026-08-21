@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.9.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, epaper_gateway: 1 } },
+  data: { version: '1.10.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -177,7 +177,13 @@ describe('DeepPulse Harness bridge', () => {
         attention: {
           unread: 2,
           preferences: { mode: 'balanced', quietEnabled: true, quietStart: '22:30', quietEnd: '08:00', systemDigestMinutes: 15 },
-          recent: [{ kind: 'phase', priority: 'medium', title: '阶段变化', detail: '发酵期到高潮期', reason: '阶段标签变化', createdAt: 123, read: false }],
+          recent: [{ kind: 'phase', priority: 'medium', title: '阶段变化', detail: '发酵期到高潮期', reason: '阶段标签变化', createdAt: 123, expiresAt: 456, read: false, done: false, expired: false, feedback: 'too_frequent' }],
+          learning: {
+            feedbackCount: 3, activeControls: 1,
+            counts: { helpful: 1, done: 1, too_frequent: 1, irrelevant: 0 },
+            controls: [{ kind: 'phase', delivery: 'digest', reason: 'too_frequent', updatedAt: 456, injected: 'drop learning control' }],
+            basis: 'explicit-user-feedback-only', injected: 'drop learning field',
+          },
           backgroundMonitor: { enabled: true, state: 'monitoring', pendingAlerts: 2, lastCheckAt: '2026-08-15T10:00:00+08:00', pageClosedCoverage: true, injected: 'drop monitor field' },
           marketRoutine: {
             enabled: true, state: 'waiting',
@@ -224,7 +230,13 @@ describe('DeepPulse Harness bridge', () => {
         attention: {
           unread: 2,
           preferences: { mode: 'balanced', quietEnabled: true },
-          recent: [{ kind: 'phase', priority: 'medium', title: '阶段变化', read: false }],
+          recent: [{ kind: 'phase', priority: 'medium', title: '阶段变化', read: false, feedback: 'too_frequent' }],
+          learning: {
+            feedbackCount: 3, activeControls: 1,
+            counts: { helpful: 1, done: 1, tooFrequent: 1, irrelevant: 0 },
+            controls: [{ kind: 'phase', delivery: 'digest', reason: 'too_frequent' }],
+            basis: 'explicit-user-feedback-only',
+          },
           backgroundMonitor: { enabled: true, state: 'monitoring', pendingAlerts: 2, pageClosedCoverage: true },
           marketRoutine: {
             enabled: true, state: 'waiting',

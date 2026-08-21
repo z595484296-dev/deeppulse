@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.9.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.9.0';
+import { api } from './api.js?v=1.10.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.10.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -28,6 +28,7 @@ const PROFILE_KEYS = {
   chat_history: 'dp_chat_v1',
   brief_receipts: 'dp_brief_receipts_v1',
   attention_inbox: 'dp_attention_inbox_v1',
+  attention_feedback: 'dp_attention_feedback_v1',
   attention_preferences: 'dp_attention_preferences_v1',
   background_monitor: 'dp_background_monitor_v1',
   market_routine: 'dp_market_routine_v1',
@@ -73,6 +74,7 @@ export async function syncProfile() {
   emit('brief-receipts', loadBriefReceipts());
   emit('attention', loadAttentionInbox());
   emit('attention-preferences', loadAttentionPreferences());
+  emit('attention-learning', attentionLearningContext());
   emit('background-monitor', loadBackgroundMonitor());
   emit('market-routine', loadMarketRoutine());
   document.dispatchEvent(new CustomEvent('profile-synced'));
@@ -248,6 +250,7 @@ export function setBriefRead(brief, read = true) {
 /* ---------------- 提醒中心（跨运行端共享） ---------------- */
 const ATTENTION_INBOX_KEY = 'dp_attention_inbox_v1';
 const ATTENTION_PREFS_KEY = 'dp_attention_preferences_v1';
+const ATTENTION_FEEDBACK_KEY = 'dp_attention_feedback_v1';
 
 export function loadAttentionInbox() {
   try {
@@ -300,6 +303,90 @@ export function markAttentionRead(id = null) {
     }).catch(error => emit('profile-sync', { ok: false, key: 'attention_inbox', error: error.message }));
   }
   return next;
+}
+
+export function loadAttentionFeedback() {
+  try {
+    const value = JSON.parse(localStorage.getItem(ATTENTION_FEEDBACK_KEY) || '[]');
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
+}
+
+export function attentionLearningContext() {
+  const feedback = loadAttentionFeedback();
+  const controls = loadAttentionPreferences().kindControls || {};
+  const counts = { helpful: 0, done: 0, too_frequent: 0, irrelevant: 0 };
+  feedback.forEach(row => { if (row && Object.prototype.hasOwnProperty.call(counts, row.signal)) counts[row.signal] += 1; });
+  return {
+    feedbackCount: feedback.length,
+    counts,
+    activeControls: Object.keys(controls).length,
+    controls: Object.entries(controls).slice(0, 24).map(([kind, control]) => ({ kind, ...control })),
+    basis: 'explicit-user-feedback-only',
+  };
+}
+
+export function feedbackAttentionItem(id, signal) {
+  if (!id || !['helpful', 'done', 'too_frequent', 'irrelevant'].includes(signal)) return Promise.resolve(null);
+  const previousInbox = loadAttentionInbox();
+  const previousFeedback = loadAttentionFeedback();
+  const previousPreferences = loadAttentionPreferences();
+  const timestamp = Date.now();
+  const target = previousInbox.find(item => item && item.id === id);
+  if (!target) return Promise.reject(new Error('提醒已不存在'));
+  const nextInbox = previousInbox.map(item => item && item.id === id ? {
+    ...item, feedback: signal, feedbackAt: timestamp,
+    ...(signal === 'done' ? { doneAt: timestamp, readAt: item.readAt || timestamp } : {}),
+  } : item);
+  const nextFeedback = [...previousFeedback.filter(row => row && row.itemId !== id), {
+    itemId: id, kind: target.kind || 'system', signal, at: timestamp,
+    surface: typeof location !== 'undefined' && location.pathname.startsWith('/deeppulse/') ? 'harness' : 'local-web',
+  }].slice(-500);
+  const nextPreferences = { ...previousPreferences, kindControls: { ...(previousPreferences.kindControls || {}) } };
+  if (target.kind !== 'price' && signal === 'too_frequent') {
+    nextPreferences.kindControls[target.kind || 'system'] = { delivery: 'digest', reason: signal, updatedAt: timestamp };
+  } else if (target.kind !== 'price' && signal === 'irrelevant') {
+    nextPreferences.kindControls[target.kind || 'system'] = { delivery: 'center_only', reason: signal, updatedAt: timestamp };
+  }
+  localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(nextInbox));
+  localStorage.setItem(ATTENTION_FEEDBACK_KEY, JSON.stringify(nextFeedback));
+  localStorage.setItem(ATTENTION_PREFS_KEY, JSON.stringify(nextPreferences));
+  emit('attention', nextInbox);
+  emit('attention-preferences', nextPreferences);
+  emit('attention-learning', attentionLearningContext());
+  return api.saveAttentionFeedback(id, signal, nextFeedback[nextFeedback.length - 1].surface).then(result => {
+    const remote = result?.profile?.data || {};
+    if (Array.isArray(remote.attention_inbox)) localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(remote.attention_inbox));
+    if (Array.isArray(remote.attention_feedback)) localStorage.setItem(ATTENTION_FEEDBACK_KEY, JSON.stringify(remote.attention_feedback));
+    if (remote.attention_preferences) localStorage.setItem(ATTENTION_PREFS_KEY, JSON.stringify(remote.attention_preferences));
+    emit('attention', loadAttentionInbox());
+    emit('attention-preferences', loadAttentionPreferences());
+    emit('attention-learning', result.learning || attentionLearningContext());
+    emit('profile-sync', { ok: true, key: 'attention_feedback' });
+    return result.learning;
+  }).catch(error => {
+    localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(previousInbox));
+    localStorage.setItem(ATTENTION_FEEDBACK_KEY, JSON.stringify(previousFeedback));
+    localStorage.setItem(ATTENTION_PREFS_KEY, JSON.stringify(previousPreferences));
+    emit('attention', previousInbox);
+    emit('attention-preferences', previousPreferences);
+    emit('attention-learning', attentionLearningContext());
+    emit('profile-sync', { ok: false, key: 'attention_feedback', error: error.message });
+    throw error;
+  });
+}
+
+export function resetAttentionLearning(kind = null, clearHistory = false) {
+  return api.resetAttentionLearning(kind, clearHistory).then(result => {
+    const remote = result?.profile?.data || {};
+    if (Array.isArray(remote.attention_inbox)) localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(remote.attention_inbox));
+    if (Array.isArray(remote.attention_feedback)) localStorage.setItem(ATTENTION_FEEDBACK_KEY, JSON.stringify(remote.attention_feedback));
+    if (remote.attention_preferences) localStorage.setItem(ATTENTION_PREFS_KEY, JSON.stringify(remote.attention_preferences));
+    emit('attention', loadAttentionInbox());
+    emit('attention-preferences', loadAttentionPreferences());
+    emit('attention-learning', result.learning || attentionLearningContext());
+    return result.learning;
+  });
 }
 
 export function loadAttentionPreferences() {

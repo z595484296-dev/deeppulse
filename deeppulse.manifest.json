@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.9.0",
-  "minimumDesktopVersion": "1.9.0",
+  "version": "1.10.0",
+  "minimumDesktopVersion": "1.10.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -14,6 +14,7 @@
     "profile-brief-receipts-v1",
     "attention-center-v1",
     "profile-attention-v1",
+    "attention-learning-v1",
     "background-monitor-v1",
     "market-routine-v1",
     "akshare-enrichment-v1",
