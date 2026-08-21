@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.22.0';
-import { esc, toast, downloadText } from '../util.js?v=1.22.0';
-import { state } from '../store.js?v=1.22.0';
+import { api } from '../api.js?v=1.22.1';
+import { esc, toast, downloadText } from '../util.js?v=1.22.1';
+import { state } from '../store.js?v=1.22.1';
 
 let built = false;
 

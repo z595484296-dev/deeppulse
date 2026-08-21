@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -31,7 +34,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 22, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 22, 1);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -79,8 +82,10 @@ internal sealed class HarnessForm : Form
     private readonly string dataDirectory;
     private readonly string logPath;
     private readonly object logLock = new();
+    private readonly ProcessLifetimeJob? lifetimeJob;
     private bool startupInProgress;
     private bool deliveryPollInProgress;
+    private bool ownedDeepPulseProtected;
     private string? lastNotificationItemId;
     private string lastNotificationPage = "overview";
 
@@ -109,6 +114,11 @@ internal sealed class HarnessForm : Form
             "DeepSeekHarnessDesktop");
         Directory.CreateDirectory(dataDirectory);
         logPath = Path.Combine(dataDirectory, "desktop.log");
+        lifetimeJob = ProcessLifetimeJob.TryCreate(out var lifetimeError);
+        if (lifetimeJob is null)
+        {
+            AppendLog($"Process lifetime protection is unavailable: {lifetimeError}");
+        }
 
         BuildSplash();
         Controls.Add(webView);
@@ -326,6 +336,7 @@ internal sealed class HarnessForm : Form
         {
             throw new InvalidOperationException("无法创建 DeepSeek Harness 后端进程。");
         }
+        AttachOwnedProcessToLifetimeJob(ownedBackend, "backend");
 
         ownedBackend.BeginOutputReadLine();
         ownedBackend.BeginErrorReadLine();
@@ -417,6 +428,7 @@ internal sealed class HarnessForm : Form
         {
             throw new InvalidOperationException("无法创建深脉数据服务进程。");
         }
+        ownedDeepPulseProtected = AttachOwnedProcessToLifetimeJob(ownedDeepPulse, "DeepPulse");
 
         ownedDeepPulse.BeginOutputReadLine();
         ownedDeepPulse.BeginErrorReadLine();
@@ -705,7 +717,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.22.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.22.1+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
@@ -803,10 +815,13 @@ internal sealed class HarnessForm : Form
             var assemblyVersion = typeof(HarnessForm).Assembly.GetName().Version?.ToString(3) ?? "unknown";
             var productVersion = FileVersionInfo.GetVersionInfo(Application.ExecutablePath).ProductVersion
                 ?? assemblyVersion;
+            var serviceOwnership = ownedDeepPulse is { HasExited: false } ? "owned" : "attached";
             var payload = JsonSerializer.Serialize(new {
                 appVersion = assemblyVersion,
                 productVersion,
-                surface = "windows-desktop"
+                surface = "windows-desktop",
+                serviceOwnership,
+                processLifetimeProtected = serviceOwnership == "owned" && ownedDeepPulseProtected
             });
             using var response = await httpClient.PostAsync(
                 new Uri(activeDeepPulseBaseUri, "api/diagnostics/desktop-heartbeat"),
@@ -933,6 +948,22 @@ internal sealed class HarnessForm : Form
         systemNotification.Dispose();
         StopOwnedProcess(ownedDeepPulse, "DeepPulse");
         StopOwnedProcess(ownedBackend, "backend");
+        lifetimeJob?.Dispose();
+    }
+
+    private bool AttachOwnedProcessToLifetimeJob(Process process, string label)
+    {
+        if (lifetimeJob is null)
+        {
+            return false;
+        }
+        if (!lifetimeJob.TryAdd(process, out var error))
+        {
+            AppendLog($"Could not protect owned {label} PID {process.Id}: {error}");
+            return false;
+        }
+        AppendLog($"Protected owned {label} PID {process.Id} with kill-on-close lifetime job.");
+        return true;
     }
 
     private void StopOwnedProcess(Process? process, string label)
@@ -959,6 +990,129 @@ internal sealed class HarnessForm : Form
         child.Left = Math.Max(0, (parent.ClientSize.Width - child.Width) / 2);
         child.Top = Math.Max(0, (parent.ClientSize.Height - child.Height) / 2);
     }
+}
+
+internal sealed class ProcessLifetimeJob : IDisposable
+{
+    private const uint JobObjectLimitKillOnJobClose = 0x00002000;
+    private const int JobObjectExtendedLimitInformationClass = 9;
+    private readonly SafeFileHandle handle;
+
+    private ProcessLifetimeJob(SafeFileHandle handle)
+    {
+        this.handle = handle;
+    }
+
+    internal static ProcessLifetimeJob? TryCreate(out string error)
+    {
+        error = "";
+        SafeFileHandle? job = null;
+        IntPtr buffer = IntPtr.Zero;
+        try
+        {
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job.IsInvalid)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            var limits = new JobObjectExtendedLimitInformation
+            {
+                BasicLimitInformation = new JobObjectBasicLimitInformation
+                {
+                    LimitFlags = JobObjectLimitKillOnJobClose
+                }
+            };
+            var size = Marshal.SizeOf<JobObjectExtendedLimitInformation>();
+            buffer = Marshal.AllocHGlobal(size);
+            Marshal.StructureToPtr(limits, buffer, false);
+            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformationClass, buffer, (uint)size))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return new ProcessLifetimeJob(job);
+        }
+        catch (Exception ex)
+        {
+            job?.Dispose();
+            error = ex.Message;
+            return null;
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+    }
+
+    internal bool TryAdd(Process process, out string error)
+    {
+        error = "";
+        if (handle.IsInvalid || handle.IsClosed)
+        {
+            error = "lifetime job is closed";
+            return false;
+        }
+        if (AssignProcessToJobObject(handle, process.Handle))
+        {
+            return true;
+        }
+        error = new Win32Exception(Marshal.GetLastWin32Error()).Message;
+        return false;
+    }
+
+    public void Dispose() => handle.Dispose();
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectBasicLimitInformation
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectExtendedLimitInformation
+    {
+        public JobObjectBasicLimitInformation BasicLimitInformation;
+        public IoCounters IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateJobObject(IntPtr jobAttributes, string? name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        SafeFileHandle job,
+        int informationClass,
+        IntPtr information,
+        uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
 }
 
 internal sealed record DeepPulseInstallation(

@@ -18,7 +18,9 @@ class ProductDiagnosticsTests(unittest.TestCase):
         self.history_patch.start()
         with server._desktop_heartbeat_lock:
             server._desktop_heartbeat.update(
-                last_seen=None, app_version=None, product_version=None)
+                last_seen=None, app_version=None, product_version=None,
+                service_ownership=None,
+                process_lifetime_protected=None)
 
     def tearDown(self):
         self.history_patch.stop()
@@ -77,21 +79,47 @@ class ProductDiagnosticsTests(unittest.TestCase):
                        'sk-private-value', '601138'):
             self.assertNotIn(secret, encoded)
         self.assertIn('API 密钥', report['privacy'])
-        self.assertEqual(report['version'], '1.22.0')
+        self.assertEqual(report['version'], '1.22.1')
 
     def test_desktop_heartbeat_changes_optional_desktop_state(self):
         before = self.report()
         desktop = next(row for row in before['components'] if row['id'] == 'desktop_app')
         self.assertEqual(desktop['state'], 'info')
         server.update_desktop_heartbeat({
-            'appVersion': '1.22.0', 'productVersion': '1.22.0+test',
+            'appVersion': '1.22.1', 'productVersion': '1.22.1+test',
+            'serviceOwnership': 'owned',
+            'processLifetimeProtected': True,
             'ignoredSecret': 'must-not-appear',
         })
         after = self.report()
         desktop = next(row for row in after['components'] if row['id'] == 'desktop_app')
         self.assertEqual(desktop['state'], 'ok')
+        self.assertIn('生命周期保护', desktop['summary'])
         self.assertEqual(desktop['trend'], 'recovered')
         self.assertNotIn('must-not-appear', json.dumps(after, ensure_ascii=False))
+
+    def test_desktop_heartbeat_discloses_missing_lifetime_protection(self):
+        server.update_desktop_heartbeat({
+            'appVersion': '1.22.1', 'productVersion': '1.22.1+test',
+            'serviceOwnership': 'owned',
+            'processLifetimeProtected': False,
+        })
+        report = self.report()
+        desktop = next(row for row in report['components'] if row['id'] == 'desktop_app')
+        self.assertEqual(desktop['state'], 'warn')
+        self.assertTrue(desktop['optional'])
+        self.assertIn('未生效', desktop['summary'])
+
+    def test_attached_desktop_does_not_claim_process_ownership(self):
+        server.update_desktop_heartbeat({
+            'appVersion': '1.22.1', 'productVersion': '1.22.1+test',
+            'serviceOwnership': 'attached',
+            'processLifetimeProtected': False,
+        })
+        report = self.report()
+        desktop = next(row for row in report['components'] if row['id'] == 'desktop_app')
+        self.assertEqual(desktop['state'], 'ok')
+        self.assertIn('不接管', desktop['summary'])
 
     def test_enabled_but_stopped_gateway_requires_action(self):
         report = self.report(device_enabled=True, device_running=False)

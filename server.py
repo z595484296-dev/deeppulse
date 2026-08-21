@@ -106,13 +106,15 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.22.0'
+VERSION = '1.22.1'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
     'last_seen': None,
     'app_version': None,
     'product_version': None,
+    'service_ownership': None,
+    'process_lifetime_protected': None,
 }
 _diagnostics_history_lock = threading.Lock()
 
@@ -4819,6 +4821,9 @@ def update_desktop_heartbeat(value=None):
         'last_seen': now_bj().isoformat(timespec='seconds'),
         'app_version': str(source.get('appVersion') or '')[:32] or None,
         'product_version': str(source.get('productVersion') or '')[:80] or None,
+        'service_ownership': (str(source.get('serviceOwnership') or '')[:16]
+                              if source.get('serviceOwnership') in ('owned', 'attached') else None),
+        'process_lifetime_protected': source.get('processLifetimeProtected') is True,
     }
     with _desktop_heartbeat_lock:
         _desktop_heartbeat.update(clean)
@@ -4950,10 +4955,17 @@ def build_product_diagnostics(record=True):
         desktop = dict(_desktop_heartbeat)
     desktop_age = _heartbeat_age_seconds(desktop.get('last_seen'))
     desktop_ready = desktop_age is not None and desktop_age <= 120
-    add('desktop_app', 'Windows 桌面 App', 'ok' if desktop_ready else 'info',
-        ('桌面窗口与系统提醒通道在线。' if desktop_ready
+    desktop_attached = desktop.get('service_ownership') == 'attached'
+    desktop_lifetime_ok = desktop.get('process_lifetime_protected') is True
+    desktop_state = 'ok' if (desktop_ready and (desktop_lifetime_ok or desktop_attached)) else ('warn' if desktop_ready else 'info')
+    add('desktop_app', 'Windows 桌面 App', desktop_state,
+        ('桌面窗口在线，后台服务已启用系统级生命周期保护。' if desktop_ready and desktop_lifetime_ok
+         else '桌面窗口在线；当前连接外部启动的服务，App 不接管其生命周期。' if desktop_ready and desktop_attached
+         else '桌面窗口在线，但后台服务生命周期保护未生效。' if desktop_ready
          else '最近未收到桌面端心跳；浏览器功能不受影响。'),
-        '' if desktop_ready else '需要系统弹窗提醒时，请启动 DeepSeekHarnessDesktop.exe。',
+        ('' if desktop_ready and (desktop_lifetime_ok or desktop_attached)
+         else '请重新启动 DeepSeekHarnessDesktop.exe；若仍未恢复，请导出诊断包。' if desktop_ready
+         else '需要系统弹窗提醒时，请启动 DeepSeekHarnessDesktop.exe。'),
         'overview', optional=True)
 
     sources = source_catalog().get('items') or []
@@ -5136,7 +5148,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.22.0'
+    server_version = 'DeepPulse/1.22.1'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
