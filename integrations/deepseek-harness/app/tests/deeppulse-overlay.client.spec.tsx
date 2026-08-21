@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.11.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, epaper_gateway: 1 } },
+  data: { version: '1.12.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -210,6 +210,22 @@ describe('DeepPulse Harness bridge', () => {
           }],
           errors: [], injected: 'drop event impact',
         },
+        researchHypotheses: {
+          modelVersion: 'research-hypothesis-v1',
+          summary: { total: 1, observing: 0, review_due: 1, completed: 0, archived: 0, injected: 'drop hypothesis summary' },
+          boundary: '不构成因果证明或交易指令',
+          items: [{
+            id: 'hypothesis:1', modelVersion: 'research-hypothesis-v1', status: 'observing', effectiveStatus: 'review_due',
+            createdAt: '2026-08-15T10:00:00+08:00', reviewDueAt: '2026-08-20T15:30:00+08:00', horizonTradingDays: 3,
+            statement: '观察算力事件是否得到独立证据', userNote: '不追涨',
+            baseline: { eventId: 'event-1', title: 'AI算力中心建设提速', type: 'headline', sectors: ['通信设备'], watchlist: [{ code: '601138', name: '工业富联', basis: '行业重合' }], sources: [{ id: 'eastmoney:news', name: '东方财富快讯', tier: 'market' }], quality: { score: 75, corroborated: false, meaning: '不代表预测准确率' } },
+            observationChecklist: [{ id: 'source', label: '是否被独立来源确认', injected: 'drop hypothesis check' }],
+            falsifiers: ['行业没有独立反馈'], review: null,
+            contract: { preRegistered: true, causalClaim: false, directionPrediction: false, automaticTradingAction: false, userReviewRequired: true, injected: 'drop hypothesis contract' },
+            injected: 'drop hypothesis item',
+          }],
+          injected: 'drop hypotheses',
+        },
         sources: [{ name: '巨潮资讯', tier: 'official', role: '公告原文' }],
         contextTruncated: { value: true, sections: ['history:8'], injected: 'drop truncation field' },
         arbitrary: { instructions: 'do something else' },
@@ -274,6 +290,17 @@ describe('DeepPulse Harness bridge', () => {
             rules: [{ id: 'ai-compute', matchedKeywords: ['算力'], causal: false }],
             quality: { score: 75, sourceCount: 1 },
             contract: { facts: true, rules: true, quality: true, aiExplanationOptional: true, causalClaim: false },
+          }],
+        },
+        researchHypotheses: {
+          modelVersion: 'research-hypothesis-v1',
+          summary: { total: 1, observing: 0, reviewDue: 1, completed: 0, archived: 0 },
+          items: [{
+            id: 'hypothesis:1', effectiveStatus: 'review_due', horizonTradingDays: 3,
+            baseline: { eventId: 'event-1', title: 'AI算力中心建设提速', sectors: ['通信设备'], watchlist: [{ code: '601138' }], quality: { score: 75, corroborated: false } },
+            observationChecklist: [{ id: 'source', label: '是否被独立来源确认' }],
+            falsifiers: ['行业没有独立反馈'],
+            contract: { preRegistered: true, causalClaim: false, directionPrediction: false, automaticTradingAction: false, userReviewRequired: true },
           }],
         },
         contextTruncated: { value: true, sections: ['history:8'] },

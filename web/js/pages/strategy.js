@@ -1,13 +1,14 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.11.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.11.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.11.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.11.0';
+import { api } from '../api.js?v=1.12.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.12.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.12.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.12.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
 let calRender = null; // 复盘日历渲染句柄（refresh 时重绘）
+let hypothesisData = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -87,6 +88,15 @@ export function init(container) {
           <span style="font-size:11px;color:var(--text-3)" id="st-tune-hint"></span>
         </div>
       </div>
+
+      <section class="card span-12 hypothesis-lab" aria-labelledby="st-hyp-title">
+        <div class="card-head">
+          <div><div class="card-title" id="st-hyp-title">🧪 研究假设</div><div class="card-sub">保存当时判断 · 预设反证 · 到期主动复盘</div></div>
+          <div class="hypothesis-summary" id="st-hyp-summary">正在读取…</div>
+        </div>
+        <p class="hypothesis-boundary">假设保存后不会随行情自动改写。到期提醒只检查本机时间，不会扩大事件数据授权；最终结论必须由你确认。</p>
+        <div id="st-hyp-list"><div class="empty">正在读取研究假设…</div></div>
+      </section>
 
       <div class="card span-12">
         <div class="card-head"><div class="card-title">📅 复盘日历</div><div class="card-sub">格子色=当日情绪阶段 · 📔=已写复盘 · 点击任意日期补写</div></div>
@@ -312,6 +322,44 @@ export function init(container) {
     tuneEl.innerHTML = '<div class="empty" style="padding:14px">权重接口暂不可用</div>';
   });
 
+  container.querySelector('#st-hyp-list').addEventListener('click', async e => {
+    const button = e.target.closest('[data-hyp-action]');
+    if (!button) return;
+    const hypothesis = (hypothesisData?.items || []).find(row => row.id === button.dataset.hypId);
+    if (!hypothesis) return;
+    const action = button.dataset.hypAction;
+    if (action === 'ask') {
+      document.dispatchEvent(new CustomEvent('ask-research-hypothesis', { detail: { hypothesis } }));
+      return;
+    }
+    button.disabled = true;
+    try {
+      if (action === 'review') {
+        const card = button.closest('.hypothesis-item');
+        const outcome = card.querySelector('[data-hyp-outcome]').value;
+        const note = card.querySelector('[data-hyp-note]').value.trim();
+        if (!note) throw new Error('请先写下你观察到的证据或反证');
+        const result = await api.mutateResearchHypothesis('review', { id: hypothesis.id, outcome, note });
+        hypothesisData = result.hypotheses;
+        toast('复盘结论已保存；原始假设仍完整保留');
+      } else if (action === 'archive') {
+        const result = await api.mutateResearchHypothesis('archive', { id: hypothesis.id });
+        hypothesisData = result.hypotheses;
+        toast('研究假设已归档');
+      }
+      renderHypotheses(container);
+      bus.dispatchEvent(new CustomEvent('research-hypotheses', { detail: hypothesisData }));
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message || '研究假设操作失败', 'err');
+    }
+  });
+  bus.addEventListener('research-hypotheses', e => {
+    hypothesisData = e.detail;
+    renderHypotheses(container);
+  });
+  refreshHypotheses(container);
+
   bus.addEventListener('journal', () => renderJournal(container));
   renderJournal(container);
 
@@ -425,6 +473,78 @@ export function init(container) {
   calNote.textContent = '格子颜色 = 当日情绪阶段（蓝冰点/青修复/金发酵/红高潮/紫亢奋），📔 = 你写过的复盘。点击任意一天，可补写或让 DeepSeek 基于当日快照生成复盘；生成期间可查看会话，正文完整后会自动回填。';
   calRender = renderCal;
   renderCal();
+}
+
+const HYP_STATUS = {
+  observing: ['观察中', 'cyan'], review_due: ['待复盘', 'amber'],
+  completed: ['已完成', 'cyan'], archived: ['已归档', 'gray'], invalid: ['需检查', 'red'],
+};
+const HYP_OUTCOME = {
+  supported: '支持', mixed: '混合', not_supported: '不支持', invalid: '事件失效',
+};
+
+function formatHypothesisTime(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value || '--';
+  return d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+async function refreshHypotheses(container) {
+  try {
+    hypothesisData = await api.researchHypotheses();
+    renderHypotheses(container);
+  } catch {
+    container.querySelector('#st-hyp-list').innerHTML = '<div class="empty">研究假设服务暂不可用，不影响其他策略功能</div>';
+  }
+}
+
+function renderHypotheses(container) {
+  const root = container.querySelector('#st-hyp-list');
+  if (!root) return;
+  const summary = hypothesisData?.summary || {};
+  container.querySelector('#st-hyp-summary').innerHTML = `观察中 <b>${summary.observing || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 已完成 <b>${summary.completed || 0}</b>`;
+  const items = (hypothesisData?.items || []).filter(row => row.effectiveStatus !== 'archived');
+  if (!items.length) {
+    root.innerHTML = '<div class="empty">还没有研究假设。到总览的事件影响雷达，选择观察窗口并保存一条事件。</div>';
+    return;
+  }
+  root.innerHTML = items.map(item => {
+    const baseline = item.baseline || {};
+    const status = HYP_STATUS[item.effectiveStatus] || HYP_STATUS.invalid;
+    const review = item.review || {};
+    const watches = (baseline.watchlist || []).map(row => `<span>${esc(row.name || row.code)}</span>`).join('');
+    const sectors = (baseline.sectors || []).slice(0, 6).map(row => `<span>${esc(row)}</span>`).join('');
+    const due = item.effectiveStatus === 'review_due';
+    return `<article class="hypothesis-item" data-status="${esc(item.effectiveStatus)}">
+      <div class="hypothesis-head">
+        <span class="badge ${status[1]}">${status[0]}</span>
+        <b>${esc(baseline.title || '未命名研究假设')}</b>
+        <time>复盘 ${esc(formatHypothesisTime(item.reviewDueAt))}</time>
+      </div>
+      <p class="hypothesis-statement">${esc(item.statement)}</p>
+      <div class="hypothesis-path"><span>行业</span>${sectors || '<em>待确认</em>'}<i>→</i><span>自选</span>${watches || '<em>未命中</em>'}</div>
+      <details><summary>查看创建时事实、观察清单与反证条件</summary>
+        <div class="hypothesis-evidence">
+          <div><b>创建时来源</b>${(baseline.sources || []).map(row => esc(row.name)).join(' / ') || '待确认'} · 质量 ${esc(baseline.quality?.score ?? '--')}</div>
+          <ol>${(item.observationChecklist || []).map(row => `<li>${esc(row.label)}</li>`).join('')}</ol>
+          <div class="hypothesis-falsifiers"><b>出现以下情况应削弱或推翻</b><ul>${(item.falsifiers || []).map(row => `<li>${esc(row)}</li>`).join('')}</ul></div>
+        </div>
+      </details>
+      ${review.outcome ? `<div class="hypothesis-review-result"><b>你的结论：${esc(HYP_OUTCOME[review.outcome] || review.outcome)}</b><span>${esc(review.note || '')}</span></div>` : ''}
+      ${!review.outcome ? `<details class="hypothesis-review-box" ${due ? 'open' : ''}><summary>${due ? '观察窗口已结束，填写结论' : '事件提前失效或已有充分证据？可提前复盘'}</summary><div class="hypothesis-review-form">
+        <select data-hyp-outcome aria-label="假设复盘结论">
+          <option value="mixed">混合：部分证据成立</option><option value="supported">支持</option>
+          <option value="not_supported">不支持</option><option value="invalid">事件失效</option>
+        </select>
+        <textarea data-hyp-note placeholder="记录支持证据、反证，以及哪些信息是后来才知道的…"></textarea>
+        <button class="btn sm primary" data-hyp-action="review" data-hyp-id="${esc(item.id)}">确认复盘结论</button>
+      </div></details>` : ''}
+      <div class="hypothesis-actions">
+        <button class="btn sm" data-hyp-action="ask" data-hyp-id="${esc(item.id)}">让 DeepSeek 按反证复盘</button>
+        <button class="btn sm ghost" data-hyp-action="archive" data-hyp-id="${esc(item.id)}">归档</button>
+      </div>
+    </article>`;
+  }).join('');
 }
 
 function todayStr() {

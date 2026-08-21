@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.11.0'
+const MIN_BACKEND_VERSION = '1.12.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -182,6 +182,8 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const eventAuthorization = recordOf(eventImpact['authorization'])
   const eventSummary = recordOf(eventImpact['summary'])
   const eventMethod = recordOf(eventImpact['method'])
+  const researchHypotheses = recordOf(raw['researchHypotheses'])
+  const researchHypothesisSummary = recordOf(researchHypotheses['summary'])
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -234,6 +236,55 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     : []
   const standaloneEventItem = Object.keys(recordOf(raw['eventImpactItem'])).length
     ? sanitizeEventItem(raw['eventImpactItem']) : null
+  const sanitizeHypothesis = (value: unknown) => {
+    const item = recordOf(value)
+    const baseline = recordOf(item['baseline'])
+    const quality = recordOf(baseline['quality'])
+    const review = recordOf(item['review'])
+    const contract = recordOf(item['contract'])
+    const baselineSources = Array.isArray(baseline['sources']) ? baseline['sources'].slice(0, 6).map(source => {
+      const row = recordOf(source)
+      return { id: short(row['id'], 80), name: short(row['name'], 100), tier: short(row['tier'], 30), url: short(row['url'], 500) }
+    }) : []
+    const baselineWatchlist = Array.isArray(baseline['watchlist']) ? baseline['watchlist'].slice(0, 8).map(stock => {
+      const row = recordOf(stock)
+      return { code: short(row['code'], 20), name: short(row['name'], 80), basis: short(row['basis'], 180) }
+    }) : []
+    const checklist = Array.isArray(item['observationChecklist']) ? item['observationChecklist'].slice(0, 6).map(check => {
+      const row = recordOf(check)
+      return { id: short(row['id'], 40), label: short(row['label'], 240) }
+    }) : []
+    return {
+      id: short(item['id'], 160), modelVersion: short(item['modelVersion'], 60),
+      status: short(item['status'], 30), effectiveStatus: short(item['effectiveStatus'], 30),
+      createdAt: short(item['createdAt'], 80), reviewDueAt: short(item['reviewDueAt'], 80),
+      horizonTradingDays: finite(item['horizonTradingDays']), calendarBasis: short(item['calendarBasis'], 160),
+      statement: short(item['statement'], 600), userNote: short(item['userNote'], 1000),
+      baseline: {
+        eventId: short(baseline['eventId'], 100), title: short(baseline['title'], 300),
+        type: short(baseline['type'], 30), scheduledAt: short(baseline['scheduledAt'], 80),
+        observedAt: short(baseline['observedAt'], 80), importance: finite(baseline['importance']),
+        sources: baselineSources, sectors: uniqueStrings(baseline['sectors'], 8, 80),
+        watchlist: baselineWatchlist,
+        quality: { score: finite(quality['score']), corroborated: quality['corroborated'] === true, meaning: short(quality['meaning'], 200) },
+      },
+      observationChecklist: checklist, falsifiers: uniqueStrings(item['falsifiers'], 8, 300),
+      review: Object.keys(review).length ? {
+        outcome: short(review['outcome'], 30), note: short(review['note'], 2000),
+        reviewedAt: short(review['reviewedAt'], 80), userConfirmed: review['userConfirmed'] === true,
+      } : null,
+      contract: {
+        preRegistered: contract['preRegistered'] === true, causalClaim: contract['causalClaim'] === true,
+        directionPrediction: contract['directionPrediction'] === true,
+        automaticTradingAction: contract['automaticTradingAction'] === true,
+        userReviewRequired: contract['userReviewRequired'] === true,
+      },
+    }
+  }
+  const hypothesisItems = Array.isArray(researchHypotheses['items'])
+    ? researchHypotheses['items'].slice(0, 10).map(sanitizeHypothesis) : []
+  const standaloneHypothesis = Object.keys(recordOf(raw['researchHypothesis'])).length
+    ? sanitizeHypothesis(raw['researchHypothesis']) : null
   const disclosures = Array.isArray(selected['officialDisclosures'])
     ? selected['officialDisclosures'].slice(0, 6).map(item => {
       const row = recordOf(item)
@@ -464,6 +515,16 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         items: eventItems, errors: uniqueStrings(eventImpact['errors'], 6, 200),
       } : null,
       eventImpactItem: standaloneEventItem,
+      researchHypotheses: Object.keys(researchHypotheses).length ? {
+        modelVersion: short(researchHypotheses['modelVersion'], 60),
+        summary: {
+          total: finite(researchHypothesisSummary['total']), observing: finite(researchHypothesisSummary['observing']),
+          reviewDue: finite(researchHypothesisSummary['review_due']), completed: finite(researchHypothesisSummary['completed']),
+          archived: finite(researchHypothesisSummary['archived']),
+        },
+        boundary: short(researchHypotheses['boundary'], 300), items: hypothesisItems,
+      } : null,
+      researchHypothesis: standaloneHypothesis,
       indices,
       sources,
       contextTruncated: {
@@ -596,6 +657,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '9. attention 是用户提醒中心状态；可用它解释最近提醒、未读事项、后台价格监控和主动服务日程，但不要替用户更改偏好或授权，也不要把提醒本身当成市场事实。',
     '10. attention.learning 只来自用户明确反馈，可解释当前降噪设置和完成情况；不得推断未记录的偏好，也不得据此触发交易。',
     '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',
+    '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；复盘时不得用后来信息改写原假设，必须区分支持、混合、不支持与事件失效，且最终结论由用户确认。',
   ].join('\n')
 }
 

@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.11.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.11.0';
+import { api } from './api.js?v=1.12.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.12.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -14,6 +14,7 @@ export const state = {
   monitor: null,
   routine: null,
   eventImpact: null,
+  hypotheses: null,
 };
 
 export const bus = new EventTarget();
@@ -34,6 +35,8 @@ const PROFILE_KEYS = {
   background_monitor: 'dp_background_monitor_v1',
   market_routine: 'dp_market_routine_v1',
   event_service: 'dp_event_service_v1',
+  research_hypotheses: 'dp_research_hypotheses_v1',
+  hypothesis_receipts: 'dp_hypothesis_receipts_v1',
 };
 const PROFILE_OBJECT_KEYS = new Set(['attention_preferences', 'background_monitor', 'market_routine', 'event_service']);
 const profileTimers = new Map();
@@ -80,6 +83,7 @@ export async function syncProfile() {
   emit('background-monitor', loadBackgroundMonitor());
   emit('market-routine', loadMarketRoutine());
   emit('event-service', loadEventService());
+  emit('research-hypotheses', loadResearchHypotheses());
   document.dispatchEvent(new CustomEvent('profile-synced'));
   return profile;
 }
@@ -430,6 +434,15 @@ export function loadEventService() {
     const value = JSON.parse(localStorage.getItem(EVENT_SERVICE_KEY) || '{}');
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   } catch { return {}; }
+}
+
+const RESEARCH_HYPOTHESES_KEY = 'dp_research_hypotheses_v1';
+
+export function loadResearchHypotheses() {
+  try {
+    const value = JSON.parse(localStorage.getItem(RESEARCH_HYPOTHESES_KEY) || '[]');
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
 }
 
 /* ---------------- 行情页状态 ---------------- */

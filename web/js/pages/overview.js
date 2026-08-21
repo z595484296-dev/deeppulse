@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.11.0';
-import { state, bus, syncProfile } from '../store.js?v=1.11.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.11.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.11.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.11.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.11.0';
+import { api } from '../api.js?v=1.12.0';
+import { state, bus, syncProfile } from '../store.js?v=1.12.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.12.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.12.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.12.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.12.0';
 
 let built = false;
 let sparksAt = 0;
@@ -86,6 +86,13 @@ export function init(container) {
         <select id="ov-event-delivery" aria-label="事件提醒方式">
           <option value="digest">重要事件进入摘要</option>
           <option value="center_only">只收入提醒中心</option>
+        </select>
+        <select id="ov-event-horizon" aria-label="研究假设观察窗口">
+          <option value="1">假设窗口：1个工作日</option>
+          <option value="3">假设窗口：3个工作日</option>
+          <option value="5" selected>假设窗口：5个工作日</option>
+          <option value="10">假设窗口：10个工作日</option>
+          <option value="20">假设窗口：20个工作日</option>
         </select>
       </div>
       <div class="event-radar-summary" id="ov-event-summary" hidden></div>
@@ -253,6 +260,10 @@ export function init(container) {
   bus.addEventListener('brief-receipts', rerenderBrief);
   bus.addEventListener('market-routine', e => renderRoutine(container, e.detail));
   bus.addEventListener('event-impact', e => renderEventImpact(container, e.detail));
+  bus.addEventListener('research-hypotheses', e => {
+    state.hypotheses = e.detail;
+    renderEventImpact(container, state.eventImpact);
+  });
 
   container.querySelector('#ov-routine').addEventListener('change', async e => {
     const input = e.target.closest('[data-routine-task]');
@@ -301,6 +312,7 @@ export function init(container) {
       .map(input => [input.dataset.eventScope, input.checked]));
     const watchlistLink = container.querySelector('[data-event-link="watchlist"]').checked;
     const delivery = container.querySelector('#ov-event-delivery').value;
+    localStorage.setItem('dp_event_horizon_v1', container.querySelector('#ov-event-horizon').value);
     try {
       await api.saveEventServiceConfig({ ...current, enabled: true, scopes, watchlist_link: watchlistLink, delivery });
       state.eventImpact = await api.eventImpact();
@@ -309,11 +321,27 @@ export function init(container) {
     } catch { toast('事件雷达设置未保存，请稍后重试', 'err'); }
   });
   container.querySelector('#ov-event-list').addEventListener('click', e => {
-    const button = e.target.closest('[data-event-ask]');
-    if (!button) return;
+    const askButton = e.target.closest('[data-event-ask]');
+    const saveButton = e.target.closest('[data-event-save]');
+    const eventId = askButton?.dataset.eventAsk || saveButton?.dataset.eventSave;
+    if (!eventId) return;
     const item = ((state.eventImpact && state.eventImpact.impact && state.eventImpact.impact.items) || [])
-      .find(row => row.event && row.event.id === button.dataset.eventAsk);
-    document.dispatchEvent(new CustomEvent('ask-event-impact', { detail: { item } }));
+      .find(row => row.event && row.event.id === eventId);
+    if (askButton) {
+      document.dispatchEvent(new CustomEvent('ask-event-impact', { detail: { item } }));
+      return;
+    }
+    saveButton.disabled = true;
+    const horizonDays = Number(container.querySelector('#ov-event-horizon').value || 5);
+    api.mutateResearchHypothesis('create', { eventItem: item, horizonDays }).then(result => {
+      state.hypotheses = result.hypotheses;
+      bus.dispatchEvent(new CustomEvent('research-hypotheses', { detail: result.hypotheses }));
+      syncProfile().catch(() => {});
+      toast(result.created ? `已保存 ${horizonDays} 个工作日研究假设，到期会提醒复盘` : '这条事件已有观察中的研究假设');
+    }).catch(error => {
+      saveButton.disabled = false;
+      toast('保存研究假设失败：' + error.message, 'err');
+    });
   });
   renderEventImpact(container, state.eventImpact);
 
@@ -366,6 +394,7 @@ function renderEventImpact(container, snapshot) {
   const link = root.querySelector('[data-event-link="watchlist"]');
   if (link) link.checked = config.watchlist_link !== false;
   root.querySelector('#ov-event-delivery').value = config.delivery || 'digest';
+  root.querySelector('#ov-event-horizon').value = localStorage.getItem('dp_event_horizon_v1') || '5';
   const impact = value.impact || {};
   const summary = impact.summary || {};
   const summaryEl = root.querySelector('#ov-event-summary');
@@ -392,6 +421,8 @@ function renderEventImpact(container, snapshot) {
     const sources = (event.sources || []).map(source => source.name).filter(Boolean).join(' / ') || '来源待确认';
     const watches = (item.watchlist || []).map(row => `<span class="event-watch">${esc(row.name || row.code)}</span>`).join('');
     const sectors = (item.sectors || []).slice(0, 5).map(name => `<span>${esc(name)}</span>`).join('');
+    const saved = (state.hypotheses?.items || []).some(row => row.baseline?.eventId === event.id
+      && ['observing', 'review_due'].includes(row.effectiveStatus));
     return `<article class="event-path-item">
       <div class="event-path-main">
         <div class="event-path-meta"><span>${event.type === 'macro' ? '宏观事件' : '市场快讯'}</span><time>${esc(eventTime(event.scheduledAt))}</time><span>质量 ${esc(quality.score ?? '--')}</span></div>
@@ -400,7 +431,10 @@ function renderEventImpact(container, snapshot) {
         <p>${esc(item.explanation || '')}</p>
         <small>来源：${esc(sources)} · 观测：${esc(eventTime(event.observedAt))}</small>
       </div>
-      <button class="btn sm" data-event-ask="${esc(event.id)}">让 DeepSeek 核对</button>
+      <div class="event-path-actions">
+        <button class="btn sm" data-event-ask="${esc(event.id)}">让 DeepSeek 核对</button>
+        <button class="btn sm ${saved ? 'ghost' : 'primary'}" data-event-save="${esc(event.id)}" ${saved ? 'disabled' : ''}>${saved ? '已保存假设' : '保存研究假设'}</button>
+      </div>
     </article>`;
   }).join('');
 }

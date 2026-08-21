@@ -39,6 +39,7 @@ $runtimeFiles = @(
     'server.py',
     'emotion.py',
     'event_impact.py',
+    'research_hypothesis.py',
     'tdx_local.py',
     'deeppulse.manifest.json',
     'README.md',

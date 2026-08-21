@@ -45,6 +45,14 @@ except Exception:
     build_event_impact = None
     EVENT_IMPACT_MODEL_VERSION = 'event-impact-unavailable'
 
+try:
+    from research_hypothesis import (create_hypothesis, review_hypothesis,
+                                     hypothesis_snapshot,
+                                     MODEL_VERSION as HYPOTHESIS_MODEL_VERSION)
+except Exception:
+    create_hypothesis = review_hypothesis = hypothesis_snapshot = None
+    HYPOTHESIS_MODEL_VERSION = 'research-hypothesis-unavailable'
+
 _akshare_module = None
 _akshare_error = None
 
@@ -72,7 +80,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.11.0'
+VERSION = '1.12.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1428,6 +1436,8 @@ PROFILE_LIST_LIMITS = {
     'attention_feedback': 500,
     'routine_receipts': 180,
     'event_receipts': 500,
+    'research_hypotheses': 300,
+    'hypothesis_receipts': 500,
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
@@ -2508,10 +2518,123 @@ def event_service_status(include_impact=False):
     return result
 
 
+def research_hypotheses_status(current=None):
+    """Return the hypothesis lifecycle with time-derived review state."""
+    profile = current if isinstance(current, dict) else load_profile()
+    data = profile.get('data') or {}
+    if hypothesis_snapshot is None:
+        return {
+            'modelVersion': HYPOTHESIS_MODEL_VERSION, 'items': [],
+            'summary': {'total': 0, 'observing': 0, 'review_due': 0,
+                        'completed': 0, 'archived': 0},
+            'error': '研究假设模型不可用',
+        }
+    return hypothesis_snapshot(data.get('research_hypotheses') or [], now_bj())
+
+
+def mutate_research_hypothesis(action, payload=None):
+    """Atomically create, review, archive or delete one research hypothesis."""
+    if hypothesis_snapshot is None or create_hypothesis is None:
+        raise ValueError('研究假设模型不可用')
+    clean_action = str(action or '').strip()
+    body = payload if isinstance(payload, dict) else {}
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        rows = [row for row in (current['data'].get('research_hypotheses') or [])
+                if isinstance(row, dict) and row.get('id')]
+        target = None
+        created = False
+        if clean_action == 'create':
+            event_item = body.get('eventItem') or {}
+            event_id = str((event_item.get('event') or {}).get('id') or '').strip()
+            live = hypothesis_snapshot(rows, now_bj()).get('items') or []
+            target = next((row for row in live
+                           if str((row.get('baseline') or {}).get('eventId') or '') == event_id
+                           and row.get('effectiveStatus') in {'observing', 'review_due'}), None)
+            if target is None:
+                target = create_hypothesis(event_item, body.get('horizonDays') or 5,
+                                           body.get('note') or '', now_bj())
+                rows.append(target)
+                created = True
+        else:
+            item_id = str(body.get('id') or '').strip()[:160]
+            index = next((idx for idx, row in enumerate(rows) if row.get('id') == item_id), -1)
+            if index < 0:
+                raise ValueError('研究假设不存在')
+            if clean_action == 'review':
+                target = review_hypothesis(rows[index], body.get('outcome'),
+                                           body.get('note') or '', now_bj())
+                rows[index] = target
+            elif clean_action == 'archive':
+                target = dict(rows[index])
+                target['status'] = 'archived'
+                target['archivedAt'] = now_bj().isoformat(timespec='seconds')
+                rows[index] = target
+            elif clean_action == 'delete':
+                target = rows.pop(index)
+            else:
+                raise ValueError('unsupported hypothesis action')
+        current['data']['research_hypotheses'] = rows[-PROFILE_LIST_LIMITS['research_hypotheses']:]
+        saved = _write_profile_unlocked(current)
+        return {
+            'profileRevision': saved.get('revision'), 'item': target,
+            'created': created, 'hypotheses': research_hypotheses_status(saved),
+        }
+
+
+def publish_due_hypothesis_reminders(now=None):
+    """Publish one local reminder per due hypothesis; no external source access."""
+    if hypothesis_snapshot is None:
+        return 0
+    current_time = now if isinstance(now, datetime) else now_bj()
+    timestamp = int(current_time.timestamp() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        snapshot = hypothesis_snapshot(current['data'].get('research_hypotheses') or [], current_time)
+        due = [row for row in snapshot.get('items') or []
+               if row.get('effectiveStatus') == 'review_due']
+        receipts = [row for row in (current['data'].get('hypothesis_receipts') or [])
+                    if isinstance(row, dict) and row.get('id')]
+        receipt_ids = {row['id'] for row in receipts}
+        inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict) and row.get('id')]
+        published = 0
+        for row in due:
+            receipt_id = 'hypothesis-due:' + str(row.get('id') or '')[:100]
+            if receipt_id in receipt_ids:
+                continue
+            baseline = row.get('baseline') or {}
+            inbox = [item for item in inbox if item.get('id') != receipt_id]
+            inbox.append({
+                'id': receipt_id, 'fingerprint': receipt_id,
+                'kind': 'hypothesis_review', 'priority': 'medium', 'delivery': 'digest',
+                'page': 'strategy', 'createdAt': timestamp,
+                'expiresAt': timestamp + 14 * 24 * 60 * 60 * 1000,
+                'title': '研究假设到期：' + str(baseline.get('title') or '待复盘事件')[:120],
+                'detail': '观察窗口已结束。请按预先登记的证据与反证条件复盘，不要用事后信息改写原假设。',
+                'reason': '你曾主动保存这条研究假设，并选择了 %s 个工作日观察窗口' % (
+                    row.get('horizonTradingDays') or '--'),
+                'hypothesisId': row.get('id'), 'reviewDueAt': row.get('reviewDueAt'),
+            })
+            receipts.append({'id': receipt_id, 'hypothesisId': row.get('id'),
+                             'publishedAt': current_time.isoformat(timespec='seconds')})
+            receipt_ids.add(receipt_id)
+            published += 1
+        if published:
+            current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+            current['data']['hypothesis_receipts'] = receipts[-PROFILE_LIST_LIMITS['hypothesis_receipts']:]
+            _write_profile_unlocked(current)
+        return published
+
+
 def _event_service_loop():
     with _event_service_lock:
         _event_service_runtime['thread_running'] = True
     while not _event_service_stop.is_set():
+        try:
+            publish_due_hypothesis_reminders(now_bj())
+        except Exception as exc:
+            log('hypothesis due reminder -> %s' % exc)
         cfg = load_event_service_config()
         wait_seconds = 30 if not cfg['enabled'] else cfg['interval_seconds']
         checked_at = now_bj()
@@ -3509,7 +3632,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.11.0'
+    server_version = 'DeepPulse/1.12.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -3634,6 +3757,8 @@ class Handler(BaseHTTPRequestHandler):
                           'akshare_enrichment': 1,
                           'event_impact': 1,
                           'event_background_service': 1,
+                          'research_hypotheses': 1,
+                          'hypothesis_due_reminders': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -3685,6 +3810,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': event_service_status(include_impact=True)})
         elif path == '/api/event-service/status':
             self.send_json({'ok': True, 'data': event_service_status(include_impact=False)})
+        elif path == '/api/research-hypotheses':
+            self.send_json({'ok': True, 'data': research_hypotheses_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -3873,6 +4000,10 @@ class Handler(BaseHTTPRequestHandler):
                     'profile': saved,
                     'eventService': event_service_status(include_impact=False),
                 }})
+            elif u.path == '/api/research-hypotheses':
+                body = self.read_json_body()
+                result = mutate_research_hypothesis(body.get('action'), body)
+                self.send_json({'ok': True, 'data': result})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()
                 saved = save_device_config(body.get('config') or {})

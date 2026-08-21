@@ -506,7 +506,15 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("event_background_service", out var eventBackgroundService)
                 || eventBackgroundService.ValueKind != JsonValueKind.Number
                 || !eventBackgroundService.TryGetInt32(out var eventBackgroundServiceVersion)
-                || eventBackgroundServiceVersion != 1)
+                || eventBackgroundServiceVersion != 1
+                || !capabilities.TryGetProperty("research_hypotheses", out var researchHypotheses)
+                || researchHypotheses.ValueKind != JsonValueKind.Number
+                || !researchHypotheses.TryGetInt32(out var researchHypothesesVersion)
+                || researchHypothesesVersion != 1
+                || !capabilities.TryGetProperty("hypothesis_due_reminders", out var hypothesisDueReminders)
+                || hypothesisDueReminders.ValueKind != JsonValueKind.Number
+                || !hypothesisDueReminders.TryGetInt32(out var hypothesisDueRemindersVersion)
+                || hypothesisDueRemindersVersion != 1)
             {
                 return null;
             }
@@ -567,7 +575,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.11.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.12.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

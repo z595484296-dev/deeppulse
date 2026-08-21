@@ -819,6 +819,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .event-radar-controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .event-radar-controls label { color: var(--text-2); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
 .event-radar-controls select { margin-left: auto; min-width: 172px; }
+#ov-event-horizon { margin-left: 0; min-width: 190px; }
 .event-radar-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 13px; }
 .event-radar-summary > div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
 .event-radar-summary b { display: block; font-size: 20px; }
@@ -838,8 +839,39 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .event-path-flow i { color: var(--text-3); font-style: normal; }
 .event-path-main p { margin: 7px 0 3px; color: var(--text-2); font-size: 11.5px; }
 .event-path-main small { color: var(--text-3); font-size: 10.5px; }
+.event-path-actions { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .event-radar-boundary { border-left: 3px solid var(--amber); }
 .event-radar-card[data-state="degraded"], .event-radar-card[data-state="unavailable"], .event-radar-card[data-state="error"] { border-color: rgba(244, 184, 64, .38); }
+
+/* ---------------- 研究假设：创建时事实 + 预设反证 + 到期复盘 ---------------- */
+.hypothesis-lab { position: relative; overflow: hidden; }
+.hypothesis-lab::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: linear-gradient(var(--cyan), var(--violet)); }
+.hypothesis-summary { font-size: 11.5px; color: var(--text-3); }
+.hypothesis-summary b { color: var(--text); font-size: 14px; margin: 0 2px; }
+.hypothesis-boundary { margin: -4px 0 12px; padding: 9px 11px; border: 1px solid rgba(34,211,238,.16); background: rgba(34,211,238,.04); border-radius: 8px; color: var(--text-3); font-size: 11.5px; line-height: 1.65; }
+#st-hyp-list { display: grid; gap: 10px; }
+.hypothesis-item { border: 1px solid var(--line); border-radius: 11px; padding: 13px; background: rgba(11,18,32,.22); }
+.hypothesis-item[data-status="review_due"] { border-color: rgba(240,185,11,.38); box-shadow: inset 0 0 24px rgba(240,185,11,.035); }
+.hypothesis-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hypothesis-head > b { font-size: 13px; flex: 1; min-width: 220px; color: var(--text); }
+.hypothesis-head time { font-size: 10.5px; color: var(--text-3); }
+.hypothesis-statement { margin: 9px 0; color: var(--text-2); font-size: 12px; line-height: 1.7; }
+.hypothesis-path { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-3); }
+.hypothesis-path > span { padding: 3px 6px; border-radius: 5px; background: rgba(79,140,255,.11); color: var(--accent); }
+.hypothesis-path > span ~ span { background: rgba(168,85,247,.1); color: var(--violet); }
+.hypothesis-path em { font-style: normal; color: var(--text-3); }
+.hypothesis-item details { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.hypothesis-item summary { cursor: pointer; color: var(--text-3); font-size: 11px; }
+.hypothesis-evidence { padding: 8px 2px 0; color: var(--text-3); font-size: 11px; line-height: 1.65; }
+.hypothesis-evidence ol, .hypothesis-evidence ul { margin: 5px 0 0; padding-left: 20px; }
+.hypothesis-falsifiers { margin-top: 7px; color: var(--amber); }
+.hypothesis-review-form { display: grid; grid-template-columns: 220px 1fr auto; gap: 8px; margin-top: 10px; align-items: stretch; }
+.hypothesis-review-form select, .hypothesis-review-form textarea { border: 1px solid var(--line); border-radius: 7px; background: var(--bg-2); color: var(--text); padding: 7px 9px; font: inherit; }
+.hypothesis-review-form textarea { min-height: 50px; resize: vertical; }
+.hypothesis-review-result { margin-top: 10px; padding: 9px 10px; border-radius: 8px; background: rgba(46,189,133,.07); font-size: 11.5px; display: flex; gap: 9px; align-items: flex-start; }
+.hypothesis-review-result b { color: #2ebd85; white-space: nowrap; }
+.hypothesis-review-result span { color: var(--text-2); }
+.hypothesis-actions { display: flex; gap: 7px; justify-content: flex-end; margin-top: 10px; flex-wrap: wrap; }
 .ma-item { display: flex; gap: 11px; align-items: flex-start; }
 .ma-icon {
   width: 34px; height: 34px; border-radius: 9px; background: var(--panel-3);
@@ -1305,6 +1337,9 @@ body.light .newsline::before {
   .event-radar-summary { grid-template-columns: repeat(2, 1fr); }
   .event-radar-controls select { width: 100%; margin-left: 0; }
   .event-path-item { align-items: stretch; flex-direction: column; }
+  .event-path-actions { justify-content: flex-start; }
+  .hypothesis-review-form { grid-template-columns: 1fr; }
+  .hypothesis-head > b { min-width: 160px; }
 }
 body.light .card {
   background: linear-gradient(180deg, #ffffff, #fbfcfe);
