@@ -105,7 +105,7 @@ def create_hypothesis(event_item, horizon_days=5, note='', now=None):
         ],
         'falsifiers': [
             '原始事件被撤回、修正或没有得到独立来源确认',
-            '观察窗口内相关行业没有出现可区分于大盘的结构反馈',
+            '观察窗口内相关行业没有出现可区别于大盘的结构反馈',
             '反馈更合理地由同期大盘变化或新的无关事件解释',
         ],
         'userNote': _text(note, 1000),
@@ -130,7 +130,7 @@ def effective_status(item, now=None):
         return 'invalid'
 
 
-def review_hypothesis(item, outcome, note='', now=None):
+def review_hypothesis(item, outcome, note='', now=None, falsifier_hits=None, data_gaps=None):
     if not isinstance(item, dict):
         raise ValueError('hypothesis is required')
     clean_outcome = _text(outcome, 30)
@@ -141,6 +141,10 @@ def review_hypothesis(item, outcome, note='', now=None):
     result['review'] = {
         'outcome': clean_outcome,
         'note': _text(note, 2000),
+        'falsifierHits': [_text(row, 500) for row in (falsifier_hits or [])
+                          if _text(row, 500)][:12],
+        'dataGaps': [_text(row, 300) for row in (data_gaps or [])
+                     if _text(row, 300)][:12],
         'reviewedAt': _iso(now),
         'userConfirmed': True,
     }

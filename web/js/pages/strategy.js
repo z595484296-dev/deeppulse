@@ -1,14 +1,15 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.20.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.20.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.20.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.20.0';
+import { api } from '../api.js?v=1.21.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.21.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.21.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.21.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
 let calRender = null; // 复盘日历渲染句柄（refresh 时重绘）
 let hypothesisData = null;
+let researchMemoryData = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -96,6 +97,17 @@ export function init(container) {
         </div>
         <p class="hypothesis-boundary">假设保存后不会随行情自动改写。到期提醒只检查本机时间，不会扩大事件数据授权；最终结论必须由你确认。</p>
         <div id="st-hyp-list"><div class="empty">正在读取研究假设…</div></div>
+      </section>
+
+      <section class="card span-12 research-memory-lab" aria-labelledby="st-memory-title">
+        <div class="card-head research-memory-head">
+          <div><div class="card-title" id="st-memory-title">🧠 研究记忆</div><div class="card-sub">只回看你明确确认的结论 · 相似结构提醒可随时关闭</div></div>
+          <label class="memory-switch"><input type="checkbox" id="st-memory-enabled"><span>在新任务中提示相似经验</span></label>
+        </div>
+        <div class="research-memory-summary" id="st-memory-summary">正在读取…</div>
+        <div class="research-memory-patterns" id="st-memory-patterns"></div>
+        <div id="st-memory-list"><div class="empty">正在整理研究记忆…</div></div>
+        <p class="hypothesis-boundary" id="st-memory-boundary">不统计交易胜率，不根据收益倒推因果，不会自动修改策略。</p>
       </section>
 
       <div class="card span-12">
@@ -338,10 +350,13 @@ export function init(container) {
         const card = button.closest('.hypothesis-item');
         const outcome = card.querySelector('[data-hyp-outcome]').value;
         const note = card.querySelector('[data-hyp-note]').value.trim();
+        const falsifierHits = [...card.querySelectorAll('[data-hyp-falsifier]:checked')].map(input => input.value);
+        const dataGaps = card.querySelector('[data-hyp-gaps]').value.split(/[\n；]+/).map(value => value.trim()).filter(Boolean);
         if (!note) throw new Error('请先写下你观察到的证据或反证');
-        const result = await api.mutateResearchHypothesis('review', { id: hypothesis.id, outcome, note });
+        const result = await api.mutateResearchHypothesis('review', { id: hypothesis.id, outcome, note, falsifierHits, dataGaps });
         hypothesisData = result.hypotheses;
         toast('复盘结论已保存；原始假设仍完整保留');
+        await refreshResearchMemory(container);
       } else if (action === 'evidence') {
         const result = await api.mutateResearchHypothesis('refresh_evidence', { id: hypothesis.id });
         hypothesisData = result.hypotheses;
@@ -363,6 +378,54 @@ export function init(container) {
     renderHypotheses(container);
   });
   refreshHypotheses(container);
+
+  container.querySelector('#st-memory-enabled').addEventListener('change', async e => {
+    e.target.disabled = true;
+    try {
+      const result = await api.mutateResearchMemory('set_enabled', { enabled: e.target.checked });
+      researchMemoryData = result.memory;
+      state.researchMemory = researchMemoryData;
+      renderResearchMemory(container);
+      bus.dispatchEvent(new CustomEvent('research-memory', { detail: researchMemoryData }));
+      toast(e.target.checked ? '相似研究结构提醒已开启' : '相似研究结构提醒已关闭；历史记录仍保留');
+    } catch (error) {
+      e.target.checked = !e.target.checked;
+      toast(error.message || '研究记忆设置失败', 'err');
+    } finally { e.target.disabled = false; }
+  });
+  container.querySelector('#st-memory-list').addEventListener('click', async e => {
+    const button = e.target.closest('[data-memory-action]');
+    if (!button) return;
+    const memory = (researchMemoryData?.items || []).find(row => row.id === button.dataset.memoryId);
+    if (!memory) return;
+    const action = button.dataset.memoryAction;
+    if (action === 'ask') {
+      document.dispatchEvent(new CustomEvent('ask-research-memory', { detail: { memory } }));
+      return;
+    }
+    button.disabled = true;
+    try {
+      const payload = { memoryId: memory.id };
+      if (action === 'update_lesson') {
+        payload.lesson = button.closest('.research-memory-item').querySelector('[data-memory-lesson]').value.trim();
+      }
+      const result = await api.mutateResearchMemory(action, payload);
+      researchMemoryData = result.memory;
+      state.researchMemory = researchMemoryData;
+      renderResearchMemory(container);
+      bus.dispatchEvent(new CustomEvent('research-memory', { detail: researchMemoryData }));
+      toast(action === 'hide' ? '这条记忆已隐藏；原始复盘仍保留' : action === 'restore' ? '研究记忆已恢复' : '方法改进已保存');
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message || '研究记忆操作失败', 'err');
+    }
+  });
+  bus.addEventListener('research-memory', e => {
+    researchMemoryData = e.detail;
+    state.researchMemory = researchMemoryData;
+    renderResearchMemory(container);
+  });
+  refreshResearchMemory(container);
 
   bus.addEventListener('journal', () => renderJournal(container));
   renderJournal(container);
@@ -558,13 +621,19 @@ function renderHypotheses(container) {
         ${timeline ? `<ol class="hypothesis-timeline-list">${timeline}</ol>` : '<div class="empty compact">点击“收集候选证据”建立创建时基线；之后按日期更新相对表现与官方公告。</div>'}
         ${evidenceState.errors?.length ? `<div class="hypothesis-evidence-errors">部分来源暂不可用：${evidenceState.errors.slice(0, 3).map(esc).join('；')}</div>` : ''}
       </details>
-      ${review.outcome ? `<div class="hypothesis-review-result"><b>你的结论：${esc(HYP_OUTCOME[review.outcome] || review.outcome)}</b><span>${esc(review.note || '')}</span></div>` : ''}
+      ${review.outcome ? `<div class="hypothesis-review-result"><b>你的结论：${esc(HYP_OUTCOME[review.outcome] || review.outcome)}</b><span>${esc(review.note || '')}</span>
+        ${(review.falsifierHits || []).length ? `<small>命中反证：${review.falsifierHits.map(esc).join('；')}</small>` : ''}
+        ${(review.dataGaps || []).length ? `<small>数据缺口：${review.dataGaps.map(esc).join('；')}</small>` : ''}</div>` : ''}
       ${!review.outcome ? `<details class="hypothesis-review-box" ${due ? 'open' : ''}><summary>${due ? '观察窗口已结束，填写结论' : '事件提前失效或已有充分证据？可提前复盘'}</summary><div class="hypothesis-review-form">
         <select data-hyp-outcome aria-label="假设复盘结论">
           <option value="mixed">混合：部分证据成立</option><option value="supported">支持</option>
           <option value="not_supported">不支持</option><option value="invalid">事件失效</option>
         </select>
         <textarea data-hyp-note placeholder="记录支持证据、反证，以及哪些信息是后来才知道的…"></textarea>
+        <fieldset class="hypothesis-falsifier-checks"><legend>本次命中了哪些预设反证？（可多选）</legend>
+          ${(item.falsifiers || []).map(row => `<label><input type="checkbox" data-hyp-falsifier value="${esc(row)}"><span>${esc(row)}</span></label>`).join('')}
+        </fieldset>
+        <textarea data-hyp-gaps placeholder="仍缺少哪些数据？每行一项，例如：官方公告原文、板块成交额对照…"></textarea>
         <button class="btn sm primary" data-hyp-action="review" data-hyp-id="${esc(item.id)}">确认复盘结论</button>
       </div></details>` : ''}
       <div class="hypothesis-actions">
@@ -574,6 +643,56 @@ function renderHypotheses(container) {
       </div>
     </article>`;
   }).join('');
+}
+
+async function refreshResearchMemory(container) {
+  try {
+    researchMemoryData = await api.researchMemory();
+    state.researchMemory = researchMemoryData;
+    renderResearchMemory(container);
+  } catch {
+    container.querySelector('#st-memory-list').innerHTML = '<div class="empty">研究记忆暂不可用，不影响原始复盘与假设</div>';
+  }
+}
+
+function renderResearchMemory(container) {
+  const root = container.querySelector('#st-memory-list');
+  if (!root || !researchMemoryData) return;
+  const summary = researchMemoryData.summary || {};
+  const prefs = researchMemoryData.preferences || {};
+  const toggle = container.querySelector('#st-memory-enabled');
+  toggle.checked = prefs.enabled !== false;
+  container.querySelector('#st-memory-summary').innerHTML = `已确认记忆 <b>${summary.visible || 0}</b> · 已写方法改进 <b>${summary.withLesson || 0}</b> · 含数据缺口 <b>${summary.withDataGaps || 0}</b>${summary.hidden ? ` · 已隐藏 <b>${summary.hidden}</b>` : ''}`;
+  const patterns = researchMemoryData.patterns || {};
+  const patternRoot = container.querySelector('#st-memory-patterns');
+  const minimum = Number(patterns.minimumSampleForPattern || 3);
+  if ((summary.visible || 0) < minimum) {
+    patternRoot.innerHTML = `<span>再积累 ${Math.max(0, minimum - Number(summary.visible || 0))} 条确认复盘后，才汇总重复出现的数据缺口与反证结构，避免小样本被包装成规律。</span>`;
+  } else {
+    const gaps = (patterns.frequentDataGaps || []).slice(0, 4);
+    patternRoot.innerHTML = `<b>已确认记录中的重复结构</b><span>反证命中 ${Number(patterns.falsifierHitCount || 0)} 次</span>${gaps.map(row => `<span>${esc(row.label)} × ${Number(row.count || 0)}</span>`).join('') || '<span>暂未出现重复数据缺口</span>'}`;
+  }
+  container.querySelector('#st-memory-boundary').textContent = researchMemoryData.boundary || '只使用你明确确认的记录。';
+  const items = researchMemoryData.items || [];
+  if (!items.length) {
+    root.innerHTML = '<div class="empty">完成一次研究假设复盘后，这里会形成第一条可追溯记忆。不会从收益结果自动生成经验。</div>';
+    return;
+  }
+  root.innerHTML = items.map(memory => `<article class="research-memory-item ${memory.hidden ? 'is-hidden' : ''}">
+    <div class="research-memory-title"><div><span class="badge ${memory.outcome === 'not_supported' || memory.outcome === 'invalid' ? 'amber' : 'cyan'}">${esc(memory.outcomeLabel)}</span><b>${esc(memory.title)}</b></div><time>${esc(formatHypothesisTime(memory.reviewedAt))}</time></div>
+    <p>${esc(memory.conclusion || '未填写结论说明')}</p>
+    <div class="research-memory-facts">
+      ${(memory.falsifierHits || []).length ? `<span><b>命中反证</b>${memory.falsifierHits.map(esc).join('；')}</span>` : '<span><b>命中反证</b>未记录</span>'}
+      ${(memory.dataGaps || []).length ? `<span><b>数据缺口</b>${memory.dataGaps.map(esc).join('；')}</span>` : '<span><b>数据缺口</b>未记录</span>'}
+    </div>
+    <label class="research-memory-lesson"><span>以后遇到相似结构，我要改进什么？</span><textarea data-memory-lesson placeholder="由你确认的方法改进；DeepSeek 可以协助起草，但不会自动保存">${esc(memory.lesson || '')}</textarea></label>
+    <div class="hypothesis-actions">
+      <button class="btn sm primary" data-memory-action="update_lesson" data-memory-id="${esc(memory.id)}">保存方法改进</button>
+      <button class="btn sm" data-memory-action="ask" data-memory-id="${esc(memory.id)}">让 DeepSeek 帮我总结</button>
+      <button class="btn sm ghost" data-memory-action="${memory.hidden ? 'restore' : 'hide'}" data-memory-id="${esc(memory.id)}">${memory.hidden ? '恢复显示' : '隐藏记忆'}</button>
+    </div>
+    <small>来源：你确认的假设复盘 · 原始记录不会被这里的编辑或隐藏操作修改</small>
+  </article>`).join('');
 }
 
 function todayStr() {

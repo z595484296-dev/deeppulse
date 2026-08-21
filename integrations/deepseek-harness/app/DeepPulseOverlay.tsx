@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.20.0'
+const MIN_BACKEND_VERSION = '1.21.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -94,6 +94,9 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['research_cockpit'] === 1
       && capabilities['research_priority_controls'] === 1
       && capabilities['research_cockpit_context'] === 1
+      && capabilities['research_memory'] === 1
+      && capabilities['research_memory_controls'] === 1
+      && capabilities['research_memory_context'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -215,6 +218,11 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const researchCockpitMap = recordOf(researchCockpit['map'])
   const cockpitWatchlist = recordOf(researchCockpitMap['watchlist'])
   const cockpitHypotheses = recordOf(researchCockpitMap['hypotheses'])
+  const cockpitMemory = recordOf(researchCockpitMap['researchMemory'])
+  const researchMemory = recordOf(raw['researchMemory'])
+  const researchMemorySummary = recordOf(researchMemory['summary'])
+  const researchMemoryPreferences = recordOf(researchMemory['preferences'])
+  const researchMemoryPatterns = recordOf(researchMemory['patterns'])
   const sanitizeCockpitItem = (value: unknown) => {
     const item = recordOf(value)
     const evidence = recordOf(item['evidence'])
@@ -222,6 +230,15 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     const reasons = Array.isArray(item['reasons']) ? item['reasons'].slice(0, 6).map(reason => {
       const row = recordOf(reason)
       return { label: short(row['label'], 180), points: finite(row['points']), basis: short(row['basis'], 80) }
+    }) : []
+    const memoryHints = Array.isArray(item['memoryHints']) ? item['memoryHints'].slice(0, 3).map(value => {
+      const row = recordOf(value)
+      return {
+        memoryId: short(row['memoryId'], 180), title: short(row['title'], 240),
+        outcomeLabel: short(row['outcomeLabel'], 30), reviewedAt: short(row['reviewedAt'], 80),
+        lesson: short(row['lesson'], 1000), dataGaps: uniqueStrings(row['dataGaps'], 3, 240),
+        similarityScore: finite(row['similarityScore']), reasons: uniqueStrings(row['reasons'], 5, 160),
+      }
     }) : []
     return {
       id: short(item['id'], 180), sourceType: short(item['sourceType'], 40), sourceId: short(item['sourceId'], 180),
@@ -236,13 +253,36 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         type: short(nextAction['type'], 40), label: short(nextAction['label'], 100),
         page: short(nextAction['page'], 40),
       },
-      origin: short(item['origin'], 120),
+      origin: short(item['origin'], 120), memoryHints,
     }
   }
   const cockpitFocus = Array.isArray(researchCockpit['focus'])
     ? researchCockpit['focus'].slice(0, 5).map(sanitizeCockpitItem) : []
   const standaloneCockpitItem = Object.keys(recordOf(raw['researchCockpitItem'])).length
     ? sanitizeCockpitItem(raw['researchCockpitItem']) : null
+  const sanitizeResearchMemory = (value: unknown) => {
+    const item = recordOf(value)
+    const watchlist = Array.isArray(item['watchlist']) ? item['watchlist'].slice(0, 12).map(value => {
+      const row = recordOf(value)
+      return { code: short(row['code'], 20), name: short(row['name'], 80) }
+    }) : []
+    return {
+      id: short(item['id'], 180), sourceHypothesisId: short(item['sourceHypothesisId'], 160),
+      title: short(item['title'], 300), eventType: short(item['eventType'], 40),
+      reviewedAt: short(item['reviewedAt'], 80), outcome: short(item['outcome'], 30),
+      outcomeLabel: short(item['outcomeLabel'], 30), conclusion: short(item['conclusion'], 2000),
+      falsifierHits: uniqueStrings(item['falsifierHits'], 12, 500),
+      dataGaps: uniqueStrings(item['dataGaps'], 12, 300),
+      sectors: uniqueStrings(item['sectors'], 12, 80), watchlist,
+      evidenceCount: finite(item['evidenceCount']), lesson: short(item['lesson'], 1000),
+      hidden: item['hidden'] === true, sourceImmutable: item['sourceImmutable'] === true,
+      basis: short(item['basis'], 80),
+    }
+  }
+  const researchMemoryItems = Array.isArray(researchMemory['items'])
+    ? researchMemory['items'].filter(item => recordOf(item)['hidden'] !== true).slice(0, 20).map(sanitizeResearchMemory) : []
+  const standaloneResearchMemory = Object.keys(recordOf(raw['researchMemoryItem'])).length
+    ? sanitizeResearchMemory(raw['researchMemoryItem']) : null
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -381,6 +421,8 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       },
       review: Object.keys(review).length ? {
         outcome: short(review['outcome'], 30), note: short(review['note'], 2000),
+        falsifierHits: uniqueStrings(review['falsifierHits'], 12, 500),
+        dataGaps: uniqueStrings(review['dataGaps'], 12, 300),
         reviewedAt: short(review['reviewedAt'], 80), userConfirmed: review['userConfirmed'] === true,
       } : null,
       contract: {
@@ -693,6 +735,10 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
             observing: finite(cockpitHypotheses['observing']), reviewDue: finite(cockpitHypotheses['reviewDue']),
             candidateEvidence: finite(cockpitHypotheses['candidateEvidence']),
           },
+          researchMemory: {
+            enabled: cockpitMemory['enabled'] !== false,
+            visible: finite(cockpitMemory['visible']),
+          },
           pendingReminders: finite(researchCockpitMap['pendingReminders']),
           serviceSuggestions: finite(researchCockpitMap['serviceSuggestions']),
           healthAttention: finite(researchCockpitMap['healthAttention']),
@@ -703,6 +749,36 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         automaticTradingActions: researchCockpit['automaticTradingActions'] === true,
       } : null,
       researchCockpitItem: standaloneCockpitItem,
+      researchMemory: Object.keys(researchMemory).length ? {
+        modelVersion: short(researchMemory['modelVersion'], 60),
+        preferences: { enabled: researchMemoryPreferences['enabled'] !== false },
+        summary: {
+          total: finite(researchMemorySummary['total']), visible: finite(researchMemorySummary['visible']),
+          hidden: finite(researchMemorySummary['hidden']), withLesson: finite(researchMemorySummary['withLesson']),
+          withDataGaps: finite(researchMemorySummary['withDataGaps']),
+        },
+        items: researchMemoryItems,
+        patterns: {
+          basis: short(researchMemoryPatterns['basis'], 80),
+          outcomeDistribution: Array.isArray(researchMemoryPatterns['outcomeDistribution'])
+            ? researchMemoryPatterns['outcomeDistribution'].slice(0, 4).map(value => {
+              const row = recordOf(value)
+              return { outcome: short(row['outcome'], 30), label: short(row['label'], 30), count: finite(row['count']) }
+            }) : [],
+          frequentDataGaps: Array.isArray(researchMemoryPatterns['frequentDataGaps'])
+            ? researchMemoryPatterns['frequentDataGaps'].slice(0, 8).map(value => {
+              const row = recordOf(value)
+              return { label: short(row['label'], 240), count: finite(row['count']) }
+            }) : [],
+          falsifierHitCount: finite(researchMemoryPatterns['falsifierHitCount']),
+          minimumSampleForPattern: finite(researchMemoryPatterns['minimumSampleForPattern']),
+        },
+        boundary: short(researchMemory['boundary'], 400),
+        automaticCausalInference: researchMemory['automaticCausalInference'] === true,
+        automaticStrategyChange: researchMemory['automaticStrategyChange'] === true,
+        automaticTradingAction: researchMemory['automaticTradingAction'] === true,
+      } : null,
+      researchMemoryItem: standaloneResearchMemory,
       indices,
       sources,
       contextTruncated: {
@@ -838,6 +914,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',
     '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；evidenceCandidates 只是按可知时间排列的候选事实与相对大盘对照，不得把相对涨跌直接解释成事件因果，不得自动修改结论；复盘必须区分支持、混合、不支持与事件失效，最终结论由用户确认。',
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
+    '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
   ].join('\n')
 }
 

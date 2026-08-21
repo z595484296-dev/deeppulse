@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.20.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.20.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.20.0';
+import { api } from './api.js?v=1.21.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.21.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.21.0';
 
-import * as pageOverview from './pages/overview.js?v=1.20.0';
-import * as pageEmotion from './pages/emotion.js?v=1.20.0';
-import * as pageMarket from './pages/market.js?v=1.20.0';
-import * as pageLadder from './pages/ladder.js?v=1.20.0';
-import * as pageWatch from './pages/watch.js?v=1.20.0';
-import * as pageStrategy from './pages/strategy.js?v=1.20.0';
-import * as pageEpaper from './pages/epaper.js?v=1.20.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.20.0';
-import * as pageAbout from './pages/about.js?v=1.20.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.20.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.20.0';
-import { initOnboarding } from './onboarding.js?v=1.20.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.20.0';
+import * as pageOverview from './pages/overview.js?v=1.21.0';
+import * as pageEmotion from './pages/emotion.js?v=1.21.0';
+import * as pageMarket from './pages/market.js?v=1.21.0';
+import * as pageLadder from './pages/ladder.js?v=1.21.0';
+import * as pageWatch from './pages/watch.js?v=1.21.0';
+import * as pageStrategy from './pages/strategy.js?v=1.21.0';
+import * as pageEpaper from './pages/epaper.js?v=1.21.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.21.0';
+import * as pageAbout from './pages/about.js?v=1.21.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.21.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.21.0';
+import { initOnboarding } from './onboarding.js?v=1.21.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.21.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -216,10 +216,23 @@ function currentHarnessContext() {
         pinned: row.pinned === true, userAdjusted: row.userAdjusted === true,
         reasons: (row.reasons || []).slice(0, 6), evidence: row.evidence,
         nextAction: row.nextAction, origin: row.origin,
+        memoryHints: (row.memoryHints || []).slice(0, 3),
       })),
       method: state.cockpit.method, boundary: state.cockpit.boundary,
       automaticGoalInference: state.cockpit.automaticGoalInference === true,
       automaticTradingActions: state.cockpit.automaticTradingActions === true,
+    } : null,
+    researchMemory: state.researchMemory ? {
+      modelVersion: state.researchMemory.modelVersion,
+      summary: state.researchMemory.summary,
+      preferences: { enabled: state.researchMemory.preferences?.enabled !== false },
+      items: (state.researchMemory.items || []).filter(row => !row.hidden).slice(0, 20),
+      relatedByHypothesis: state.researchMemory.relatedByHypothesis || {},
+      patterns: state.researchMemory.patterns,
+      boundary: state.researchMemory.boundary,
+      automaticCausalInference: state.researchMemory.automaticCausalInference === true,
+      automaticStrategyChange: state.researchMemory.automaticStrategyChange === true,
+      automaticTradingAction: state.researchMemory.automaticTradingAction === true,
     } : null,
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
@@ -503,6 +516,13 @@ async function pollResearchCockpit() {
   } catch { /* 驾驶舱聚合失败不影响底层研究记录 */ }
 }
 
+async function pollResearchMemory() {
+  try {
+    state.researchMemory = await api.researchMemory();
+    emit('research-memory', state.researchMemory);
+  } catch { /* 研究记忆失败不影响原始研究记录 */ }
+}
+
 /** 异动差分：新涨停 / 炸板（仅交易时段播报，防止盘后修订误报） */
 function diffMoves(data) {
   const ztPool = (data.pools && data.pools.ZT && data.pools.ZT.pool) || [];
@@ -579,12 +599,13 @@ function schedule() {
   newsTimer = setInterval(pollNews, open ? 60000 : 300000);
   alertTimer = setInterval(pollAlerts, 10000);
   routineTimer = setInterval(pollRoutine, 30000);
-  eventTimer = setInterval(() => { pollEventImpact(); pollHypotheses(); pollResearchCockpit(); }, 300000);
+  eventTimer = setInterval(() => { pollEventImpact(); pollHypotheses(); pollResearchCockpit(); pollResearchMemory(); }, 300000);
   if (open) pollAlerts();
   pollRoutine();
   pollEventImpact();
   pollHypotheses();
   pollResearchCockpit();
+  pollResearchMemory();
 }
 
 /* ---------------- 时钟 ---------------- */
@@ -760,6 +781,14 @@ async function boot() {
     });
     if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);
   });
+  document.addEventListener('ask-research-memory', e => {
+    const memory = e.detail && e.detail.memory;
+    const request = askDeepSeek({
+      question: '请基于这条由我明确确认的研究记忆，总结以后遇到相似研究结构时可以改进的方法：区分当时已知事实、后来证据、反证命中与数据缺口；不要统计交易胜率，不要根据收益倒推因果，也不要自动修改策略。',
+      context: { intent: 'review-research-memory', researchMemoryItem: memory || null },
+    });
+    if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);
+  });
   document.addEventListener('harness-ask-result', e => {
     harnessBtn?.classList.remove('pending');
     const result = e.detail || {};
@@ -796,7 +825,7 @@ async function boot() {
   }
 
   goto(location.hash.slice(1) || 'overview', true);
-  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact(), pollHypotheses(), pollResearchCockpit()]);
+  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact(), pollHypotheses(), pollResearchCockpit(), pollResearchMemory()]);
   booted = true;
   schedule();
 
@@ -811,7 +840,7 @@ async function boot() {
       if (newsTimer) clearInterval(newsTimer);
       if (eventTimer) clearInterval(eventTimer);
     } else {
-      pollEmotion(); pollIndices(); pollNews(); pollEventImpact(); pollHypotheses(); pollResearchCockpit();
+      pollEmotion(); pollIndices(); pollNews(); pollEventImpact(); pollHypotheses(); pollResearchCockpit(); pollResearchMemory();
       schedule();
     }
   });

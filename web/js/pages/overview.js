@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.20.0';
-import { state, bus, syncProfile } from '../store.js?v=1.20.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.20.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.20.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.20.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.20.0';
+import { api } from '../api.js?v=1.21.0';
+import { state, bus, syncProfile } from '../store.js?v=1.21.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.21.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.21.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.21.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.21.0';
 
 let built = false;
 let sparksAt = 0;
@@ -541,6 +541,7 @@ function renderResearchCockpit(container, snapshot) {
     ['自选', map.watchlist?.total || 0, `${map.watchlist?.withOpenHypothesis || 0} 项已有假设`],
     ['观察中', map.hypotheses?.observing || 0, `${map.hypotheses?.candidateEvidence || 0} 条候选证据`],
     ['待复盘', map.hypotheses?.reviewDue || 0, '到期后由你确认结论'],
+    ['研究记忆', map.researchMemory?.visible || 0, map.researchMemory?.enabled === false ? '相似提醒已关闭' : '只含你确认的复盘'],
     ['待处理提醒', map.pendingReminders || 0, '只计未完成事项'],
     ['数据健康', map.healthAttention || 0, '仅显示影响研究的问题'],
   ].map(([label, count, note]) => `<div><b class="num">${Number(count)}</b><span>${esc(label)}</span><small>${esc(note)}</small></div>`).join('');
@@ -554,12 +555,14 @@ function renderResearchCockpit(container, snapshot) {
       const reasons = (item.reasons || []).slice(0, 4)
         .map(reason => `<li><span>+${Number(reason.points || 0)}</span>${esc(reason.label)}</li>`).join('');
       const missing = (item.evidence?.missing || []).slice(0, 2).map(esc).join('；');
+      const memoryHints = (item.memoryHints || []).slice(0, 2);
       return `<article class="research-focus-item" data-level="${level[1]}">
         <div class="research-focus-rank"><span>${esc(level[0])}</span><b class="num">${Number(item.score || 0)}</b><small>优先分</small></div>
         <div class="research-focus-main">
           <div class="research-focus-title"><b>${esc(item.title)}</b>${item.pinned ? '<span class="tag">已置顶</span>' : ''}${item.userAdjusted ? '<span class="tag user">你已调整</span>' : ''}</div>
           <p>${esc(item.subtitle || item.origin || '')}</p>
           <div class="research-evidence-line"><span>${esc(item.evidence?.status || '依据待确认')}</span><span>候选依据 ${Number(item.evidence?.available || 0)}</span>${missing ? `<span>缺口：${missing}</span>` : ''}</div>
+          ${memoryHints.length ? `<div class="research-memory-hint"><b>过去遇到过相似研究结构</b>${memoryHints.map(memory => `<span>${esc(memory.title)} · ${esc(memory.outcomeLabel)} · ${memory.reasons.map(esc).join('、')}</span>`).join('')}<small>仅作方法回看，不改变本任务优先级或结论</small></div>` : ''}
           <details class="research-priority-why"><summary>为什么排在这里？</summary><ul>${reasons || '<li>等待明确依据</li>'}${item.adjustment ? `<li class="user-adjust"><span>${item.adjustment > 0 ? '+' : ''}${Number(item.adjustment)}</span>你的优先级调整</li>` : ''}</ul></details>
         </div>
         <div class="research-focus-actions">

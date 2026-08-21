@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 首次启动引导（四步闭环：看体温→问蚂小财→深聊→建自选）
    设计原则：只讲「干什么」，不讲「是什么」；每步可跳过；完成即永不再扰。 */
 
-import { EMBEDDED } from './bridge.js?v=1.20.0';
+import { EMBEDDED } from './bridge.js?v=1.21.0';
 
 const KEY = 'dp_onboarded_v1';
 

@@ -624,7 +624,19 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("research_cockpit_context", out var researchCockpitContext)
                 || researchCockpitContext.ValueKind != JsonValueKind.Number
                 || !researchCockpitContext.TryGetInt32(out var researchCockpitContextVersion)
-                || researchCockpitContextVersion != 1)
+                || researchCockpitContextVersion != 1
+                || !capabilities.TryGetProperty("research_memory", out var researchMemory)
+                || researchMemory.ValueKind != JsonValueKind.Number
+                || !researchMemory.TryGetInt32(out var researchMemoryVersion)
+                || researchMemoryVersion != 1
+                || !capabilities.TryGetProperty("research_memory_controls", out var researchMemoryControls)
+                || researchMemoryControls.ValueKind != JsonValueKind.Number
+                || !researchMemoryControls.TryGetInt32(out var researchMemoryControlsVersion)
+                || researchMemoryControlsVersion != 1
+                || !capabilities.TryGetProperty("research_memory_context", out var researchMemoryContext)
+                || researchMemoryContext.ValueKind != JsonValueKind.Number
+                || !researchMemoryContext.TryGetInt32(out var researchMemoryContextVersion)
+                || researchMemoryContextVersion != 1)
             {
                 return null;
             }
@@ -685,7 +697,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.20.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.21.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

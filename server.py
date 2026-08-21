@@ -56,6 +56,14 @@ except Exception:
     HYPOTHESIS_MODEL_VERSION = 'research-hypothesis-unavailable'
 
 try:
+    from research_memory import (build_snapshot as build_research_memory_snapshot,
+                                 normalize_preferences as normalize_research_memory_preferences,
+                                 MODEL_VERSION as RESEARCH_MEMORY_MODEL_VERSION)
+except Exception:
+    build_research_memory_snapshot = normalize_research_memory_preferences = None
+    RESEARCH_MEMORY_MODEL_VERSION = 'research-memory-unavailable'
+
+try:
     from hypothesis_evidence import (collect_candidate_evidence,
                                      MODEL_VERSION as HYPOTHESIS_EVIDENCE_MODEL_VERSION)
 except Exception:
@@ -90,7 +98,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.20.0'
+VERSION = '1.21.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1467,6 +1475,7 @@ PROFILE_OBJECT_LIMITS = {
     'market_routine': 16 * 1024,
     'event_service': 16 * 1024,
     'research_cockpit_preferences': 64 * 1024,
+    'research_memory_preferences': 128 * 1024,
 }
 
 
@@ -3109,6 +3118,77 @@ def event_service_status(include_impact=False):
     return result
 
 
+def _readable_research_text(value):
+    text = str(value or '').strip()
+    return bool(text) and '�' not in text and text.count('?') < max(3, int(len(text) * .12))
+
+
+def _repair_hypothesis_display(item):
+    """Repair only the response view of legacy mojibake; persisted records stay unchanged."""
+    row = dict(item)
+    baseline = dict(row.get('baseline')) if isinstance(row.get('baseline'), dict) else {}
+    watches = []
+    for watch in baseline.get('watchlist') or []:
+        current_watch = dict(watch) if isinstance(watch, dict) else {}
+        code = str(current_watch.get('code') or '')[:20]
+        if not _readable_research_text(current_watch.get('name')):
+            current_watch['name'] = code
+        if not _readable_research_text(current_watch.get('basis')):
+            current_watch['basis'] = '创建时关联路径'
+        watches.append(current_watch)
+    baseline['watchlist'] = watches
+    sectors = [str(value)[:80] for value in (baseline.get('sectors') or [])
+               if _readable_research_text(value)]
+    baseline['sectors'] = sectors
+    source_rows = []
+    for source in baseline.get('sources') or []:
+        current_source = dict(source) if isinstance(source, dict) else {}
+        if not _readable_research_text(current_source.get('name')):
+            current_source['name'] = '历史来源（名称编码不可读）'
+        source_rows.append(current_source)
+    baseline['sources'] = source_rows
+    watch_codes = [str(value.get('code') or '') for value in watches if value.get('code')]
+    title_fallback = (' / '.join(watch_codes[:3]) + ' 相关事件') if watch_codes else '已保存事件'
+    title = (str(baseline.get('title') or '')[:300]
+             if _readable_research_text(baseline.get('title')) else title_fallback)
+    baseline['title'] = title
+    quality = dict(baseline.get('quality')) if isinstance(baseline.get('quality'), dict) else {}
+    if not _readable_research_text(quality.get('meaning')):
+        quality['meaning'] = '历史质量说明编码不可读；请按来源与字段重新核对'
+    baseline['quality'] = quality
+    row['baseline'] = baseline
+    horizon = int(row.get('horizonTradingDays') or 5)
+    if not _readable_research_text(row.get('statement')):
+        row['statement'] = '观察“%s”在预设 %d 个工作日内是否持续获得独立证据，并核对行业、自选和大盘对照反馈。' % (title, horizon)
+    fallback_checks = [
+        '事件是否被独立来源确认，且未被撤回或修正',
+        '敏感行业是否出现相对大盘可区分的结构反馈',
+        '自选反馈是否与预先记录的行业路径一致',
+    ]
+    checks = []
+    for index, check in enumerate(row.get('observationChecklist') or []):
+        current_check = dict(check) if isinstance(check, dict) else {}
+        if not _readable_research_text(current_check.get('label')):
+            current_check['label'] = fallback_checks[min(index, len(fallback_checks) - 1)]
+        checks.append(current_check)
+    row['observationChecklist'] = checks or [
+        {'id': 'source', 'label': fallback_checks[0]},
+        {'id': 'sector', 'label': fallback_checks[1]},
+        {'id': 'watchlist', 'label': fallback_checks[2]},
+    ]
+    fallback_falsifiers = [
+        '原始事件被撤回、修正或没有得到独立来源确认',
+        '观察窗口内相关行业没有出现可区别于大盘的结构反馈',
+        '反馈更合理地由同期大盘变化或新的无关事件解释',
+    ]
+    falsifiers = list(row.get('falsifiers') or [])
+    row['falsifiers'] = [
+        value if _readable_research_text(value) else fallback_falsifiers[min(index, 2)]
+        for index, value in enumerate(falsifiers[:12])
+    ] or fallback_falsifiers
+    return row
+
+
 def research_hypotheses_status(current=None):
     """Return the hypothesis lifecycle with time-derived review state."""
     profile = current if isinstance(current, dict) else load_profile()
@@ -3121,7 +3201,8 @@ def research_hypotheses_status(current=None):
             'error': '研究假设模型不可用',
         }
     result = hypothesis_snapshot(data.get('research_hypotheses') or [], now_bj())
-    items = result.get('items') or []
+    items = [_repair_hypothesis_display(row) for row in (result.get('items') or [])]
+    result['items'] = items
     result['summary']['candidateEvidence'] = sum(
         len(row.get('evidenceCandidates') or []) for row in items)
     evidence_authorized = normalize_event_service_config(data.get('event_service'))['enabled']
@@ -3135,6 +3216,67 @@ def research_hypotheses_status(current=None):
             'automaticConclusion': False,
         }
     return result
+
+
+def research_memory_status(current=None):
+    """Return memories derived only from user-confirmed hypothesis reviews."""
+    profile = current if isinstance(current, dict) else load_profile()
+    data = profile.get('data') if isinstance(profile.get('data'), dict) else profile
+    data = data if isinstance(data, dict) else {}
+    if build_research_memory_snapshot is None:
+        return {
+            'modelVersion': RESEARCH_MEMORY_MODEL_VERSION,
+            'items': [], 'relatedByHypothesis': {},
+            'summary': {'total': 0, 'visible': 0, 'hidden': 0,
+                        'withLesson': 0, 'withDataGaps': 0},
+            'error': '研究记忆模型不可用',
+        }
+    return build_research_memory_snapshot(
+        data.get('research_hypotheses') or [],
+        data.get('research_memory_preferences'))
+
+
+def mutate_research_memory(action, payload=None):
+    """Update only memory presentation preferences; source reviews stay immutable."""
+    if build_research_memory_snapshot is None or normalize_research_memory_preferences is None:
+        raise ValueError('研究记忆模型不可用')
+    clean_action = str(action or '').strip()
+    body = payload if isinstance(payload, dict) else {}
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        prefs = normalize_research_memory_preferences(data.get('research_memory_preferences'))
+        live = build_research_memory_snapshot(data.get('research_hypotheses') or [], prefs)
+        valid_ids = {str(row.get('id') or '') for row in (live.get('items') or [])}
+        if clean_action == 'set_enabled':
+            prefs['enabled'] = body.get('enabled') is True
+        else:
+            memory_id = str(body.get('memoryId') or '').strip()[:180]
+            if memory_id not in valid_ids:
+                raise ValueError('研究记忆不存在')
+            hidden = list(prefs.get('hiddenMemoryIds') or [])
+            notes = dict(prefs.get('notes') or {})
+            if clean_action == 'hide':
+                if memory_id not in hidden:
+                    hidden.append(memory_id)
+            elif clean_action == 'restore':
+                hidden = [value for value in hidden if value != memory_id]
+            elif clean_action == 'update_lesson':
+                lesson = str(body.get('lesson') or '').strip()[:1000]
+                if lesson:
+                    notes[memory_id] = lesson
+                else:
+                    notes.pop(memory_id, None)
+            elif clean_action == 'reset_lesson':
+                notes.pop(memory_id, None)
+            else:
+                raise ValueError('不支持的研究记忆操作')
+            prefs['hiddenMemoryIds'] = hidden[-300:]
+            prefs['notes'] = dict(list(notes.items())[-200:])
+        data['research_memory_preferences'] = prefs
+        saved = _write_profile_unlocked(current)
+    return {'profileRevision': saved.get('revision'),
+            'memory': research_memory_status(saved)}
 
 
 def normalize_research_cockpit_preferences(source=None):
@@ -3194,6 +3336,11 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
                             'items': [], 'summary': {'observing': 0, 'review_due': 0,
                                                      'completed': 0, 'archived': 0}})
     hypotheses = hypothesis_state.get('items') or []
+    memory_state = (build_research_memory_snapshot(
+        data.get('research_hypotheses') or [], data.get('research_memory_preferences'))
+                    if build_research_memory_snapshot is not None else {
+                        'summary': {'visible': 0}, 'relatedByHypothesis': {}})
+    related_memories = memory_state.get('relatedByHypothesis') or {}
     open_hypotheses = [row for row in hypotheses
                        if row.get('effectiveStatus') in {'observing', 'review_due'}]
     active_watch_codes = {
@@ -3261,6 +3408,7 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
                            'label': '填写复盘结论' if due else ('核对候选证据' if evidence else '收集候选证据'),
                            'page': 'strategy'},
             'origin': '用户明确保存的研究假设',
+            'memoryHints': list(related_memories.get(hypothesis_id) or [])[:3],
         })
 
     pending_attention = [row for row in (data.get('attention_inbox') or [])
@@ -3356,6 +3504,8 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
                            'reviewDue': int(hypothesis_summary.get('review_due') or 0),
                            'candidateEvidence': sum(len(row.get('evidenceCandidates') or [])
                                                     for row in hypotheses)},
+            'researchMemory': {'enabled': (memory_state.get('preferences') or {}).get('enabled') is not False,
+                               'visible': int((memory_state.get('summary') or {}).get('visible') or 0)},
             'pendingReminders': len(pending_attention),
             'serviceSuggestions': len(effect.get('recommendations') or []),
             'healthAttention': len(health_rows),
@@ -3496,7 +3646,9 @@ def mutate_research_hypothesis(action, payload=None):
                 raise ValueError('研究假设不存在')
             if clean_action == 'review':
                 target = review_hypothesis(rows[index], body.get('outcome'),
-                                           body.get('note') or '', now_bj())
+                                           body.get('note') or '', now_bj(),
+                                           body.get('falsifierHits') or [],
+                                           body.get('dataGaps') or [])
                 rows[index] = target
             elif clean_action == 'archive':
                 target = dict(rows[index])
@@ -4933,7 +5085,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.20.0'
+    server_version = 'DeepPulse/1.21.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5083,6 +5235,9 @@ class Handler(BaseHTTPRequestHandler):
                           'research_cockpit': 1,
                           'research_priority_controls': 1,
                           'research_cockpit_context': 1,
+                          'research_memory': 1,
+                          'research_memory_controls': 1,
+                          'research_memory_context': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -5150,6 +5305,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': research_hypotheses_status()})
         elif path == '/api/research-cockpit':
             self.send_json({'ok': True, 'data': research_cockpit_status()})
+        elif path == '/api/research-memory':
+            self.send_json({'ok': True, 'data': research_memory_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -5388,6 +5545,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/research-cockpit':
                 body = self.read_json_body(8192)
                 self.send_json({'ok': True, 'data': mutate_research_cockpit(
+                    body.get('action'), body)})
+            elif u.path == '/api/research-memory':
+                body = self.read_json_body(16384)
+                self.send_json({'ok': True, 'data': mutate_research_memory(
                     body.get('action'), body)})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()
