@@ -154,6 +154,28 @@ uint32_t headerUInt(HTTPClient &http, const char *name, uint32_t fallback,
   return static_cast<uint32_t>(parsed);
 }
 
+bool acknowledgeDelivery(const String &itemId, const char *status) {
+  if (itemId.length() == 0 || WiFi.status() != WL_CONNECTED) return true;
+  WiFiClient client;
+  HTTPClient http;
+  const String url = gatewayBase + "/device/v1/delivery/ack";
+  if (!http.begin(client, url)) return false;
+  http.setUserAgent(USER_AGENT);
+  http.addHeader("X-DeepPulse-Device-Token", deviceToken);
+  http.addHeader("Content-Type", "application/json");
+  http.setConnectTimeout(8000);
+  http.setTimeout(12000);
+  String safeId = itemId;
+  safeId.replace("\\", "-");
+  safeId.replace("\"", "-");
+  const String body = "{\"itemId\":\"" + safeId + "\",\"status\":\"" +
+                      String(status) + "\"}";
+  const int code = http.POST(body);
+  http.end();
+  Serial.printf("delivery acknowledgement HTTP %d\n", code);
+  return code >= 200 && code < 300;
+}
+
 bool fetchAndMaybeDisplay() {
   if (WiFi.status() != WL_CONNECTED && !connectWiFi(12000)) {
     Serial.println("Wi-Fi reconnect failed");
@@ -170,7 +192,7 @@ bool fetchAndMaybeDisplay() {
     "X-DeepPulse-Width", "X-DeepPulse-Height", "X-DeepPulse-Frame-SHA256",
     "X-DeepPulse-Content-SHA256", "X-DeepPulse-Refresh-Policy",
     "X-DeepPulse-Mode", "X-DeepPulse-Poll-Seconds", "X-DeepPulse-Display-Seconds",
-    "X-DeepPulse-Partial-Before-Full"
+    "X-DeepPulse-Partial-Before-Full", "X-DeepPulse-Delivery-Item"
   };
   http.collectHeaders(headerKeys, sizeof(headerKeys) / sizeof(headerKeys[0]));
   http.setUserAgent(USER_AGENT);
@@ -197,6 +219,7 @@ bool fetchAndMaybeDisplay() {
   const String actualHash = sha256Hex(frameBuffer, received);
   const String mode = http.header("X-DeepPulse-Mode");
   const String requestedPolicy = http.header("X-DeepPulse-Refresh-Policy");
+  const String deliveryItem = http.header("X-DeepPulse-Delivery-Item");
   if (requestedPolicy == "stable" || requestedPolicy == "smart" ||
       requestedPolicy == "fast") refreshPolicy = requestedPolicy;
   pollSeconds = headerUInt(http, "X-DeepPulse-Poll-Seconds", pollSeconds, 15, 300);
@@ -220,7 +243,8 @@ bool fetchAndMaybeDisplay() {
   const bool maintenanceDue = !firstFrame &&
     now - lastFullRefreshMs >= MAINTENANCE_FULL_MS;
   const bool contentChanged = firstFrame || contentHash != lastContentHash;
-  if (!firstFrame && !enteredAlert && !modeChanged && !intervalDue) return true;
+  if (!firstFrame && !enteredAlert && !modeChanged && !intervalDue &&
+      deliveryItem.length() == 0) return true;
   if (refreshPolicy != "stable" && !contentChanged && !maintenanceDue &&
       !enteredAlert && !modeChanged) {
     Serial.println("display skipped: decision content unchanged");
@@ -268,6 +292,7 @@ bool fetchAndMaybeDisplay() {
                 mode.c_str(), refreshPolicy.c_str(), request, refreshed,
                 static_cast<unsigned long>(change.changedPixels),
                 region.x, region.y, region.width, region.height);
+  if (deliveryItem.length() > 0) acknowledgeDelivery(deliveryItem, "delivered");
   return true;
 }
 

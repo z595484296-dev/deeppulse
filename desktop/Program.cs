@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -30,7 +31,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 10, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 14, 0);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -65,6 +66,8 @@ internal sealed class HarnessForm : Form
         Visible = false,
         BackColor = Color.Transparent
     };
+    private readonly NotifyIcon systemNotification = new() { Visible = false };
+    private readonly System.Windows.Forms.Timer deliveryTimer = new() { Interval = 30_000 };
 
     private Process? ownedBackend;
     private Process? ownedDeepPulse;
@@ -77,6 +80,7 @@ internal sealed class HarnessForm : Form
     private readonly string logPath;
     private readonly object logLock = new();
     private bool startupInProgress;
+    private bool deliveryPollInProgress;
 
     internal HarnessForm()
     {
@@ -91,6 +95,7 @@ internal sealed class HarnessForm : Form
         try
         {
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            systemNotification.Icon = Icon;
         }
         catch
         {
@@ -108,6 +113,13 @@ internal sealed class HarnessForm : Form
         Controls.Add(splash);
 
         Shown += async (_, _) => await StartOrAttachAsync();
+        systemNotification.Text = "深脉 DeepPulse";
+        systemNotification.BalloonTipClicked += (_, _) => {
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+        };
+        deliveryTimer.Tick += async (_, _) => await PollDesktopDeliveryAsync();
         FormClosing += OnFormClosing;
         KeyDown += OnKeyDown;
     }
@@ -247,6 +259,9 @@ internal sealed class HarnessForm : Form
             webView.BringToFront();
             splash.Visible = false;
             AppendLog("Desktop surface is ready.");
+            systemNotification.Visible = true;
+            deliveryTimer.Start();
+            await PollDesktopDeliveryAsync();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -522,7 +537,19 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("hypothesis_market_control", out var hypothesisMarketControl)
                 || hypothesisMarketControl.ValueKind != JsonValueKind.Number
                 || !hypothesisMarketControl.TryGetInt32(out var hypothesisMarketControlVersion)
-                || hypothesisMarketControlVersion != 1)
+                || hypothesisMarketControlVersion != 1
+                || !capabilities.TryGetProperty("unified_delivery", out var unifiedDelivery)
+                || unifiedDelivery.ValueKind != JsonValueKind.Number
+                || !unifiedDelivery.TryGetInt32(out var unifiedDeliveryVersion)
+                || unifiedDeliveryVersion != 1
+                || !capabilities.TryGetProperty("desktop_system_notifications", out var desktopNotifications)
+                || desktopNotifications.ValueKind != JsonValueKind.Number
+                || !desktopNotifications.TryGetInt32(out var desktopNotificationsVersion)
+                || desktopNotificationsVersion != 1
+                || !capabilities.TryGetProperty("epaper_delivery_receipts", out var epaperReceipts)
+                || epaperReceipts.ValueKind != JsonValueKind.Number
+                || !epaperReceipts.TryGetInt32(out var epaperReceiptsVersion)
+                || epaperReceiptsVersion != 1)
             {
                 return null;
             }
@@ -583,7 +610,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.13.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.14.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
@@ -606,6 +633,88 @@ internal sealed class HarnessForm : Form
         statusLabel.ForeColor = Color.FromArgb(255, 146, 146);
         SetStatus(message);
     }
+
+    private async Task PollDesktopDeliveryAsync()
+    {
+        if (deliveryPollInProgress || activeDeepPulseBaseUri is null)
+        {
+            return;
+        }
+        deliveryPollInProgress = true;
+        string? itemId = null;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { channel = "desktop", consumer = "windows-app" });
+            using var response = await httpClient.PostAsync(
+                new Uri(activeDeepPulseBaseUri, "api/delivery/pull"),
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                return;
+            }
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            using var document = await JsonDocument.ParseAsync(stream);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("data", out var data)
+                || !data.TryGetProperty("item", out var item)
+                || item.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+            itemId = item.TryGetProperty("id", out var rawId) ? rawId.GetString() : null;
+            if (string.IsNullOrWhiteSpace(itemId))
+            {
+                return;
+            }
+            var title = item.TryGetProperty("title", out var rawTitle)
+                ? rawTitle.GetString() : "深脉提醒";
+            var detail = item.TryGetProperty("detail", out var rawDetail)
+                ? rawDetail.GetString() : "请打开深脉查看详情";
+            systemNotification.BalloonTipTitle = Truncate(title ?? "深脉提醒", 63);
+            systemNotification.BalloonTipText = Truncate(detail ?? "请打开深脉查看详情", 240);
+            systemNotification.BalloonTipIcon = item.TryGetProperty("priority", out var priority)
+                && priority.GetString() == "high" ? ToolTipIcon.Warning : ToolTipIcon.Info;
+            systemNotification.ShowBalloonTip(9000);
+            await AcknowledgeDesktopDeliveryAsync(itemId, "delivered", "");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Desktop notification poll failed: {ex.Message}");
+            if (!string.IsNullOrWhiteSpace(itemId))
+            {
+                await AcknowledgeDesktopDeliveryAsync(itemId, "failed", ex.Message);
+            }
+        }
+        finally
+        {
+            deliveryPollInProgress = false;
+        }
+    }
+
+    private async Task AcknowledgeDesktopDeliveryAsync(string itemId, string status, string error)
+    {
+        if (activeDeepPulseBaseUri is null) return;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new {
+                channel = "desktop", itemId, status, consumer = "windows-app", error
+            });
+            using var response = await httpClient.PostAsync(
+                new Uri(activeDeepPulseBaseUri, "api/delivery/ack"),
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                AppendLog($"Desktop notification acknowledgement returned HTTP {(int)response.StatusCode}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Desktop notification acknowledgement failed: {ex.Message}");
+        }
+    }
+
+    private static string Truncate(string value, int maximum) =>
+        value.Length <= maximum ? value : value[..Math.Max(1, maximum - 1)] + "…";
 
     private void SetStatus(string message)
     {
@@ -658,6 +767,9 @@ internal sealed class HarnessForm : Form
     private void OnFormClosing(object? sender, FormClosingEventArgs eventArgs)
     {
         startupCancellation?.Cancel();
+        deliveryTimer.Stop();
+        systemNotification.Visible = false;
+        systemNotification.Dispose();
         StopOwnedProcess(ownedDeepPulse, "DeepPulse");
         StopOwnedProcess(ownedBackend, "backend");
     }

@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.13.0';
+const MIN_VERSION = '1.14.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -57,7 +57,10 @@ async function probeBase(base, signal) {
       && capabilities.research_hypotheses === 1
       && capabilities.hypothesis_due_reminders === 1
       && capabilities.hypothesis_evidence_candidates === 1
-      && capabilities.hypothesis_market_control === 1 ? base : '';
+      && capabilities.hypothesis_market_control === 1
+      && capabilities.unified_delivery === 1
+      && capabilities.desktop_system_notifications === 1
+      && capabilities.epaper_delivery_receipts === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -71,7 +74,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.13.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.14.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -140,6 +143,10 @@ export const api = {
   attentionLearning: () => request('/api/attention/learning', 5000),
   saveAttentionFeedback: (itemId, signal, surface = 'web') => post('/api/profile/attention-feedback', { itemId, signal, surface }, 5000),
   resetAttentionLearning: (kind = null, clearHistory = false) => post('/api/attention/learning/reset', { kind, clearHistory }, 5000),
+  deliveryStatus: () => request('/api/delivery/status', 5000),
+  pullDelivery: (channel, consumer = 'web') => post('/api/delivery/pull', { channel, consumer }, 5000),
+  acknowledgeDelivery: (channel, itemId, status = 'delivered', consumer = 'web', error = '') =>
+    post('/api/delivery/ack', { channel, itemId, status, consumer, error }, 5000),
   monitorStatus: () => request('/api/monitor/status', 5000),
   saveMonitorConfig: (config) => post('/api/monitor/config', { config }, 5000),
   routineStatus: () => request('/api/routine/status', 5000),

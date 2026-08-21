@@ -7,7 +7,7 @@
 <meta name="dsh-deeppulse-entry" content="workbench">
 <title>深脉 DeepPulse · 金融工作台</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/app.css?v=1.13.0">
+<link rel="stylesheet" href="css/app.css?v=1.14.0">
 </head>
 <body>
 <div class="shell">
@@ -183,6 +183,9 @@
     <label>提醒方式<select id="attention-mode"><option value="balanced">平衡</option><option value="high_only">只提醒重要事件</option><option value="center_only">仅收入提醒中心</option></select></label>
     <label class="attention-check"><input type="checkbox" id="attention-quiet">启用安静时段</label>
     <div class="attention-time"><label>开始<input type="time" id="attention-quiet-start"></label><label>结束<input type="time" id="attention-quiet-end"></label></div>
+    <label class="attention-check"><input type="checkbox" id="attention-desktop-system">同时发送 Windows 系统通知</label>
+    <label class="attention-check"><input type="checkbox" id="attention-epaper-delivery">同时投递到墨水屏</label>
+    <p id="attention-delivery-status">外部提醒默认关闭；开启后仅投递新提醒，每条在每个已选终端最多提示一次。</p>
     <p>你设置的价格到达属于高优先级；阶段和盘中异动默认合并摘要，减少打扰。</p>
   </details>
   <details class="attention-preferences attention-learning">
@@ -201,6 +204,6 @@
 <div class="toast-wrap" id="toast-wrap"></div>
 
 <script src="assets/echarts.min.js"></script>
-<script type="module" src="js/app.js?v=1.13.0"></script>
+<script type="module" src="js/app.js?v=1.14.0"></script>
 </body>
 </html>

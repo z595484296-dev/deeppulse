@@ -87,7 +87,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.13.0'
+VERSION = '1.14.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1445,6 +1445,7 @@ PROFILE_LIST_LIMITS = {
     'event_receipts': 500,
     'research_hypotheses': 300,
     'hypothesis_receipts': 500,
+    'delivery_receipts': 1000,
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
@@ -1698,6 +1699,193 @@ def reset_attention_learning(kind=None, clear_history=False):
                     row.pop('feedbackAt', None)
         saved = _write_profile_unlocked(current)
         return saved, _attention_learning_status_from_data(saved['data'])
+
+
+# ---------------------------------------------------------------- 统一跨端提醒投递（显式授权、逐端一次、可追踪）
+
+DELIVERY_CHANNELS = {'desktop', 'epaper'}
+DELIVERY_STATUSES = {'delivered', 'failed', 'dismissed'}
+
+
+def _delivery_preferences(data):
+    source = data.get('attention_preferences') or {}
+    return {
+        'mode': source.get('mode') if source.get('mode') in {
+            'balanced', 'high_only', 'center_only'} else 'balanced',
+        'quietEnabled': source.get('quietEnabled') is not False,
+        'quietStart': str(source.get('quietStart') or '22:30')[:5],
+        'quietEnd': str(source.get('quietEnd') or '08:00')[:5],
+        'pausedUntil': int(source.get('pausedUntil') or 0),
+        'systemDigestMinutes': max(5, min(60, int(source.get('systemDigestMinutes') or 15))),
+        'kindControls': source.get('kindControls') if isinstance(
+            source.get('kindControls'), dict) else {},
+        'desktop': source.get('desktopSystemEnabled') is True,
+        'desktopEnabledAt': int(source.get('desktopSystemEnabledAt') or 0),
+        'epaper': source.get('epaperDeliveryEnabled') is True,
+        'epaperEnabledAt': int(source.get('epaperDeliveryEnabledAt') or 0),
+    }
+
+
+def _delivery_quiet(preferences, current=None):
+    if not preferences.get('quietEnabled'):
+        return False
+    current = current or now_bj()
+    try:
+        start_h, start_m = map(int, preferences['quietStart'].split(':'))
+        end_h, end_m = map(int, preferences['quietEnd'].split(':'))
+    except Exception:
+        start_h, start_m, end_h, end_m = 22, 30, 8, 0
+    minute = current.hour * 60 + current.minute
+    start, end = start_h * 60 + start_m, end_h * 60 + end_m
+    if start == end:
+        return True
+    return start <= minute < end if start < end else minute >= start or minute < end
+
+
+def _delivery_eligible(item, preferences, channel, now_ms=None):
+    now_ms = int(now_ms or time.time() * 1000)
+    if channel not in DELIVERY_CHANNELS or not preferences.get(channel):
+        return False, 'channel_disabled'
+    if int(item.get('createdAt') or 0) < int(preferences.get(channel + 'EnabledAt') or 0):
+        return False, 'before_authorization'
+    if item.get('readAt') or item.get('doneAt'):
+        return False, 'resolved'
+    if int(item.get('expiresAt') or 0) and now_ms >= int(item.get('expiresAt') or 0):
+        return False, 'expired'
+    if preferences.get('pausedUntil') and now_ms < preferences['pausedUntil']:
+        return False, 'paused'
+    if preferences.get('mode') == 'center_only':
+        return False, 'center_only'
+    if preferences.get('mode') == 'high_only' and item.get('priority') != 'high':
+        return False, 'priority'
+    if item.get('kind') == 'price' and item.get('priority') == 'high':
+        return True, 'user_price_alert'
+    learned = preferences.get('kindControls', {}).get(str(item.get('kind') or 'system')) or {}
+    if learned.get('delivery') == 'center_only':
+        return False, 'learned_center_only'
+    if _delivery_quiet(preferences):
+        return False, 'quiet'
+    if learned.get('delivery') == 'digest' or item.get('delivery') != 'immediate':
+        due = int(item.get('createdAt') or 0) + preferences['systemDigestMinutes'] * 60 * 1000
+        if now_ms < due:
+            return False, 'digest_wait'
+    return True, 'eligible'
+
+
+def claim_attention_delivery(channel, consumer='local'):
+    """Atomically lease one eligible reminder to one output channel."""
+    channel = str(channel or '').strip().lower()
+    if channel not in DELIVERY_CHANNELS:
+        raise ValueError('unsupported delivery channel')
+    consumer = re.sub(r'[^A-Za-z0-9_.:-]', '-', str(consumer or 'local'))[:80]
+    now_ms = int(time.time() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        preferences = _delivery_preferences(data)
+        receipts = [row for row in (data.get('delivery_receipts') or [])
+                    if isinstance(row, dict)]
+        by_item = {str(row.get('itemId') or ''): row for row in receipts
+                   if row.get('channel') == channel}
+        candidates = []
+        reasons = {}
+        for item in data.get('attention_inbox') or []:
+            if not isinstance(item, dict) or not item.get('id'):
+                continue
+            eligible, reason = _delivery_eligible(item, preferences, channel, now_ms)
+            reasons[reason] = reasons.get(reason, 0) + 1
+            if not eligible:
+                continue
+            receipt = by_item.get(str(item['id']))
+            if receipt and receipt.get('status') in {'delivered', 'dismissed'}:
+                continue
+            if receipt and receipt.get('status') == 'claimed' and now_ms < int(receipt.get('leaseUntil') or 0):
+                continue
+            if receipt and receipt.get('status') == 'failed' and now_ms < int(receipt.get('retryAfter') or 0):
+                continue
+            candidates.append(item)
+        candidates.sort(key=lambda row: (
+            0 if row.get('priority') == 'high' else 1 if row.get('priority') == 'medium' else 2,
+            -int(row.get('createdAt') or 0)))
+        if not candidates:
+            return {'item': None, 'channel': channel, 'reasons': reasons,
+                    'enabled': preferences.get(channel) is True}
+        item = candidates[0]
+        item_id = str(item['id'])[:160]
+        previous = by_item.get(item_id) or {}
+        receipt_id = hashlib.sha256((channel + '\0' + item_id).encode('utf-8')).hexdigest()[:24]
+        receipt = {
+            'id': receipt_id, 'itemId': item_id, 'channel': channel,
+            'consumer': consumer, 'status': 'claimed', 'claimedAt': now_ms,
+            'leaseUntil': now_ms + 2 * 60 * 1000,
+            'attempts': int(previous.get('attempts') or 0) + 1,
+        }
+        receipts = [row for row in receipts if not (
+            row.get('channel') == channel and str(row.get('itemId') or '') == item_id)]
+        receipts.append(receipt)
+        data['delivery_receipts'] = receipts[-PROFILE_LIST_LIMITS['delivery_receipts']:]
+        _write_profile_unlocked(current)
+        return {'item': json.loads(json.dumps(item, ensure_ascii=False)),
+                'receipt': receipt, 'channel': channel, 'enabled': True}
+
+
+def acknowledge_attention_delivery(channel, item_id, status='delivered', consumer='local', error=''):
+    channel = str(channel or '').strip().lower()
+    status = str(status or '').strip().lower()
+    item_id = str(item_id or '').strip()[:160]
+    if channel not in DELIVERY_CHANNELS or status not in DELIVERY_STATUSES or not item_id:
+        raise ValueError('invalid delivery acknowledgement')
+    now_ms = int(time.time() * 1000)
+    consumer = re.sub(r'[^A-Za-z0-9_.:-]', '-', str(consumer or 'local'))[:80]
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        receipts = [row for row in (current['data'].get('delivery_receipts') or [])
+                    if isinstance(row, dict)]
+        existing = next((row for row in receipts if row.get('channel') == channel
+                         and str(row.get('itemId') or '') == item_id), {})
+        receipt = dict(existing)
+        receipt.update({
+            'id': existing.get('id') or hashlib.sha256(
+                (channel + '\0' + item_id).encode('utf-8')).hexdigest()[:24],
+            'itemId': item_id, 'channel': channel, 'consumer': consumer,
+            'status': status, 'acknowledgedAt': now_ms,
+        })
+        receipt.pop('leaseUntil', None)
+        if status == 'delivered':
+            receipt['deliveredAt'] = now_ms
+            receipt.pop('error', None)
+            receipt.pop('retryAfter', None)
+        elif status == 'failed':
+            receipt['error'] = str(error or 'delivery failed').strip()[:240]
+            receipt['retryAfter'] = now_ms + 5 * 60 * 1000
+        receipts = [row for row in receipts if not (
+            row.get('channel') == channel and str(row.get('itemId') or '') == item_id)]
+        receipts.append(receipt)
+        current['data']['delivery_receipts'] = receipts[-PROFILE_LIST_LIMITS['delivery_receipts']:]
+        _write_profile_unlocked(current)
+        return receipt
+
+
+def attention_delivery_status():
+    data = load_profile().get('data') or {}
+    prefs = _delivery_preferences(data)
+    receipts = [row for row in (data.get('delivery_receipts') or []) if isinstance(row, dict)]
+    summary = {}
+    for channel in sorted(DELIVERY_CHANNELS):
+        rows = [row for row in receipts if row.get('channel') == channel]
+        pending = sum(1 for item in (data.get('attention_inbox') or [])
+                      if isinstance(item, dict) and _delivery_eligible(item, prefs, channel)[0]
+                      and not any(row.get('itemId') == item.get('id')
+                                  and row.get('status') in {'delivered', 'dismissed'} for row in rows))
+        summary[channel] = {
+            'enabled': prefs.get(channel) is True,
+            'pending': pending,
+            'delivered': sum(1 for row in rows if row.get('status') == 'delivered'),
+            'failed': sum(1 for row in rows if row.get('status') == 'failed'),
+            'last': rows[-1] if rows else None,
+        }
+    return {'channels': summary, 'recent': receipts[-20:][::-1],
+            'policy': 'explicit-opt-in-per-channel-once'}
 
 
 # ---------------------------------------------------------------- 后台主动监控（显式授权、仅本机、仅交易时段）
@@ -2982,7 +3170,7 @@ def _market_session_label(now=None):
     return 'CLOSED'
 
 
-def build_device_state(config=None, demo=''):
+def build_device_state(config=None, demo='', delivery_item=None):
     """Build a compact, read-only hardware snapshot from DeepPulse's normalized data."""
     cfg = dict(config or load_device_config())
     code = cfg.get('focus_code') or '000001'
@@ -3020,6 +3208,18 @@ def build_device_state(config=None, demo=''):
             'demo': True, 'code': code, 'name': name,
             'dir': 'up', 'price': quote.get('price') or 12.80,
             'triggered_at': int(time.time() * 1000),
+        }
+    if isinstance(delivery_item, dict) and delivery_item.get('id'):
+        detail = str(delivery_item.get('detail') or '')
+        code_match = re.search(r'(?<!\d)(\d{6})(?!\d)', detail)
+        alert = {
+            'attention': True,
+            'kind': str(delivery_item.get('kind') or 'system')[:16],
+            'code': code_match.group(1) if code_match else code,
+            'name': name,
+            'dir': 'up',
+            'price': quote.get('price'),
+            'triggered_at': int(delivery_item.get('createdAt') or time.time() * 1000),
         }
     flags = [str(row.get('text') or '') for row in (engine.get('flags') or []) if row.get('text')]
     tdx = emotion.get('tdx_local') or {}
@@ -3095,7 +3295,7 @@ def build_device_state(config=None, demo=''):
         'device': {
             'name': cfg.get('device_name'), 'model': cfg.get('model'),
             'width': EPAPER_WIDTH, 'height': EPAPER_HEIGHT, 'bpp': 1,
-            'mode': 'alert' if preview_mode == 'alert' or (
+            'mode': 'alert' if delivery_item or preview_mode == 'alert' or (
                 alert and not preview_mode and cfg.get('mode') == 'alert')
             else preview_mode or cfg.get('mode'),
             'poll_seconds': cfg.get('poll_seconds'),
@@ -3274,6 +3474,11 @@ def render_epaper_frame(state):
         _epd_rect(frame, 18, 70, 764, 380, fill=False)
         _epd_text(frame, 48, 92, 'ALERT' + (' DEMO' if alert.get('demo') else ''), 6)
         _epd_text(frame, 50, 180, alert.get('code') or focus.get('code') or '--', 5)
+        if alert.get('attention'):
+            _epd_text(frame, 50, 250, str(alert.get('kind') or 'SYSTEM').upper()[:16], 4)
+            _epd_text(frame, 50, 340, 'OPEN DEEPPULSE FOR DETAILS', 3)
+            _epd_text(frame, 50, 400, 'RESEARCH ONLY', 2)
+            return bytes(frame)
         direction = 'UP >=' if alert.get('dir') == 'up' else 'DOWN <='
         _epd_text(frame, 50, 250, direction, 4)
         _epd_text(frame, 390, 242, _epd_float(alert.get('price'), 2), 6)
@@ -3571,8 +3776,8 @@ def epaper_content_sha256(frame):
     return hashlib.sha256(normalized).hexdigest()
 
 
-def device_frame_payload(config=None, demo=''):
-    state = build_device_state(config, demo)
+def device_frame_payload(config=None, demo='', delivery_item=None):
+    state = build_device_state(config, demo, delivery_item)
     frame = render_epaper_frame(state)
     digest = hashlib.sha256(frame).hexdigest()
     content_digest = epaper_content_sha256(frame)
@@ -3744,7 +3949,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.13.0'
+    server_version = 'DeepPulse/1.14.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -3873,6 +4078,9 @@ class Handler(BaseHTTPRequestHandler):
                           'hypothesis_due_reminders': 1,
                           'hypothesis_evidence_candidates': 1,
                           'hypothesis_market_control': 1,
+                          'unified_delivery': 1,
+                          'desktop_system_notifications': 1,
+                          'epaper_delivery_receipts': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -3916,6 +4124,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': load_profile()})
         elif path == '/api/attention/learning':
             self.send_json({'ok': True, 'data': attention_learning_status()})
+        elif path == '/api/delivery/status':
+            self.send_json({'ok': True, 'data': attention_delivery_status()})
         elif path == '/api/monitor/status':
             self.send_json({'ok': True, 'data': background_monitor_status()})
         elif path == '/api/routine/status':
@@ -4093,6 +4303,15 @@ class Handler(BaseHTTPRequestHandler):
                 saved, learning = reset_attention_learning(
                     body.get('kind'), body.get('clearHistory') is True)
                 self.send_json({'ok': True, 'data': {'profile': saved, 'learning': learning}})
+            elif u.path == '/api/delivery/pull':
+                body = self.read_json_body()
+                self.send_json({'ok': True, 'data': claim_attention_delivery(
+                    body.get('channel'), body.get('consumer') or 'local')})
+            elif u.path == '/api/delivery/ack':
+                body = self.read_json_body()
+                self.send_json({'ok': True, 'data': acknowledge_attention_delivery(
+                    body.get('channel'), body.get('itemId'), body.get('status') or 'delivered',
+                    body.get('consumer') or 'local', body.get('error') or '')})
             elif u.path == '/api/monitor/config':
                 body = self.read_json_body()
                 saved = save_monitor_config(body.get('config') or {})
@@ -4205,7 +4424,9 @@ class DeviceHandler(BaseHTTPRequestHandler):
                 self._record()
                 self.send_json({'ok': True, 'data': state})
             elif u.path == '/device/v1/frame.bin':
-                state, frame, digest = device_frame_payload(cfg, demo)
+                delivery = claim_attention_delivery('epaper', 'waveshare-esp32') if not demo else {'item': None}
+                delivery_item = delivery.get('item')
+                state, frame, digest = device_frame_payload(cfg, demo, delivery_item)
                 self._record(digest)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/vnd.deeppulse.epaper-1bpp')
@@ -4227,6 +4448,9 @@ class DeviceHandler(BaseHTTPRequestHandler):
                                  device.get('partial_before_full') or 6)
                 self.send_header('X-DeepPulse-Refresh-Policy',
                                  device.get('refresh_policy') or 'smart')
+                if delivery_item:
+                    item_id = re.sub(r'[\r\n]', '', str(delivery_item.get('id') or ''))[:160]
+                    self.send_header('X-DeepPulse-Delivery-Item', item_id)
                 self.end_headers()
                 self.wfile.write(frame)
             else:
@@ -4235,6 +4459,29 @@ class DeviceHandler(BaseHTTPRequestHandler):
             with _device_gateway_lock:
                 _device_runtime['last_error'] = str(exc)[:200]
             self.send_json({'ok': False, 'error': str(exc)}, 502)
+
+    def do_POST(self):
+        cfg = load_device_config()
+        if not cfg.get('enabled'):
+            self.send_json({'ok': False, 'error': 'device gateway disabled'}, 503)
+            return
+        if not device_token_matches(self._token(), cfg):
+            self.send_json({'ok': False, 'error': 'invalid device token'}, 401)
+            return
+        u = urllib.parse.urlparse(self.path)
+        if u.path != '/device/v1/delivery/ack':
+            self.send_json({'ok': False, 'error': 'unknown device endpoint'}, 404)
+            return
+        try:
+            length = min(int(self.headers.get('Content-Length') or 0), 4096)
+            body = json.loads(self.rfile.read(length).decode('utf-8')) if length else {}
+            receipt = acknowledge_attention_delivery(
+                'epaper', body.get('itemId'), body.get('status') or 'delivered',
+                'waveshare-esp32', body.get('error') or '')
+            self._record()
+            self.send_json({'ok': True, 'data': receipt})
+        except Exception as exc:
+            self.send_json({'ok': False, 'error': str(exc)}, 400)
 
 
 def stop_device_gateway():

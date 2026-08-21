@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.13.0'
+const MIN_BACKEND_VERSION = '1.14.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -73,6 +73,9 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['hypothesis_due_reminders'] === 1
       && capabilities['hypothesis_evidence_candidates'] === 1
       && capabilities['hypothesis_market_control'] === 1
+      && capabilities['unified_delivery'] === 1
+      && capabilities['desktop_system_notifications'] === 1
+      && capabilities['epaper_delivery_receipts'] === 1
       ? baseUrl
       : undefined
   } catch {

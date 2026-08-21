@@ -7,6 +7,10 @@ export const DEFAULT_ATTENTION_PREFERENCES = Object.freeze({
   quietEnd: '08:00',
   pausedUntil: null,
   systemDigestMinutes: 15,
+  desktopSystemEnabled: false,
+  desktopSystemEnabledAt: null,
+  epaperDeliveryEnabled: false,
+  epaperDeliveryEnabledAt: null,
   kindControls: {},
 });
 
@@ -41,6 +45,10 @@ export function normalizeAttentionPreferences(value = {}) {
     quietEnd: cleanTime(source.quietEnd, DEFAULT_ATTENTION_PREFERENCES.quietEnd),
     pausedUntil: Number.isFinite(paused) && paused > 0 ? paused : null,
     systemDigestMinutes: Math.max(5, Math.min(60, Number(source.systemDigestMinutes) || 15)),
+    desktopSystemEnabled: source.desktopSystemEnabled === true,
+    desktopSystemEnabledAt: Number(source.desktopSystemEnabledAt) > 0 ? Number(source.desktopSystemEnabledAt) : null,
+    epaperDeliveryEnabled: source.epaperDeliveryEnabled === true,
+    epaperDeliveryEnabledAt: Number(source.epaperDeliveryEnabledAt) > 0 ? Number(source.epaperDeliveryEnabledAt) : null,
     kindControls,
   };
 }

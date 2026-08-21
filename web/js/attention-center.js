@@ -1,11 +1,12 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.13.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.14.0';
+import { api } from './api.js?v=1.14.0';
 import {
   attentionLearningContext, bus, feedbackAttentionItem, loadAttentionInbox, loadAttentionPreferences, markAttentionRead,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences,
-} from './store.js?v=1.13.0';
-import { esc, toast } from './util.js?v=1.13.0';
+} from './store.js?v=1.14.0';
+import { esc, toast } from './util.js?v=1.14.0';
 
 let navigate = () => {};
 let digestTimer = null;
@@ -72,17 +73,40 @@ function renderPreferences() {
   $('#attention-quiet').checked = prefs.quietEnabled;
   $('#attention-quiet-start').value = prefs.quietStart;
   $('#attention-quiet-end').value = prefs.quietEnd;
+  $('#attention-desktop-system').checked = prefs.desktopSystemEnabled;
+  $('#attention-epaper-delivery').checked = prefs.epaperDeliveryEnabled;
   $('#attention-pause').textContent = prefs.pausedUntil && Date.now() < prefs.pausedUntil ? '恢复提醒' : '暂停到明早';
+}
+
+async function renderDeliveryStatus() {
+  const target = $('#attention-delivery-status');
+  try {
+    const status = await api.deliveryStatus();
+    const desktop = status.channels?.desktop || {};
+    const epaper = status.channels?.epaper || {};
+    target.textContent = `Windows：${desktop.enabled ? `已开启 · 已送达 ${desktop.delivered || 0}` : '关闭'}；墨水屏：${epaper.enabled ? `已开启 · 已显示 ${epaper.delivered || 0}` : '关闭'}。每条提醒在每个已选终端最多一次。`;
+  } catch {
+    target.textContent = '投递状态暂时不可用；设置仍会保存在本机。';
+  }
 }
 
 function collectPreferences() {
   const previous = loadAttentionPreferences();
+  const now = Date.now();
+  const desktopEnabled = $('#attention-desktop-system').checked;
+  const epaperEnabled = $('#attention-epaper-delivery').checked;
   return saveAttentionPreferences({
     ...previous,
     mode: $('#attention-mode').value,
     quietEnabled: $('#attention-quiet').checked,
     quietStart: $('#attention-quiet-start').value,
     quietEnd: $('#attention-quiet-end').value,
+    desktopSystemEnabled: desktopEnabled,
+    desktopSystemEnabledAt: desktopEnabled
+      ? (previous.desktopSystemEnabled ? previous.desktopSystemEnabledAt : now) : null,
+    epaperDeliveryEnabled: epaperEnabled,
+    epaperDeliveryEnabledAt: epaperEnabled
+      ? (previous.epaperDeliveryEnabled ? previous.epaperDeliveryEnabledAt : now) : null,
   });
 }
 
@@ -158,8 +182,12 @@ export function initAttentionCenter(options = {}) {
     const page = event.target.closest('[data-attention-page]')?.dataset.attentionPage;
     if (page) { markAttentionRead(card.dataset.id); navigate(page); toggle(false); }
   });
-  ['attention-mode', 'attention-quiet', 'attention-quiet-start', 'attention-quiet-end']
-    .forEach(id => $('#' + id).addEventListener('change', collectPreferences));
+  ['attention-mode', 'attention-quiet', 'attention-quiet-start', 'attention-quiet-end',
+    'attention-desktop-system', 'attention-epaper-delivery']
+    .forEach(id => $('#' + id).addEventListener('change', () => {
+      collectPreferences();
+      window.setTimeout(renderDeliveryStatus, 350);
+    }));
   $('#attention-pause').addEventListener('click', () => {
     const prefs = loadAttentionPreferences();
     saveAttentionPreferences({ ...prefs, pausedUntil: prefs.pausedUntil && Date.now() < prefs.pausedUntil ? null : nextMorning() });
@@ -186,11 +214,12 @@ export function initAttentionCenter(options = {}) {
     fresh.forEach(deliverItem);
     render();
   });
-  bus.addEventListener('attention-preferences', renderPreferences);
+  bus.addEventListener('attention-preferences', () => { renderPreferences(); renderDeliveryStatus(); });
   bus.addEventListener('attention-learning', renderLearning);
   document.addEventListener('click', event => {
     if (panel.classList.contains('open') && !panel.contains(event.target) && !event.target.closest('#btn-attention')) toggle(false);
   });
   renderPreferences();
+  renderDeliveryStatus();
   render();
 }
