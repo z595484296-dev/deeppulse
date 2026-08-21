@@ -132,6 +132,14 @@ class ProductDiagnosticsTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['action'], 'recheck_market_sources')
 
+    def test_market_repair_verifies_tencent_when_primary_stays_down(self):
+        with patch.object(server, 'em_indices_any', side_effect=RuntimeError('primary down')), \
+                patch.object(server, 'tq_quote', return_value={'price': 10}), \
+                patch.object(server, 'build_product_diagnostics', return_value={'overall': 'attention'}):
+            result = server.repair_product_component('recheck_market_sources')
+        self.assertTrue(result['ok'])
+        self.assertIn('腾讯备援可用', result['message'])
+
 
 if __name__ == '__main__':
     unittest.main()

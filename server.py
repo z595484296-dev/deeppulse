@@ -4252,11 +4252,17 @@ def repair_product_component(action):
     ok = True
     if action == 'recheck_market_sources':
         cache_drop('indices')
+        for host in ('push2.eastmoney.com', 'push2delay.eastmoney.com'):
+            _clear_host_down(host)
         try:
             em_indices_any()
-            message = '公开行情链路已重新核对。'
+            message = '东方财富公开行情主链路已重新核对。'
         except Exception:
-            ok, message = False, '行情链路仍不可用，请检查网络后稍后再试。'
+            try:
+                tq_quote('000001')
+                message = '公开行情主链路仍降级，腾讯备援可用。'
+            except Exception:
+                ok, message = False, '公开行情主源与备援仍不可用，请检查网络后稍后再试。'
     elif action == 'probe_tdx':
         result = tdx_status(probe=True, fresh=True)
         ok = bool(result.get('service_ready'))
