@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.16.0';
-import { esc, toast, downloadText } from '../util.js?v=1.16.0';
+import { api } from '../api.js?v=1.17.0';
+import { esc, toast, downloadText } from '../util.js?v=1.17.0';
 
 let built = false;
 
@@ -150,6 +150,24 @@ export function init(container) {
       toast('脱敏诊断包已导出', 'ok');
     } catch (err) { toast('导出失败：' + err.message, 'err'); }
     btn.disabled = false; btn.textContent = '导出脱敏诊断包';
+  });
+  container.querySelector('#ds-diagnostics').addEventListener('click', async e => {
+    const btn = e.target.closest('[data-diagnostic-repair]');
+    if (!btn) return;
+    const action = btn.dataset.diagnosticRepair || '';
+    const original = btn.textContent;
+    btn.disabled = true; btn.textContent = '处理中…';
+    try {
+      const result = await api.repairDiagnostics(action);
+      toast(result.message || (result.ok ? '处理完成' : '仍需手动检查'), result.ok ? 'ok' : 'warn');
+      await renderDiagnostics(container);
+      if (action === 'probe_tdx') await renderTdxStatus(container, false);
+      if (action === 'probe_akshare') await renderAkshareStatus(container, false);
+      await renderSources(container);
+    } catch (err) {
+      toast('处理失败：' + err.message, 'err');
+      btn.disabled = false; btn.textContent = original;
+    }
   });
   // 导出情绪历史快照
   const exportHistory = async (fmt) => {
@@ -318,15 +336,23 @@ async function renderDiagnostics(container) {
     const colors = { ok: 'var(--down)', attention: 'var(--amber)', action_required: 'var(--up)' };
     badge.textContent = labels[report.overall] || '已完成';
     badge.style.color = colors[report.overall] || 'var(--text-2)';
+    const trendLabels = { recovered: '已恢复', persistent: '持续存在', new_issue: '刚出现', first_observation: '首次记录' };
     el.innerHTML = `
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:11.5px;color:var(--text-3)">
+        <span>历史基线 ${(report.history && report.history.samples) || 0} 次</span>
+        ${report.history && report.history.recovered ? `<span style="color:var(--down)">已恢复 ${report.history.recovered} 项</span>` : ''}
+        ${report.history && report.history.persistent ? `<span style="color:var(--amber)">持续问题 ${report.history.persistent} 项</span>` : ''}
+        ${report.history && report.history.newIssues ? `<span style="color:var(--up)">新问题 ${report.history.newIssues} 项</span>` : ''}
+      </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
         ${(report.components || []).map(row => {
           const tone = row.state === 'ok' ? 'ok' : row.state === 'error' ? 'err' : 'warn';
           const stateLabel = row.state === 'ok' ? '正常' : row.state === 'error' ? '需处理' : row.state === 'warn' ? '留意' : '可选';
           return `<div style="border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel-2)">
-            <div class="tdx-state ${tone}" style="margin-bottom:7px"><i class="dot ${tone}"></i>${esc(row.label)} · ${stateLabel}</div>
+            <div class="tdx-state ${tone}" style="margin-bottom:7px"><i class="dot ${tone}"></i>${esc(row.label)} · ${stateLabel}${trendLabels[row.trend] ? ` · ${trendLabels[row.trend]}` : ''}</div>
             <div style="font-size:12px;color:var(--text-2);line-height:1.7">${esc(row.summary)}</div>
             ${row.action ? `<div style="font-size:11.5px;color:var(--text-3);line-height:1.7;margin-top:5px">建议：${esc(row.action)}</div>` : ''}
+            ${row.repairAction ? `<button class="btn sm" data-diagnostic-repair="${esc(row.repairAction)}" style="margin-top:8px">${esc(row.repairLabel || '尝试修复')}</button>` : ''}
           </div>`;
         }).join('')}
       </div>

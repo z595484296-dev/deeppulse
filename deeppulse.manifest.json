@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.16.0",
-  "minimumDesktopVersion": "1.16.0",
+  "version": "1.17.0",
+  "minimumDesktopVersion": "1.17.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -32,6 +32,9 @@
     "delivery-timeline-v1",
     "product-diagnostics-v1",
     "diagnostics-export-v1",
-    "desktop-heartbeat-v1"
+    "desktop-heartbeat-v1",
+    "diagnostic-repairs-v1",
+    "diagnostic-history-v1",
+    "diagnostic-issue-template-v1"
   ]
 }

@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.16.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.17.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ---
 
@@ -48,7 +48,7 @@ Windows 用户也可以直接双击 `start-deeppulse.bat`，脚本会检查 Pyth
 | ⭐ 自选 | 本机自选股雷达（5秒刷新）、情绪标签叠加、备注、导入导出，并通过统一档案在独立版/Harness间共享 |
 | 🧭 策略 | 引擎诊断、仓位矩阵、研究假设、权重草稿、复盘日历与情绪日记；事件假设保存创建时事实、预设反证，并按可知时间收集官方公告和相对大盘候选证据 |
 | 🖥 墨水屏 | 微雪 7.5 英寸 800×480 实机联动；七种画面（含事件雷达）与稳定全刷、智能混合、快速全屏三种刷新策略 |
-| 🗄 数据源 | 官方/本地终端/市场/补充来源分级、通达信检测、AKShare 交易日历与事件接口核对、真实请求状态与官方查验入口 |
+| 🗄 数据源 | 官方/本地终端/市场/补充来源分级、主备行情诊断、通达信与 AKShare 核对、诊断历史、低风险一键修复和脱敏 Issue 包 |
 | 💗 关于我 | 产品的自述：我的身体构造与使用指南 |
 
 ## 三、蚂小财 · DeepSeek 版（AI 对话助手）

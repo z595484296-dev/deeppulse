@@ -75,6 +75,7 @@ SECTOR_HISTORY_FILE = os.path.join(DATA, 'sector_history.json')
 DEVICE_CONFIG_FILE = os.path.join(DATA, 'device_config.json')
 PORT_FILE = os.path.join(DATA, 'port.txt')
 LOG_FILE = os.path.join(DATA, 'server.log')
+DIAGNOSTICS_HISTORY_FILE = os.path.join(DATA, 'diagnostics_history.json')
 os.makedirs(DATA, exist_ok=True)
 
 BJC = timezone(timedelta(hours=8))  # 北京时间（A股时区）
@@ -89,7 +90,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.16.0'
+VERSION = '1.17.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -97,6 +98,7 @@ _desktop_heartbeat = {
     'app_version': None,
     'product_version': None,
 }
+_diagnostics_history_lock = threading.Lock()
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -4019,15 +4021,107 @@ def _heartbeat_age_seconds(value):
         return None
 
 
-def build_product_diagnostics():
+def _diagnostic_snapshot(report):
+    return {
+        'at': report.get('generatedAt'),
+        'overall': report.get('overall'),
+        'components': {
+            str(row.get('id')): str(row.get('state'))
+            for row in (report.get('components') or []) if row.get('id')
+        },
+    }
+
+
+def load_diagnostics_history():
+    with _diagnostics_history_lock:
+        try:
+            with open(DIAGNOSTICS_HISTORY_FILE, 'r', encoding='utf-8') as handle:
+                rows = json.load(handle)
+        except Exception:
+            return []
+    if not isinstance(rows, list):
+        return []
+    clean = []
+    for row in rows[-96:]:
+        if not isinstance(row, dict) or not isinstance(row.get('components'), dict):
+            continue
+        clean.append({
+            'at': str(row.get('at') or '')[:40],
+            'overall': str(row.get('overall') or '')[:24],
+            'components': {
+                str(key)[:48]: str(value)[:16]
+                for key, value in row['components'].items()
+            },
+        })
+    return clean
+
+
+def record_diagnostics_baseline(report):
+    snapshot = _diagnostic_snapshot(report)
+    with _diagnostics_history_lock:
+        try:
+            with open(DIAGNOSTICS_HISTORY_FILE, 'r', encoding='utf-8') as handle:
+                rows = json.load(handle)
+        except Exception:
+            rows = []
+        rows = rows if isinstance(rows, list) else []
+        last = rows[-1] if rows and isinstance(rows[-1], dict) else None
+        same = bool(last and last.get('overall') == snapshot['overall']
+                    and last.get('components') == snapshot['components'])
+        age = _heartbeat_age_seconds(last.get('at')) if last else None
+        if same and age is not None and age < 30 * 60:
+            return False
+        rows = (rows + [snapshot])[-96:]
+        temp_file = DIAGNOSTICS_HISTORY_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as handle:
+            json.dump(rows, handle, ensure_ascii=False, indent=1)
+        os.replace(temp_file, DIAGNOSTICS_HISTORY_FILE)
+        return True
+
+
+def _apply_diagnostic_trends(report, history):
+    previous = history[-1].get('components', {}) if history else {}
+    recovered = persistent = new_issues = 0
+    for row in report.get('components') or []:
+        before = previous.get(row['id'])
+        current = row['state']
+        if before is None:
+            trend = 'first_observation'
+        elif current == 'ok' and before != 'ok':
+            trend = 'recovered'
+            recovered += 1
+        elif current in ('warn', 'error') and before == current:
+            trend = 'persistent'
+            persistent += 1
+        elif current in ('warn', 'error') and before in ('ok', 'info'):
+            trend = 'new_issue'
+            new_issues += 1
+        else:
+            trend = 'stable'
+        row['trend'] = trend
+        row['previousState'] = before
+    report['history'] = {
+        'samples': len(history),
+        'lastRecordedAt': history[-1].get('at') if history else None,
+        'recovered': recovered,
+        'persistent': persistent,
+        'newIssues': new_issues,
+    }
+    return report
+
+
+def build_product_diagnostics(record=True):
     """Return a secret-safe product report composed only from explicit fields."""
     components = []
 
-    def add(component_id, label, state, summary, action='', page='datasrc', optional=False):
+    def add(component_id, label, state, summary, action='', page='datasrc', optional=False,
+            repair_action=None, repair_label=None):
         components.append({
             'id': component_id, 'label': label, 'state': state,
             'summary': summary, 'action': action or None, 'page': page,
             'optional': bool(optional),
+            'repairAction': repair_action,
+            'repairLabel': repair_label,
         })
 
     add('data_service', '深脉数据服务', 'ok', '本地数据服务正在运行。')
@@ -4048,6 +4142,25 @@ def build_product_diagnostics():
         '' if desktop_ready else '需要系统弹窗提醒时，请启动 DeepSeekHarnessDesktop.exe。',
         'overview', optional=True)
 
+    sources = source_catalog().get('items') or []
+    source_by_id = {row.get('id'): row for row in sources}
+    eastmoney = source_by_id.get('eastmoney') or {}
+    tencent = source_by_id.get('tencent') or {}
+    market_states = {eastmoney.get('status'), tencent.get('status')}
+    if eastmoney.get('status') == 'ok':
+        market_state, market_summary, market_action = 'ok', '公开行情主链路最近访问正常。', ''
+    elif market_states <= {'unobserved', None}:
+        market_state, market_summary = 'info', '本次启动尚未访问公开行情链路。'
+        market_action = '点击核对可完成一次只读行情请求。'
+    elif eastmoney.get('status') in ('degraded', 'unavailable') and tencent.get('status') in ('degraded', 'unavailable'):
+        market_state, market_summary = 'error', '公开行情主源与备援最近均不可用。'
+        market_action = '重新核对网络与公开行情链路。'
+    else:
+        market_state, market_summary = 'warn', '公开行情主链路降级，备援状态尚待确认。'
+        market_action = '重新核对行情链路；系统会自动尝试备援。'
+    add('market_sources', '公开行情链路', market_state, market_summary, market_action,
+        'datasrc', optional=False, repair_action='recheck_market_sources', repair_label='重新核对')
+
     tdx = tdx_status(probe=False) or {}
     tdx_ready = bool(tdx.get('service_ready'))
     tdx_installed = bool(tdx.get('installed'))
@@ -4055,7 +4168,7 @@ def build_product_diagnostics():
         ('本地只读行情增强已连接。' if tdx_ready else
          ('已安装但尚未连接本地行情服务。' if tdx_installed else '未启用可选的本地行情增强。')),
         '' if tdx_ready else '如需本地行情互证，请在数据源页点击“检测并接入”。',
-        'datasrc', optional=True)
+        'datasrc', optional=True, repair_action='probe_tdx', repair_label='重新检测')
 
     akshare = akshare_status(probe=False) or {}
     ak_installed = bool(akshare.get('installed'))
@@ -4064,7 +4177,7 @@ def build_product_diagnostics():
         ('公开数据补充层最近使用正常。' if ak_ok else
          ('已安装，等待需要时调用。' if ak_installed else '未安装可选的公开数据补充层。')),
         '' if (ak_ok or ak_installed) else '需要交易日历或宏观补充数据时再安装，不影响主行情。',
-        'datasrc', optional=True)
+        'datasrc', optional=True, repair_action='probe_akshare', repair_label='核对日历')
 
     delivery = attention_delivery_status().get('channels') or {}
     failed = sum(int((row or {}).get('failed') or 0) for row in delivery.values())
@@ -4094,7 +4207,9 @@ def build_product_diagnostics():
     else:
         device_state, device_summary, device_action = 'ok', '墨水屏最近已成功获取画面。', ''
     add('epaper', '墨水屏设备', device_state, device_summary, device_action,
-        'epaper', optional=not cfg.get('enabled'))
+        'epaper', optional=not cfg.get('enabled'),
+        repair_action='restart_epaper_gateway' if cfg.get('enabled') else None,
+        repair_label='重启网关' if cfg.get('enabled') else None)
 
     blocking = [row for row in components if row['state'] == 'error' and not row['optional']]
     warnings = [row for row in components if row['state'] == 'warn' and not row['optional']]
@@ -4103,7 +4218,7 @@ def build_product_diagnostics():
         {'component': row['id'], 'label': row['label'], 'text': row['action'], 'page': row['page']}
         for row in components if row.get('action') and row['state'] in ('error', 'warn')
     ][:3]
-    return {
+    report = {
         'schema': 1, 'version': VERSION,
         'generatedAt': now_bj().isoformat(timespec='seconds'),
         'overall': overall,
@@ -4114,6 +4229,54 @@ def build_product_diagnostics():
         },
         'components': components, 'actions': actions,
         'privacy': '报告不包含 API 密钥、配对令牌、本机路径、IP 地址、自选股、提醒内容或聊天记录。',
+    }
+    history = load_diagnostics_history()
+    _apply_diagnostic_trends(report, history)
+    if record:
+        try:
+            record_diagnostics_baseline(report)
+        except Exception as exc:
+            log('diagnostics baseline save fail: %s' % str(exc)[:120])
+    return report
+
+
+DIAGNOSTIC_REPAIR_ACTIONS = {
+    'recheck_market_sources', 'probe_tdx', 'probe_akshare', 'restart_epaper_gateway',
+}
+
+
+def repair_product_component(action):
+    action = str(action or '').strip()
+    if action not in DIAGNOSTIC_REPAIR_ACTIONS:
+        raise ValueError('unsupported diagnostic repair action')
+    ok = True
+    if action == 'recheck_market_sources':
+        cache_drop('indices')
+        try:
+            em_indices_any()
+            message = '公开行情链路已重新核对。'
+        except Exception:
+            ok, message = False, '行情链路仍不可用，请检查网络后稍后再试。'
+    elif action == 'probe_tdx':
+        result = tdx_status(probe=True, fresh=True)
+        ok = bool(result.get('service_ready'))
+        message = '通达信只读行情已重新连接。' if ok else '通达信仍未连接，请确认客户端和本地服务已启动。'
+    elif action == 'probe_akshare':
+        result = akshare_status(probe=True)
+        ok = result.get('status') == 'ok'
+        message = 'AKShare 交易日历核对成功。' if ok else 'AKShare 日历仍不可用，不影响主行情链路。'
+    else:
+        cfg = load_device_config()
+        if not cfg.get('enabled'):
+            ok, message = False, '墨水屏网关未开启，未执行任何操作。'
+        else:
+            stop_device_gateway()
+            result = sync_device_gateway(cfg)
+            ok = bool(result.get('running'))
+            message = '墨水屏网关已重新启动。' if ok else '墨水屏网关仍未运行，请检查端口占用。'
+    return {
+        'action': action, 'ok': ok, 'message': message,
+        'report': build_product_diagnostics(record=True),
     }
 
 
@@ -4126,16 +4289,30 @@ def build_diagnostics_archive(report=None):
         'diagnostics.json 只包含组件状态和修复提示，不包含密钥、令牌、IP、路径或个人研究内容。\r\n'
         '生成时间：%s\r\n版本：%s\r\n' % (report['generatedAt'], report['version'])
     )
+    issue_lines = [
+        '# DeepPulse 问题反馈', '',
+        '- 版本：%s' % report['version'],
+        '- 诊断时间：%s' % report['generatedAt'],
+        '- 总体状态：%s' % report['overall'], '',
+        '## 组件状态', '',
+    ]
+    for row in report.get('components') or []:
+        issue_lines.append('- %s：%s；%s' % (row['label'], row['state'], row['summary']))
+    issue_lines.extend([
+        '', '## 问题描述', '', '<!-- 请描述你看到的现象和复现步骤，不要粘贴密钥或配对令牌。 -->', '',
+        '本文件由深脉脱敏诊断自动生成。',
+    ])
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('diagnostics.json', json.dumps(report, ensure_ascii=False, indent=2))
         archive.writestr('README-zh.txt', readme)
+        archive.writestr('github-issue.md', '\n'.join(issue_lines))
     return output.getvalue()
 
 
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.16.0'
+    server_version = 'DeepPulse/1.17.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -4272,6 +4449,9 @@ class Handler(BaseHTTPRequestHandler):
                           'product_diagnostics': 1,
                           'diagnostics_export': 1,
                           'desktop_heartbeat': 1,
+                          'diagnostic_repairs': 1,
+                          'diagnostic_history': 1,
+                          'diagnostic_issue_template': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -4517,6 +4697,9 @@ class Handler(BaseHTTPRequestHandler):
                     body.get('channel'), body.get('itemId'))})
             elif u.path == '/api/diagnostics/desktop-heartbeat':
                 self.send_json({'ok': True, 'data': update_desktop_heartbeat(self.read_json_body(4096))})
+            elif u.path == '/api/diagnostics/repair':
+                body = self.read_json_body(4096)
+                self.send_json({'ok': True, 'data': repair_product_component(body.get('action'))})
             elif u.path == '/api/monitor/config':
                 body = self.read_json_body()
                 saved = save_monitor_config(body.get('config') or {})

@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import tempfile
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -9,9 +11,18 @@ import server
 
 class ProductDiagnosticsTests(unittest.TestCase):
     def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.history_patch = patch.object(
+            server, 'DIAGNOSTICS_HISTORY_FILE',
+            os.path.join(self.temp.name, 'diagnostics-history.json'))
+        self.history_patch.start()
         with server._desktop_heartbeat_lock:
             server._desktop_heartbeat.update(
                 last_seen=None, app_version=None, product_version=None)
+
+    def tearDown(self):
+        self.history_patch.stop()
+        self.temp.cleanup()
 
     def report(self, *, harness=True, device_enabled=False, device_running=False,
                device_last_seen=None, failed=0):
@@ -40,6 +51,10 @@ class ProductDiagnosticsTests(unittest.TestCase):
                 patch.object(server, 'akshare_status', return_value={
                     'installed': True, 'status': 'ok', 'error': 'sk-private-value',
                 }), \
+                patch.object(server, 'source_catalog', return_value={'items': [
+                    {'id': 'eastmoney', 'status': 'ok'},
+                    {'id': 'tencent', 'status': 'unobserved'},
+                ]}), \
                 patch.object(server, 'attention_delivery_status', return_value=delivery), \
                 patch.object(server, 'load_device_config', return_value=device_config), \
                 patch.object(server, 'device_gateway_status', return_value=gateway):
@@ -53,19 +68,20 @@ class ProductDiagnosticsTests(unittest.TestCase):
                        'sk-private-value', '601138'):
             self.assertNotIn(secret, encoded)
         self.assertIn('API 密钥', report['privacy'])
-        self.assertEqual(report['version'], '1.16.0')
+        self.assertEqual(report['version'], '1.17.0')
 
     def test_desktop_heartbeat_changes_optional_desktop_state(self):
         before = self.report()
         desktop = next(row for row in before['components'] if row['id'] == 'desktop_app')
         self.assertEqual(desktop['state'], 'info')
         server.update_desktop_heartbeat({
-            'appVersion': '1.16.0', 'productVersion': '1.16.0+test',
+            'appVersion': '1.17.0', 'productVersion': '1.17.0+test',
             'ignoredSecret': 'must-not-appear',
         })
         after = self.report()
         desktop = next(row for row in after['components'] if row['id'] == 'desktop_app')
         self.assertEqual(desktop['state'], 'ok')
+        self.assertEqual(desktop['trend'], 'recovered')
         self.assertNotIn('must-not-appear', json.dumps(after, ensure_ascii=False))
 
     def test_enabled_but_stopped_gateway_requires_action(self):
@@ -86,12 +102,35 @@ class ProductDiagnosticsTests(unittest.TestCase):
         report = self.report()
         payload = server.build_diagnostics_archive(report)
         with zipfile.ZipFile(io.BytesIO(payload), 'r') as archive:
-            self.assertEqual(set(archive.namelist()), {'diagnostics.json', 'README-zh.txt'})
+            self.assertEqual(set(archive.namelist()), {
+                'diagnostics.json', 'README-zh.txt', 'github-issue.md'})
             diagnostic_text = archive.read('diagnostics.json').decode('utf-8')
             readme = archive.read('README-zh.txt').decode('utf-8')
+            issue = archive.read('github-issue.md').decode('utf-8')
         self.assertEqual(json.loads(diagnostic_text), report)
         self.assertIn('脱敏诊断包', readme)
-        self.assertNotIn('device-super-secret-token', diagnostic_text + readme)
+        self.assertIn('问题反馈', issue)
+        self.assertNotIn('device-super-secret-token', diagnostic_text + readme + issue)
+
+    def test_history_deduplicates_stable_state_and_tracks_changes(self):
+        first = self.report(harness=True)
+        second = self.report(harness=True)
+        self.assertEqual(first['history']['samples'], 0)
+        self.assertEqual(second['history']['samples'], 1)
+        self.assertEqual(len(server.load_diagnostics_history()), 1)
+        changed = self.report(harness=False)
+        harness = next(row for row in changed['components'] if row['id'] == 'harness')
+        self.assertEqual(harness['trend'], 'new_issue')
+        self.assertEqual(len(server.load_diagnostics_history()), 2)
+
+    def test_repairs_are_strictly_whitelisted(self):
+        with self.assertRaises(ValueError):
+            server.repair_product_component('start_external_program')
+        with patch.object(server, 'em_indices_any', return_value=[]), \
+                patch.object(server, 'build_product_diagnostics', return_value={'overall': 'ok'}):
+            result = server.repair_product_component('recheck_market_sources')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['action'], 'recheck_market_sources')
 
 
 if __name__ == '__main__':
