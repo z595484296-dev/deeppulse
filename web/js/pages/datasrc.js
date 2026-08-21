@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.15.0';
-import { esc, toast, downloadText } from '../util.js?v=1.15.0';
+import { api } from '../api.js?v=1.16.0';
+import { esc, toast, downloadText } from '../util.js?v=1.16.0';
 
 let built = false;
 
@@ -77,6 +77,22 @@ export function init(container) {
       </div>
 
       <div class="card span-12">
+        <div class="card-head">
+          <div>
+            <div class="card-title">🩺 一键产品诊断</div>
+            <div class="card-sub">一次检查数据服务、对话工作台、桌面提醒、数据源与墨水屏；导出包已自动脱敏</div>
+          </div>
+          <span id="ds-diagnostic-badge" class="source-tier enrichment">检查中</span>
+        </div>
+        <div id="ds-diagnostics"><div class="empty">正在检查各项能力…</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+          <button class="btn primary" id="ds-run-diagnostics">重新诊断</button>
+          <button class="btn" id="ds-export-diagnostics">导出脱敏诊断包</button>
+        </div>
+        <div class="tdx-safety" id="ds-diagnostic-privacy">不会导出 API 密钥、配对令牌、本机路径、IP、自选股、提醒内容或聊天记录。</div>
+      </div>
+
+      <div class="card span-12">
         <div class="card-head"><div class="card-title">免责声明</div></div>
         <div style="font-size:12px;color:var(--text-2);line-height:2">
           深脉 DeepPulse 是个人金融研究工具。公告优先展示官方原文索引，行情与快讯来自市场聚合接口，
@@ -113,6 +129,27 @@ export function init(container) {
     await renderAkshareStatus(container, true);
     await renderSources(container);
     btn.disabled = false; btn.textContent = '重新核对';
+  });
+  container.querySelector('#ds-run-diagnostics').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = '诊断中…';
+    await renderDiagnostics(container);
+    btn.disabled = false; btn.textContent = '重新诊断';
+  });
+  container.querySelector('#ds-export-diagnostics').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = '正在生成…';
+    try {
+      const blob = await api.diagnosticsBundle();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+      link.download = `DeepPulse-Diagnostics-${stamp}.zip`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      toast('脱敏诊断包已导出', 'ok');
+    } catch (err) { toast('导出失败：' + err.message, 'err'); }
+    btn.disabled = false; btn.textContent = '导出脱敏诊断包';
   });
   // 导出情绪历史快照
   const exportHistory = async (fmt) => {
@@ -270,9 +307,44 @@ async function renderStatus(container) {
   }
 }
 
+async function renderDiagnostics(container) {
+  const el = container.querySelector('#ds-diagnostics');
+  const badge = container.querySelector('#ds-diagnostic-badge');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">正在检查各项能力…</div>';
+  try {
+    const report = await api.diagnostics();
+    const labels = { ok: '正常', attention: '需要留意', action_required: '需要处理' };
+    const colors = { ok: 'var(--down)', attention: 'var(--amber)', action_required: 'var(--up)' };
+    badge.textContent = labels[report.overall] || '已完成';
+    badge.style.color = colors[report.overall] || 'var(--text-2)';
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px">
+        ${(report.components || []).map(row => {
+          const tone = row.state === 'ok' ? 'ok' : row.state === 'error' ? 'err' : 'warn';
+          const stateLabel = row.state === 'ok' ? '正常' : row.state === 'error' ? '需处理' : row.state === 'warn' ? '留意' : '可选';
+          return `<div style="border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel-2)">
+            <div class="tdx-state ${tone}" style="margin-bottom:7px"><i class="dot ${tone}"></i>${esc(row.label)} · ${stateLabel}</div>
+            <div style="font-size:12px;color:var(--text-2);line-height:1.7">${esc(row.summary)}</div>
+            ${row.action ? `<div style="font-size:11.5px;color:var(--text-3);line-height:1.7;margin-top:5px">建议：${esc(row.action)}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      ${(report.actions || []).length ? `<div style="margin-top:12px;padding:10px 12px;border-left:3px solid var(--amber);background:var(--panel-2);font-size:12px;color:var(--text-2);line-height:1.8">
+        <b>优先处理：</b>${report.actions.map(row => esc(row.text)).join(' · ')}
+      </div>` : ''}`;
+    const privacy = container.querySelector('#ds-diagnostic-privacy');
+    if (privacy) privacy.textContent = '🔒 ' + (report.privacy || '诊断报告已脱敏。');
+  } catch (err) {
+    badge.textContent = '检查失败';
+    el.innerHTML = `<div class="tdx-error">无法完成诊断：${esc(err.message)}</div>`;
+  }
+}
+
 export async function refresh(container) {
   init(container);
   await Promise.allSettled([
     renderSources(container), renderStatus(container), renderTdxStatus(container), renderAkshareStatus(container),
+    renderDiagnostics(container),
   ]);
 }

@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.15.0",
-  "minimumDesktopVersion": "1.15.0",
+  "version": "1.16.0",
+  "minimumDesktopVersion": "1.16.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -29,6 +29,9 @@
     "desktop-system-notifications-v1",
     "epaper-delivery-receipts-v1",
     "notification-deep-links-v1",
-    "delivery-timeline-v1"
+    "delivery-timeline-v1",
+    "product-diagnostics-v1",
+    "diagnostics-export-v1",
+    "desktop-heartbeat-v1"
   ]
 }

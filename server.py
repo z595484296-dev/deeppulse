@@ -18,6 +18,7 @@
 import json
 import hashlib
 import hmac
+import io
 import importlib
 import importlib.util
 import os
@@ -30,6 +31,7 @@ import threading
 import time
 import urllib.request
 import urllib.parse
+import zipfile
 from datetime import datetime, timezone, timedelta, date as _date
 from http.client import RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -87,7 +89,14 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.15.0'
+VERSION = '1.16.0'
+
+_desktop_heartbeat_lock = threading.Lock()
+_desktop_heartbeat = {
+    'last_seen': None,
+    'app_version': None,
+    'product_version': None,
+}
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -3986,10 +3995,147 @@ def assemble_emotion(force_record=False):
             'updated': int(time.time())}
 
 
+# ---------------------------------------------------------------- 产品诊断（白名单输出，不包含令牌、密钥、路径、IP 或用户内容）
+
+def update_desktop_heartbeat(value=None):
+    source = value if isinstance(value, dict) else {}
+    clean = {
+        'last_seen': now_bj().isoformat(timespec='seconds'),
+        'app_version': str(source.get('appVersion') or '')[:32] or None,
+        'product_version': str(source.get('productVersion') or '')[:80] or None,
+    }
+    with _desktop_heartbeat_lock:
+        _desktop_heartbeat.update(clean)
+        return dict(_desktop_heartbeat)
+
+
+def _heartbeat_age_seconds(value):
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=BJC)
+        return max(0, int((now_bj() - parsed.astimezone(BJC)).total_seconds()))
+    except Exception:
+        return None
+
+
+def build_product_diagnostics():
+    """Return a secret-safe product report composed only from explicit fields."""
+    components = []
+
+    def add(component_id, label, state, summary, action='', page='datasrc', optional=False):
+        components.append({
+            'id': component_id, 'label': label, 'state': state,
+            'summary': summary, 'action': action or None, 'page': page,
+            'optional': bool(optional),
+        })
+
+    add('data_service', '深脉数据服务', 'ok', '本地数据服务正在运行。')
+
+    harness_ready = port_is_listening('127.0.0.1', 3080)
+    add('harness', 'DeepSeek Harness', 'ok' if harness_ready else 'warn',
+        '对话工作台已连接。' if harness_ready else '未检测到对话工作台。',
+        '' if harness_ready else '重新打开深脉桌面 App；仅浏览器模式仍可使用数据页。',
+        'overview')
+
+    with _desktop_heartbeat_lock:
+        desktop = dict(_desktop_heartbeat)
+    desktop_age = _heartbeat_age_seconds(desktop.get('last_seen'))
+    desktop_ready = desktop_age is not None and desktop_age <= 120
+    add('desktop_app', 'Windows 桌面 App', 'ok' if desktop_ready else 'info',
+        ('桌面窗口与系统提醒通道在线。' if desktop_ready
+         else '最近未收到桌面端心跳；浏览器功能不受影响。'),
+        '' if desktop_ready else '需要系统弹窗提醒时，请启动 DeepSeekHarnessDesktop.exe。',
+        'overview', optional=True)
+
+    tdx = tdx_status(probe=False) or {}
+    tdx_ready = bool(tdx.get('service_ready'))
+    tdx_installed = bool(tdx.get('installed'))
+    add('tdx_local', '通达信 TQ-Local', 'ok' if tdx_ready else 'info',
+        ('本地只读行情增强已连接。' if tdx_ready else
+         ('已安装但尚未连接本地行情服务。' if tdx_installed else '未启用可选的本地行情增强。')),
+        '' if tdx_ready else '如需本地行情互证，请在数据源页点击“检测并接入”。',
+        'datasrc', optional=True)
+
+    akshare = akshare_status(probe=False) or {}
+    ak_installed = bool(akshare.get('installed'))
+    ak_ok = akshare.get('status') == 'ok'
+    add('akshare', 'AKShare 补充层', 'ok' if ak_ok else 'info',
+        ('公开数据补充层最近使用正常。' if ak_ok else
+         ('已安装，等待需要时调用。' if ak_installed else '未安装可选的公开数据补充层。')),
+        '' if (ak_ok or ak_installed) else '需要交易日历或宏观补充数据时再安装，不影响主行情。',
+        'datasrc', optional=True)
+
+    delivery = attention_delivery_status().get('channels') or {}
+    failed = sum(int((row or {}).get('failed') or 0) for row in delivery.values())
+    enabled_channels = sum(1 for row in delivery.values() if (row or {}).get('enabled'))
+    add('notifications', '主动提醒', 'warn' if failed else ('ok' if enabled_channels else 'info'),
+        (f'有 {failed} 条提醒投递失败。' if failed else
+         ('提醒通道已开启。' if enabled_channels else '提醒通道尚未开启。')),
+        ('前往提醒中心查看失败记录并重试。' if failed else
+         ('按需在提醒中心开启桌面或墨水屏提醒。' if not enabled_channels else '')),
+        'overview', optional=not enabled_channels)
+
+    cfg = load_device_config()
+    gateway = device_gateway_status(cfg, include_token=False)
+    last_seen_age = _heartbeat_age_seconds(gateway.get('last_seen'))
+    if not cfg.get('enabled'):
+        device_state, device_summary = 'info', '墨水屏网关未开启。'
+        device_action = '需要硬件联动时，在墨水屏页开启局域网网关。'
+    elif not gateway.get('running'):
+        device_state, device_summary = 'error', '墨水屏网关已启用但未运行。'
+        device_action = '检查端口占用后，在墨水屏页重新保存网关设置。'
+    elif last_seen_age is None:
+        device_state, device_summary = 'warn', '网关运行中，但尚未收到设备请求。'
+        device_action = '确认 ESP32 与电脑在同一局域网并核对配对令牌。'
+    elif last_seen_age > 600:
+        device_state, device_summary = 'warn', '墨水屏超过 10 分钟未联系本机。'
+        device_action = '检查墨水屏供电、Wi-Fi 和电脑局域网连接。'
+    else:
+        device_state, device_summary, device_action = 'ok', '墨水屏最近已成功获取画面。', ''
+    add('epaper', '墨水屏设备', device_state, device_summary, device_action,
+        'epaper', optional=not cfg.get('enabled'))
+
+    blocking = [row for row in components if row['state'] == 'error' and not row['optional']]
+    warnings = [row for row in components if row['state'] == 'warn' and not row['optional']]
+    overall = 'action_required' if blocking else ('attention' if warnings else 'ok')
+    actions = [
+        {'component': row['id'], 'label': row['label'], 'text': row['action'], 'page': row['page']}
+        for row in components if row.get('action') and row['state'] in ('error', 'warn')
+    ][:3]
+    return {
+        'schema': 1, 'version': VERSION,
+        'generatedAt': now_bj().isoformat(timespec='seconds'),
+        'overall': overall,
+        'summary': {
+            'ok': sum(1 for row in components if row['state'] == 'ok'),
+            'attention': sum(1 for row in components if row['state'] in ('warn', 'error')),
+            'optional': sum(1 for row in components if row['optional'] and row['state'] != 'ok'),
+        },
+        'components': components, 'actions': actions,
+        'privacy': '报告不包含 API 密钥、配对令牌、本机路径、IP 地址、自选股、提醒内容或聊天记录。',
+    }
+
+
+def build_diagnostics_archive(report=None):
+    report = report or build_product_diagnostics()
+    output = io.BytesIO()
+    readme = (
+        '深脉 DeepPulse 脱敏诊断包\r\n\r\n'
+        '请将本压缩包发送给协助排查问题的人。\r\n'
+        'diagnostics.json 只包含组件状态和修复提示，不包含密钥、令牌、IP、路径或个人研究内容。\r\n'
+        '生成时间：%s\r\n版本：%s\r\n' % (report['generatedAt'], report['version'])
+    )
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('diagnostics.json', json.dumps(report, ensure_ascii=False, indent=2))
+        archive.writestr('README-zh.txt', readme)
+    return output.getvalue()
+
+
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.15.0'
+    server_version = 'DeepPulse/1.16.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -4123,6 +4269,9 @@ class Handler(BaseHTTPRequestHandler):
                           'epaper_delivery_receipts': 1,
                           'notification_deep_links': 1,
                           'delivery_timeline': 1,
+                          'product_diagnostics': 1,
+                          'diagnostics_export': 1,
+                          'desktop_heartbeat': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -4130,6 +4279,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(dict({'ok': True, 'data': health}, **health))
         elif path == '/api/sources':
             self.send_json({'ok': True, 'data': source_catalog()})
+        elif path == '/api/diagnostics':
+            self.send_json({'ok': True, 'data': build_product_diagnostics()})
+        elif path == '/api/diagnostics/export.zip':
+            report = build_product_diagnostics()
+            filename = 'DeepPulse-Diagnostics-%s.zip' % now_bj().strftime('%Y%m%d-%H%M%S')
+            self.send_bytes(build_diagnostics_archive(report), 'application/zip', headers={
+                'Content-Disposition': 'attachment; filename="%s"' % filename,
+            })
         elif path == '/api/tdx/status':
             probe = qs.get('probe', '1') != '0'
             fresh = qs.get('fresh') == '1'
@@ -4358,6 +4515,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 self.send_json({'ok': True, 'data': retry_attention_delivery(
                     body.get('channel'), body.get('itemId'))})
+            elif u.path == '/api/diagnostics/desktop-heartbeat':
+                self.send_json({'ok': True, 'data': update_desktop_heartbeat(self.read_json_body(4096))})
             elif u.path == '/api/monitor/config':
                 body = self.read_json_body()
                 saved = save_monitor_config(body.get('config') or {})

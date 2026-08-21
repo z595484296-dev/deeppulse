@@ -31,7 +31,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 15, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 16, 0);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -122,7 +122,7 @@ internal sealed class HarnessForm : Form
             Activate();
             await OpenNotificationTargetAsync();
         };
-        deliveryTimer.Tick += async (_, _) => await PollDesktopDeliveryAsync();
+        deliveryTimer.Tick += async (_, _) => await PollDesktopServicesAsync();
         FormClosing += OnFormClosing;
         KeyDown += OnKeyDown;
     }
@@ -264,7 +264,7 @@ internal sealed class HarnessForm : Form
             AppendLog("Desktop surface is ready.");
             systemNotification.Visible = true;
             deliveryTimer.Start();
-            await PollDesktopDeliveryAsync();
+            await PollDesktopServicesAsync();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -560,7 +560,19 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("delivery_timeline", out var deliveryTimeline)
                 || deliveryTimeline.ValueKind != JsonValueKind.Number
                 || !deliveryTimeline.TryGetInt32(out var deliveryTimelineVersion)
-                || deliveryTimelineVersion != 1)
+                || deliveryTimelineVersion != 1
+                || !capabilities.TryGetProperty("product_diagnostics", out var productDiagnostics)
+                || productDiagnostics.ValueKind != JsonValueKind.Number
+                || !productDiagnostics.TryGetInt32(out var productDiagnosticsVersion)
+                || productDiagnosticsVersion != 1
+                || !capabilities.TryGetProperty("diagnostics_export", out var diagnosticsExport)
+                || diagnosticsExport.ValueKind != JsonValueKind.Number
+                || !diagnosticsExport.TryGetInt32(out var diagnosticsExportVersion)
+                || diagnosticsExportVersion != 1
+                || !capabilities.TryGetProperty("desktop_heartbeat", out var desktopHeartbeat)
+                || desktopHeartbeat.ValueKind != JsonValueKind.Number
+                || !desktopHeartbeat.TryGetInt32(out var desktopHeartbeatVersion)
+                || desktopHeartbeatVersion != 1)
             {
                 return null;
             }
@@ -621,7 +633,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.15.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.16.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
@@ -702,6 +714,39 @@ internal sealed class HarnessForm : Form
         finally
         {
             deliveryPollInProgress = false;
+        }
+    }
+
+    private async Task PollDesktopServicesAsync()
+    {
+        await SendDesktopHeartbeatAsync();
+        await PollDesktopDeliveryAsync();
+    }
+
+    private async Task SendDesktopHeartbeatAsync()
+    {
+        if (activeDeepPulseBaseUri is null) return;
+        try
+        {
+            var assemblyVersion = typeof(HarnessForm).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+            var productVersion = FileVersionInfo.GetVersionInfo(Application.ExecutablePath).ProductVersion
+                ?? assemblyVersion;
+            var payload = JsonSerializer.Serialize(new {
+                appVersion = assemblyVersion,
+                productVersion,
+                surface = "windows-desktop"
+            });
+            using var response = await httpClient.PostAsync(
+                new Uri(activeDeepPulseBaseUri, "api/diagnostics/desktop-heartbeat"),
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                AppendLog($"Desktop heartbeat returned HTTP {(int)response.StatusCode}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Desktop heartbeat failed: {ex.Message}");
         }
     }
 

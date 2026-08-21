@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.15.0';
+const MIN_VERSION = '1.16.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -62,7 +62,10 @@ async function probeBase(base, signal) {
       && capabilities.desktop_system_notifications === 1
       && capabilities.epaper_delivery_receipts === 1
       && capabilities.notification_deep_links === 1
-      && capabilities.delivery_timeline === 1 ? base : '';
+      && capabilities.delivery_timeline === 1
+      && capabilities.product_diagnostics === 1
+      && capabilities.diagnostics_export === 1
+      && capabilities.desktop_heartbeat === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -76,7 +79,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.15.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.16.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -134,6 +137,8 @@ async function requestBlob(path, timeoutMs = 60000) {
 export const api = {
   health: () => request('/api/health'),
   sources: () => request('/api/sources'),
+  diagnostics: () => request('/api/diagnostics', 10000),
+  diagnosticsBundle: () => requestBlob('/api/diagnostics/export.zip', 15000),
   tdxStatus: (fresh = false) => request('/api/tdx/status?probe=1' + (fresh ? '&fresh=1' : ''), 10000),
   akshareStatus: (probe = true) => request('/api/akshare/status?probe=' + (probe ? '1' : '0'), 30000),
   disclosures: (code, n = 8) => request(`/api/disclosures?code=${encodeURIComponent(code)}&n=${n}`),
