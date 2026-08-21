@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.19.0';
-import { state, bus, syncProfile } from '../store.js?v=1.19.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.19.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.19.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.19.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.19.0';
+import { api } from '../api.js?v=1.20.0';
+import { state, bus, syncProfile } from '../store.js?v=1.20.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.20.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.20.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.20.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.20.0';
 
 let built = false;
 let sparksAt = 0;
@@ -51,6 +51,20 @@ export function init(container) {
           </div>
         </div>
       </div>
+    </section>
+
+    <section class="card research-cockpit-card" id="ov-research-cockpit" aria-labelledby="ov-cockpit-title">
+      <div class="research-cockpit-head">
+        <div>
+          <div class="proactive-kicker">个人研究驾驶舱 <span class="tag">优先级可解释、可调整</span></div>
+          <h2 id="ov-cockpit-title">今天先研究什么？</h2>
+          <p id="ov-cockpit-summary">正在汇总你的自选、假设、提醒与数据健康…</p>
+        </div>
+        <button class="btn sm ghost" id="ov-cockpit-refresh">刷新研究地图</button>
+      </div>
+      <div class="research-map" id="ov-cockpit-map"></div>
+      <div class="research-focus-list" id="ov-cockpit-focus"><div class="empty compact">正在生成研究队列</div></div>
+      <p class="research-cockpit-boundary" id="ov-cockpit-boundary">只整理明确记录，不推断未记录目标，不执行交易。</p>
     </section>
 
     <section class="card routine-card" id="ov-routine" aria-labelledby="ov-routine-title">
@@ -281,7 +295,13 @@ export function init(container) {
   bus.addEventListener('research-hypotheses', e => {
     state.hypotheses = e.detail;
     renderEventImpact(container, state.eventImpact);
+    refreshResearchCockpit(container);
   });
+  bus.addEventListener('research-cockpit', e => {
+    state.cockpit = e.detail;
+    renderResearchCockpit(container, e.detail);
+  });
+  bus.addEventListener('attention', () => refreshResearchCockpit(container));
 
   container.querySelector('#ov-routine').addEventListener('change', async e => {
     const input = e.target.closest('[data-routine-task]');
@@ -381,6 +401,43 @@ export function init(container) {
   refreshRoutine(container);
   refreshRoutineEffectiveness(container);
 
+  container.querySelector('#ov-cockpit-refresh').addEventListener('click', async e => {
+    e.currentTarget.disabled = true;
+    try { await refreshResearchCockpit(container); toast('研究地图已刷新', 'ok'); }
+    catch (error) { toast(error.message || '研究地图刷新失败', 'err'); }
+    finally { e.currentTarget.disabled = false; }
+  });
+  container.querySelector('#ov-cockpit-focus').addEventListener('click', async e => {
+    const navigate = e.target.closest('[data-cockpit-page]');
+    const ask = e.target.closest('[data-cockpit-ask]');
+    const control = e.target.closest('[data-cockpit-action]');
+    const itemId = navigate?.dataset.cockpitId || ask?.dataset.cockpitAsk || control?.dataset.cockpitId;
+    const item = (state.cockpit?.items || []).find(row => row.id === itemId);
+    if (navigate) {
+      document.querySelector(`.nav-item[data-page="${navigate.dataset.cockpitPage}"]`)?.click();
+      return;
+    }
+    if (ask) {
+      document.dispatchEvent(new CustomEvent('ask-research-cockpit', { detail: { item } }));
+      return;
+    }
+    if (!control) return;
+    control.disabled = true;
+    try {
+      const result = await api.mutateResearchCockpit(control.dataset.cockpitAction, itemId);
+      state.cockpit = result.cockpit;
+      bus.dispatchEvent(new CustomEvent('research-cockpit', { detail: result.cockpit }));
+      const messages = {
+        raise_priority: '已提高优先级 10 分', lower_priority: '已降低优先级 10 分',
+        toggle_pin: item?.pinned ? '已取消置顶' : '已置顶', snooze: '已稍后到明天 08:30',
+        reset: '已恢复系统默认排序',
+      };
+      toast(messages[control.dataset.cockpitAction] || '研究队列已更新', 'ok');
+    } catch (error) { toast(error.message || '研究队列调整失败', 'err'); }
+    finally { control.disabled = false; }
+  });
+  refreshResearchCockpit(container);
+
   container.querySelector('#ov-event-toggle').addEventListener('click', async e => {
     const button = e.currentTarget;
     const current = state.eventImpact && state.eventImpact.config || {};
@@ -459,6 +516,69 @@ const EVENT_STATE_LABELS = {
   disabled: '未开启', starting: '启动中', ok: '已连接', degraded: '部分降级',
   unavailable: '暂无可用来源', error: '需要检查', stopped: '已停止',
 };
+
+const COCKPIT_LEVELS = {
+  now: ['现在处理', 'hot'], next: ['接下来', 'next'], later: ['稍后研究', 'later'],
+};
+
+async function refreshResearchCockpit(container) {
+  const value = await api.researchCockpit();
+  state.cockpit = value;
+  renderResearchCockpit(container, value);
+  return value;
+}
+
+function renderResearchCockpit(container, snapshot) {
+  const root = container.querySelector('#ov-research-cockpit');
+  if (!root) return;
+  const value = snapshot || {};
+  const summary = value.summary || {};
+  root.querySelector('#ov-cockpit-summary').textContent = summary.total
+    ? `共 ${summary.total} 项 · 现在处理 ${summary.now || 0} · 接下来 ${summary.next || 0}${summary.snoozed ? ` · 稍后 ${summary.snoozed}` : ''}`
+    : '当前没有必须处理的研究任务；新增自选、保存假设或开启提醒后会自动汇总。';
+  const map = value.map || {};
+  root.querySelector('#ov-cockpit-map').innerHTML = [
+    ['自选', map.watchlist?.total || 0, `${map.watchlist?.withOpenHypothesis || 0} 项已有假设`],
+    ['观察中', map.hypotheses?.observing || 0, `${map.hypotheses?.candidateEvidence || 0} 条候选证据`],
+    ['待复盘', map.hypotheses?.reviewDue || 0, '到期后由你确认结论'],
+    ['待处理提醒', map.pendingReminders || 0, '只计未完成事项'],
+    ['数据健康', map.healthAttention || 0, '仅显示影响研究的问题'],
+  ].map(([label, count, note]) => `<div><b class="num">${Number(count)}</b><span>${esc(label)}</span><small>${esc(note)}</small></div>`).join('');
+  const list = root.querySelector('#ov-cockpit-focus');
+  const focus = value.focus || [];
+  if (!focus.length) {
+    list.innerHTML = `<div class="empty compact">${summary.snoozed ? `当前任务已稍后 ${summary.snoozed} 项，明天会自动恢复。` : '研究队列为空，深脉不会为了显得“主动”而凭空制造任务。'}</div>`;
+  } else {
+    list.innerHTML = focus.map(item => {
+      const level = COCKPIT_LEVELS[item.level] || COCKPIT_LEVELS.later;
+      const reasons = (item.reasons || []).slice(0, 4)
+        .map(reason => `<li><span>+${Number(reason.points || 0)}</span>${esc(reason.label)}</li>`).join('');
+      const missing = (item.evidence?.missing || []).slice(0, 2).map(esc).join('；');
+      return `<article class="research-focus-item" data-level="${level[1]}">
+        <div class="research-focus-rank"><span>${esc(level[0])}</span><b class="num">${Number(item.score || 0)}</b><small>优先分</small></div>
+        <div class="research-focus-main">
+          <div class="research-focus-title"><b>${esc(item.title)}</b>${item.pinned ? '<span class="tag">已置顶</span>' : ''}${item.userAdjusted ? '<span class="tag user">你已调整</span>' : ''}</div>
+          <p>${esc(item.subtitle || item.origin || '')}</p>
+          <div class="research-evidence-line"><span>${esc(item.evidence?.status || '依据待确认')}</span><span>候选依据 ${Number(item.evidence?.available || 0)}</span>${missing ? `<span>缺口：${missing}</span>` : ''}</div>
+          <details class="research-priority-why"><summary>为什么排在这里？</summary><ul>${reasons || '<li>等待明确依据</li>'}${item.adjustment ? `<li class="user-adjust"><span>${item.adjustment > 0 ? '+' : ''}${Number(item.adjustment)}</span>你的优先级调整</li>` : ''}</ul></details>
+        </div>
+        <div class="research-focus-actions">
+          <button class="btn sm primary" data-cockpit-page="${esc(item.nextAction?.page || 'overview')}" data-cockpit-id="${esc(item.id)}">${esc(item.nextAction?.label || '查看')}</button>
+          <button class="btn sm" data-cockpit-ask="${esc(item.id)}">让 DeepSeek 梳理</button>
+          <div class="research-adjust-row" aria-label="调整研究任务优先级">
+            <button class="btn sm ghost" data-cockpit-action="toggle_pin" data-cockpit-id="${esc(item.id)}">${item.pinned ? '取消置顶' : '置顶'}</button>
+            <button class="btn sm ghost" data-cockpit-action="raise_priority" data-cockpit-id="${esc(item.id)}">提高</button>
+            <button class="btn sm ghost" data-cockpit-action="lower_priority" data-cockpit-id="${esc(item.id)}">降低</button>
+            <button class="btn sm ghost" data-cockpit-action="snooze" data-cockpit-id="${esc(item.id)}">明天再看</button>
+            ${item.userAdjusted ? `<button class="btn sm ghost" data-cockpit-action="reset" data-cockpit-id="${esc(item.id)}">恢复默认</button>` : ''}
+          </div>
+        </div>
+      </article>`;
+    }).join('');
+  }
+  root.querySelector('#ov-cockpit-boundary').textContent = value.boundary
+    || '只整理明确记录，不推断未记录目标，不执行交易。';
+}
 
 function eventTime(value) {
   if (!value) return '时点待确认';

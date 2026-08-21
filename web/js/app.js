@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.19.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.19.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.19.0';
+import { api } from './api.js?v=1.20.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.20.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.20.0';
 
-import * as pageOverview from './pages/overview.js?v=1.19.0';
-import * as pageEmotion from './pages/emotion.js?v=1.19.0';
-import * as pageMarket from './pages/market.js?v=1.19.0';
-import * as pageLadder from './pages/ladder.js?v=1.19.0';
-import * as pageWatch from './pages/watch.js?v=1.19.0';
-import * as pageStrategy from './pages/strategy.js?v=1.19.0';
-import * as pageEpaper from './pages/epaper.js?v=1.19.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.19.0';
-import * as pageAbout from './pages/about.js?v=1.19.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.19.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.19.0';
-import { initOnboarding } from './onboarding.js?v=1.19.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.19.0';
+import * as pageOverview from './pages/overview.js?v=1.20.0';
+import * as pageEmotion from './pages/emotion.js?v=1.20.0';
+import * as pageMarket from './pages/market.js?v=1.20.0';
+import * as pageLadder from './pages/ladder.js?v=1.20.0';
+import * as pageWatch from './pages/watch.js?v=1.20.0';
+import * as pageStrategy from './pages/strategy.js?v=1.20.0';
+import * as pageEpaper from './pages/epaper.js?v=1.20.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.20.0';
+import * as pageAbout from './pages/about.js?v=1.20.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.20.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.20.0';
+import { initOnboarding } from './onboarding.js?v=1.20.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.20.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -205,6 +205,21 @@ function currentHarnessContext() {
       summary: state.hypotheses.summary,
       boundary: state.hypotheses.boundary,
       items: (state.hypotheses.items || []).slice(0, 10),
+    } : null,
+    researchCockpit: state.cockpit ? {
+      generatedAt: state.cockpit.generatedAt,
+      summary: state.cockpit.summary,
+      map: state.cockpit.map,
+      focus: (state.cockpit.focus || []).slice(0, 5).map(row => ({
+        id: row.id, sourceType: row.sourceType, sourceId: row.sourceId,
+        title: row.title, subtitle: row.subtitle, score: row.score, level: row.level,
+        pinned: row.pinned === true, userAdjusted: row.userAdjusted === true,
+        reasons: (row.reasons || []).slice(0, 6), evidence: row.evidence,
+        nextAction: row.nextAction, origin: row.origin,
+      })),
+      method: state.cockpit.method, boundary: state.cockpit.boundary,
+      automaticGoalInference: state.cockpit.automaticGoalInference === true,
+      automaticTradingActions: state.cockpit.automaticTradingActions === true,
     } : null,
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
@@ -481,6 +496,13 @@ async function pollHypotheses() {
   } catch { /* 本地研究记录失败不影响行情主链路 */ }
 }
 
+async function pollResearchCockpit() {
+  try {
+    state.cockpit = await api.researchCockpit();
+    emit('research-cockpit', state.cockpit);
+  } catch { /* 驾驶舱聚合失败不影响底层研究记录 */ }
+}
+
 /** 异动差分：新涨停 / 炸板（仅交易时段播报，防止盘后修订误报） */
 function diffMoves(data) {
   const ztPool = (data.pools && data.pools.ZT && data.pools.ZT.pool) || [];
@@ -557,11 +579,12 @@ function schedule() {
   newsTimer = setInterval(pollNews, open ? 60000 : 300000);
   alertTimer = setInterval(pollAlerts, 10000);
   routineTimer = setInterval(pollRoutine, 30000);
-  eventTimer = setInterval(() => { pollEventImpact(); pollHypotheses(); }, 300000);
+  eventTimer = setInterval(() => { pollEventImpact(); pollHypotheses(); pollResearchCockpit(); }, 300000);
   if (open) pollAlerts();
   pollRoutine();
   pollEventImpact();
   pollHypotheses();
+  pollResearchCockpit();
 }
 
 /* ---------------- 时钟 ---------------- */
@@ -729,6 +752,14 @@ async function boot() {
       context: { intent: 'review-research-hypothesis', researchHypothesis: hypothesis || null },
     });
   });
+  document.addEventListener('ask-research-cockpit', e => {
+    const item = e.detail && e.detail.item;
+    const request = askDeepSeek({
+      question: '请帮我梳理这条个人研究任务：先解释它为什么出现在当前优先级、哪些依据来自我的明确关注、哪些只是系统规则，再给出一个最小可执行的下一步和需要核验的来源。不要替我改变优先级、改写假设或执行交易。',
+      context: { intent: 'review-research-cockpit-item', researchCockpitItem: item || null },
+    });
+    if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);
+  });
   document.addEventListener('harness-ask-result', e => {
     harnessBtn?.classList.remove('pending');
     const result = e.detail || {};
@@ -765,7 +796,7 @@ async function boot() {
   }
 
   goto(location.hash.slice(1) || 'overview', true);
-  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact(), pollHypotheses()]);
+  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact(), pollHypotheses(), pollResearchCockpit()]);
   booted = true;
   schedule();
 
@@ -780,7 +811,7 @@ async function boot() {
       if (newsTimer) clearInterval(newsTimer);
       if (eventTimer) clearInterval(eventTimer);
     } else {
-      pollEmotion(); pollIndices(); pollNews(); pollEventImpact(); pollHypotheses();
+      pollEmotion(); pollIndices(); pollNews(); pollEventImpact(); pollHypotheses(); pollResearchCockpit();
       schedule();
     }
   });

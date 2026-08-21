@@ -90,7 +90,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.19.0'
+VERSION = '1.20.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1466,6 +1466,7 @@ PROFILE_OBJECT_LIMITS = {
     'background_monitor': 16 * 1024,
     'market_routine': 16 * 1024,
     'event_service': 16 * 1024,
+    'research_cockpit_preferences': 64 * 1024,
 }
 
 
@@ -3136,6 +3137,278 @@ def research_hypotheses_status(current=None):
     return result
 
 
+def normalize_research_cockpit_preferences(source=None):
+    """Keep only explicit, bounded user controls for the research queue."""
+    value = source if isinstance(source, dict) else {}
+    overrides = value.get('overrides') if isinstance(value.get('overrides'), dict) else {}
+    clean = {}
+    for item_id, row in list(overrides.items())[-100:]:
+        if not isinstance(row, dict):
+            continue
+        clean_id = str(item_id or '').strip()[:180]
+        if not clean_id:
+            continue
+        try:
+            adjustment = max(-30, min(30, int(row.get('adjustment') or 0)))
+        except Exception:
+            adjustment = 0
+        clean[clean_id] = {
+            'adjustment': adjustment,
+            'pinned': row.get('pinned') is True,
+            'snoozedUntil': str(row.get('snoozedUntil') or '')[:40] or None,
+            'updatedAt': str(row.get('updatedAt') or '')[:40] or None,
+        }
+    return {'schema': 1, 'overrides': clean}
+
+
+def _cockpit_snoozed(value, current):
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=BJC)
+        return parsed.astimezone(BJC) > current
+    except Exception:
+        return False
+
+
+def _cockpit_readable(value, fallback, limit=180):
+    text = str(value or '').strip()[:limit]
+    text = text.replace('敏感行业：；', '敏感行业待确认；')
+    suspicious = text.count('?') >= max(3, int(len(text) * 0.12)) or '�' in text
+    return str(fallback or '')[:limit] if not text or suspicious else text
+
+
+def research_cockpit_status(profile=None, current=None, diagnostics=None):
+    """Compose an explainable daily research queue from explicit local state."""
+    now = (current or now_bj()).astimezone(BJC)
+    source = profile if isinstance(profile, dict) else load_profile()
+    data = source.get('data') if isinstance(source.get('data'), dict) else source
+    data = data if isinstance(data, dict) else {}
+    preferences = normalize_research_cockpit_preferences(
+        data.get('research_cockpit_preferences'))
+    overrides = preferences['overrides']
+    hypothesis_state = (hypothesis_snapshot(data.get('research_hypotheses') or [], now)
+                        if hypothesis_snapshot is not None else {
+                            'items': [], 'summary': {'observing': 0, 'review_due': 0,
+                                                     'completed': 0, 'archived': 0}})
+    hypotheses = hypothesis_state.get('items') or []
+    open_hypotheses = [row for row in hypotheses
+                       if row.get('effectiveStatus') in {'observing', 'review_due'}]
+    active_watch_codes = {
+        str(watch.get('code') or '')
+        for row in open_hypotheses
+        for watch in ((row.get('baseline') or {}).get('watchlist') or [])
+        if isinstance(watch, dict) and watch.get('code')
+    }
+    items = []
+
+    def append_item(item):
+        item_id = str(item.get('id') or '')[:180]
+        if not item_id:
+            return
+        control = overrides.get(item_id) or {}
+        default_score = max(0, min(100, int(item.get('defaultScore') or 0)))
+        adjustment = max(-30, min(30, int(control.get('adjustment') or 0)))
+        score = max(0, min(100, default_score + adjustment))
+        pinned = control.get('pinned') is True
+        snoozed = _cockpit_snoozed(control.get('snoozedUntil'), now)
+        level = 'now' if score >= 80 else ('next' if score >= 55 else 'later')
+        items.append(dict(item, id=item_id, defaultScore=default_score,
+                          adjustment=adjustment, score=score, level=level,
+                          pinned=pinned, snoozed=snoozed,
+                          snoozedUntil=control.get('snoozedUntil'),
+                          userAdjusted=bool(adjustment or pinned or snoozed),
+                          priorityBasis='transparent-rules-plus-explicit-user-adjustment'))
+
+    for row in open_hypotheses:
+        hypothesis_id = str(row.get('id') or '')
+        due = row.get('effectiveStatus') == 'review_due'
+        evidence = row.get('evidenceCandidates') or []
+        watches = ((row.get('baseline') or {}).get('watchlist') or [])
+        watch_codes = [str(watch.get('code') or '') for watch in watches
+                       if isinstance(watch, dict) and watch.get('code')]
+        fallback_title = ('复盘 %s 相关事件研究假设' % ' / '.join(watch_codes[:3])
+                          if watch_codes else '复盘已保存的事件研究假设')
+        reasons = [{'label': '你已明确保存这条研究假设', 'points': 30,
+                    'basis': 'explicit-user-record'}]
+        if due:
+            reasons.append({'label': '预设观察窗口已经结束', 'points': 45,
+                            'basis': 'registered-review-window'})
+        else:
+            reasons.append({'label': '仍在预设观察窗口内', 'points': 15,
+                            'basis': 'registered-review-window'})
+        if evidence:
+            reasons.append({'label': '已有 %d 条候选证据待核对' % len(evidence),
+                            'points': min(15, len(evidence) * 3),
+                            'basis': 'timestamped-candidate-evidence'})
+        if watches:
+            reasons.append({'label': '关联 %d 只自选' % len(watches), 'points': 8,
+                            'basis': 'explicit-watchlist-link'})
+        score = 15 + sum(int(reason['points']) for reason in reasons)
+        append_item({
+            'id': 'hypothesis:' + hypothesis_id, 'sourceType': 'hypothesis',
+            'sourceId': hypothesis_id,
+            'title': _cockpit_readable(row.get('statement'), fallback_title),
+            'subtitle': _cockpit_readable((row.get('baseline') or {}).get('title'),
+                                          '创建于 %s' % str(row.get('createdAt') or '')[:10], 120),
+            'defaultScore': score, 'reasons': reasons,
+            'evidence': {'available': len(evidence),
+                         'status': '待复盘' if due else ('已开始收集' if evidence else '尚未收集'),
+                         'missing': list((row.get('evidenceState') or {}).get('errors') or [])[:3]},
+            'nextAction': {'type': 'review' if due else 'collect_evidence',
+                           'label': '填写复盘结论' if due else ('核对候选证据' if evidence else '收集候选证据'),
+                           'page': 'strategy'},
+            'origin': '用户明确保存的研究假设',
+        })
+
+    pending_attention = [row for row in (data.get('attention_inbox') or [])
+                         if isinstance(row, dict) and not row.get('doneAt')
+                         and not row.get('expired') and row.get('kind') in {'price', 'event'}]
+    for row in pending_attention[-3:]:
+        high = row.get('priority') == 'high'
+        append_item({
+            'id': 'attention:' + str(row.get('id') or ''), 'sourceType': 'attention',
+            'sourceId': str(row.get('id') or ''),
+            'title': _cockpit_readable(row.get('title'), '一条历史提醒需要核对'),
+            'subtitle': _cockpit_readable(row.get('detail') or row.get('reason'), '提醒依据待核对'),
+            'defaultScore': 72 if high else 58,
+            'reasons': [{'label': '你尚未明确完成这条%s提醒' % ('高优先级' if high else ''),
+                         'points': 52 if high else 38, 'basis': 'explicit-pending-reminder'}],
+            'evidence': {'available': 1, 'status': '提醒事实待核对', 'missing': []},
+            'nextAction': {'type': 'inspect', 'label': '查看提醒依据',
+                           'page': str(row.get('page') or 'overview')[:30]},
+            'origin': '你开启的提醒或事件服务',
+        })
+
+    effect = routine_effectiveness_status(data)
+    for row in effect.get('recommendations') or []:
+        append_item({
+            'id': 'service-effect:' + str(row.get('id') or ''), 'sourceType': 'service_effect',
+            'sourceId': str(row.get('id') or ''), 'title': str(row.get('title') or '检查主动服务节奏')[:180],
+            'subtitle': str(row.get('reason') or '')[:180], 'defaultScore': 60,
+            'reasons': [{'label': '达到预设的明确反馈样本门槛', 'points': 40,
+                         'basis': 'explicit-feedback-only'}],
+            'evidence': {'available': 1, 'status': '等待你确认', 'missing': []},
+            'nextAction': {'type': 'review_service', 'label': '检查节奏建议', 'page': 'overview'},
+            'origin': '你的明确服务反馈',
+        })
+
+    report = diagnostics if isinstance(diagnostics, dict) else build_product_diagnostics(record=False)
+    health_rows = [row for row in (report.get('components') or [])
+                   if isinstance(row, dict) and row.get('state') in {'warn', 'error'}
+                   and not row.get('optional')]
+    for row in health_rows[:3]:
+        is_error = row.get('state') == 'error'
+        append_item({
+            'id': 'health:' + str(row.get('id') or ''), 'sourceType': 'data_health',
+            'sourceId': str(row.get('id') or ''),
+            'title': '%s需要检查' % str(row.get('label') or '数据链路'),
+            'subtitle': str(row.get('summary') or '')[:180],
+            'defaultScore': 82 if is_error else 56,
+            'reasons': [{'label': '研究输入存在%s' % ('阻断问题' if is_error else '质量提醒'),
+                         'points': 62 if is_error else 36, 'basis': 'local-product-diagnostics'}],
+            'evidence': {'available': 1, 'status': row.get('state'), 'missing': []},
+            'nextAction': {'type': 'repair', 'label': str(row.get('action') or '查看数据健康')[:80],
+                           'page': str(row.get('page') or 'datasrc')[:30]},
+            'origin': '本机只读诊断',
+        })
+
+    watches = [row for row in (data.get('watchlist') or []) if isinstance(row, dict)]
+    unmatched = [row for row in watches if str(row.get('code') or '') not in active_watch_codes]
+    unmatched.sort(key=lambda row: int(row.get('added') or 0), reverse=True)
+    for row in unmatched[:5]:
+        note = str(row.get('note') or '').strip()
+        append_item({
+            'id': 'watch:' + str(row.get('code') or ''), 'sourceType': 'watchlist',
+            'sourceId': str(row.get('code') or ''),
+            'title': '%s（%s）尚无研究假设' % (str(row.get('name') or row.get('code') or '自选'),
+                                             str(row.get('code') or '--')),
+            'subtitle': note[:180] or '这是明确关注项，但当前没有事件假设或观察窗口。',
+            'defaultScore': 38 + (8 if note else 0),
+            'reasons': [{'label': '来自你的自选列表', 'points': 25,
+                         'basis': 'explicit-watchlist'},
+                        *([{'label': '你已写下研究备注', 'points': 8,
+                            'basis': 'explicit-user-note'}] if note else [])],
+            'evidence': {'available': 0, 'status': '尚未建立研究路径', 'missing': ['事件假设', '观察窗口']},
+            'nextAction': {'type': 'define_question', 'label': '补充研究问题', 'page': 'watch'},
+            'origin': '你的自选列表',
+        })
+
+    items.sort(key=lambda row: (0 if row['pinned'] else 1, 1 if row['snoozed'] else 0,
+                                -row['score'], row['title']))
+    visible = [row for row in items if not row['snoozed']]
+    summary = {
+        'total': len(items), 'now': sum(1 for row in visible if row['level'] == 'now'),
+        'next': sum(1 for row in visible if row['level'] == 'next'),
+        'later': sum(1 for row in visible if row['level'] == 'later'),
+        'snoozed': sum(1 for row in items if row['snoozed']),
+        'userAdjusted': sum(1 for row in items if row['userAdjusted']),
+    }
+    hypothesis_summary = hypothesis_state.get('summary') or {}
+    return {
+        'schema': 1, 'generatedAt': now.isoformat(timespec='seconds'),
+        'summary': summary, 'focus': visible[:5], 'items': items[:30],
+        'map': {
+            'watchlist': {'total': len(watches), 'withOpenHypothesis': len(active_watch_codes)},
+            'hypotheses': {'observing': int(hypothesis_summary.get('observing') or 0),
+                           'reviewDue': int(hypothesis_summary.get('review_due') or 0),
+                           'candidateEvidence': sum(len(row.get('evidenceCandidates') or [])
+                                                    for row in hypotheses)},
+            'pendingReminders': len(pending_attention),
+            'serviceSuggestions': len(effect.get('recommendations') or []),
+            'healthAttention': len(health_rows),
+        },
+        'preferences': preferences,
+        'method': 'transparent-rules-plus-explicit-user-adjustment',
+        'boundary': ('只汇总你的自选、已保存假设、明确提醒反馈和本机数据健康；'
+                     '优先级不是市场预测，不会推断未记录目标、自动改写假设或触发交易。'),
+        'automaticGoalInference': False, 'automaticTradingActions': False,
+    }
+
+
+def mutate_research_cockpit(action, payload=None):
+    """Apply reversible user controls without changing source research records."""
+    body = payload if isinstance(payload, dict) else {}
+    clean_action = str(action or '').strip()
+    item_id = str(body.get('itemId') or '').strip()[:180]
+    if not item_id:
+        raise ValueError('研究任务标识不能为空')
+    live = research_cockpit_status()
+    if not any(row.get('id') == item_id for row in live.get('items') or []):
+        raise ValueError('该研究任务已变化，请刷新后重试')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        prefs = normalize_research_cockpit_preferences(
+            current['data'].get('research_cockpit_preferences'))
+        overrides = prefs['overrides']
+        row = dict(overrides.get(item_id) or {
+            'adjustment': 0, 'pinned': False, 'snoozedUntil': None})
+        if clean_action == 'raise_priority':
+            row['adjustment'] = min(30, int(row.get('adjustment') or 0) + 10)
+        elif clean_action == 'lower_priority':
+            row['adjustment'] = max(-30, int(row.get('adjustment') or 0) - 10)
+        elif clean_action == 'toggle_pin':
+            row['pinned'] = not bool(row.get('pinned'))
+        elif clean_action == 'snooze':
+            until = now_bj() + timedelta(days=1)
+            row['snoozedUntil'] = until.replace(hour=8, minute=30, second=0,
+                                                 microsecond=0).isoformat(timespec='seconds')
+        elif clean_action == 'reset':
+            overrides.pop(item_id, None)
+            row = None
+        else:
+            raise ValueError('不支持的研究队列操作')
+        if row is not None:
+            row['updatedAt'] = now_bj().isoformat(timespec='seconds')
+            overrides[item_id] = row
+        prefs['overrides'] = dict(list(overrides.items())[-100:])
+        current['data']['research_cockpit_preferences'] = prefs
+        saved = _write_profile_unlocked(current)
+    return {'profile': saved, 'cockpit': research_cockpit_status(saved)}
+
+
 def refresh_hypothesis_evidence(item_id=None, current=None, quote_loader=None,
                                  benchmark_loader=None, disclosure_loader=None):
     """Collect timestamped evidence candidates without changing hypothesis outcomes."""
@@ -4660,7 +4933,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.19.0'
+    server_version = 'DeepPulse/1.20.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -4807,6 +5080,9 @@ class Handler(BaseHTTPRequestHandler):
                           'routine_effectiveness': 1,
                           'routine_effect_suggestions': 1,
                           'routine_effect_undo': 1,
+                          'research_cockpit': 1,
+                          'research_priority_controls': 1,
+                          'research_cockpit_context': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -4872,6 +5148,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': event_service_status(include_impact=False)})
         elif path == '/api/research-hypotheses':
             self.send_json({'ok': True, 'data': research_hypotheses_status()})
+        elif path == '/api/research-cockpit':
+            self.send_json({'ok': True, 'data': research_cockpit_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -5107,6 +5385,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 result = mutate_research_hypothesis(body.get('action'), body)
                 self.send_json({'ok': True, 'data': result})
+            elif u.path == '/api/research-cockpit':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': mutate_research_cockpit(
+                    body.get('action'), body)})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()
                 saved = save_device_config(body.get('config') or {})

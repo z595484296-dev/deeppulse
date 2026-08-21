@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.19.0'
+const MIN_BACKEND_VERSION = '1.20.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -91,6 +91,9 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['routine_effectiveness'] === 1
       && capabilities['routine_effect_suggestions'] === 1
       && capabilities['routine_effect_undo'] === 1
+      && capabilities['research_cockpit'] === 1
+      && capabilities['research_priority_controls'] === 1
+      && capabilities['research_cockpit_context'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -207,6 +210,39 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const researchHypotheses = recordOf(raw['researchHypotheses'])
   const researchHypothesisSummary = recordOf(researchHypotheses['summary'])
   const hypothesisEvidenceService = recordOf(researchHypotheses['evidenceService'])
+  const researchCockpit = recordOf(raw['researchCockpit'])
+  const researchCockpitSummary = recordOf(researchCockpit['summary'])
+  const researchCockpitMap = recordOf(researchCockpit['map'])
+  const cockpitWatchlist = recordOf(researchCockpitMap['watchlist'])
+  const cockpitHypotheses = recordOf(researchCockpitMap['hypotheses'])
+  const sanitizeCockpitItem = (value: unknown) => {
+    const item = recordOf(value)
+    const evidence = recordOf(item['evidence'])
+    const nextAction = recordOf(item['nextAction'])
+    const reasons = Array.isArray(item['reasons']) ? item['reasons'].slice(0, 6).map(reason => {
+      const row = recordOf(reason)
+      return { label: short(row['label'], 180), points: finite(row['points']), basis: short(row['basis'], 80) }
+    }) : []
+    return {
+      id: short(item['id'], 180), sourceType: short(item['sourceType'], 40), sourceId: short(item['sourceId'], 180),
+      title: short(item['title'], 240), subtitle: short(item['subtitle'], 240),
+      score: finite(item['score']), level: short(item['level'], 20), pinned: item['pinned'] === true,
+      userAdjusted: item['userAdjusted'] === true, reasons,
+      evidence: {
+        available: finite(evidence['available']), status: short(evidence['status'], 100),
+        missing: uniqueStrings(evidence['missing'], 4, 160),
+      },
+      nextAction: {
+        type: short(nextAction['type'], 40), label: short(nextAction['label'], 100),
+        page: short(nextAction['page'], 40),
+      },
+      origin: short(item['origin'], 120),
+    }
+  }
+  const cockpitFocus = Array.isArray(researchCockpit['focus'])
+    ? researchCockpit['focus'].slice(0, 5).map(sanitizeCockpitItem) : []
+  const standaloneCockpitItem = Object.keys(recordOf(raw['researchCockpitItem'])).length
+    ? sanitizeCockpitItem(raw['researchCockpitItem']) : null
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -644,6 +680,29 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         boundary: short(researchHypotheses['boundary'], 300), items: hypothesisItems,
       } : null,
       researchHypothesis: standaloneHypothesis,
+      researchCockpit: Object.keys(researchCockpit).length ? {
+        generatedAt: short(researchCockpit['generatedAt'], 80),
+        summary: {
+          total: finite(researchCockpitSummary['total']), now: finite(researchCockpitSummary['now']),
+          next: finite(researchCockpitSummary['next']), later: finite(researchCockpitSummary['later']),
+          snoozed: finite(researchCockpitSummary['snoozed']), userAdjusted: finite(researchCockpitSummary['userAdjusted']),
+        },
+        map: {
+          watchlist: { total: finite(cockpitWatchlist['total']), withOpenHypothesis: finite(cockpitWatchlist['withOpenHypothesis']) },
+          hypotheses: {
+            observing: finite(cockpitHypotheses['observing']), reviewDue: finite(cockpitHypotheses['reviewDue']),
+            candidateEvidence: finite(cockpitHypotheses['candidateEvidence']),
+          },
+          pendingReminders: finite(researchCockpitMap['pendingReminders']),
+          serviceSuggestions: finite(researchCockpitMap['serviceSuggestions']),
+          healthAttention: finite(researchCockpitMap['healthAttention']),
+        },
+        focus: cockpitFocus, method: short(researchCockpit['method'], 80),
+        boundary: short(researchCockpit['boundary'], 400),
+        automaticGoalInference: researchCockpit['automaticGoalInference'] === true,
+        automaticTradingActions: researchCockpit['automaticTradingActions'] === true,
+      } : null,
+      researchCockpitItem: standaloneCockpitItem,
       indices,
       sources,
       contextTruncated: {
@@ -778,6 +837,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '10.1 attention.marketRoutine.effectiveness 也只来自用户明确反馈；未反馈不等于无效，不得据此推断偏好、自动应用节奏建议或触发交易。',
     '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',
     '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；evidenceCandidates 只是按可知时间排列的候选事实与相对大盘对照，不得把相对涨跌直接解释成事件因果，不得自动修改结论；复盘必须区分支持、混合、不支持与事件失效，最终结论由用户确认。',
+    '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
   ].join('\n')
 }
 

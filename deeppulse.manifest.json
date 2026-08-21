@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.19.0",
-  "minimumDesktopVersion": "1.19.0",
+  "version": "1.20.0",
+  "minimumDesktopVersion": "1.20.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -42,6 +42,9 @@
     "routine-skip-pause-v1",
     "routine-effectiveness-v1",
     "routine-effect-suggestions-v1",
-    "routine-effect-undo-v1"
+    "routine-effect-undo-v1",
+    "research-cockpit-v1",
+    "research-priority-controls-v1",
+    "research-cockpit-context-v1"
   ]
 }

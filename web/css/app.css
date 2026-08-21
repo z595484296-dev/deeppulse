@@ -860,6 +860,41 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .routine-effect-suggestion b, .routine-effect-action b { color: var(--text); font-size: 10.5px; }
 .routine-effect-suggestion p, .routine-effect-action p, .routine-effect > p { margin: 3px 0 0; color: var(--text-3); font-size: 9px; line-height: 1.55; }
 .routine-effect > p { margin-top: 8px; }
+
+/* 个人研究驾驶舱 */
+.research-cockpit-card { margin-top: 14px; padding: 18px; overflow: visible; }
+.research-cockpit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.research-cockpit-head h2 { margin: 3px 0 0; font-size: 20px; }
+.research-cockpit-head p { margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
+.research-map { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.research-map > div { padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); min-width: 0; }
+.research-map b { display: block; font-size: 20px; line-height: 1.1; }
+.research-map span { display: block; margin-top: 3px; color: var(--text-2); font-size: 11px; font-weight: 700; }
+.research-map small { display: block; margin-top: 3px; color: var(--text-3); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.research-focus-list { display: grid; gap: 9px; margin-top: 12px; }
+.research-focus-item { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(125deg, var(--panel-2), transparent); }
+.research-focus-item[data-level="hot"] { border-color: rgba(244, 184, 64, .4); }
+.research-focus-item[data-level="next"] { border-color: rgba(79, 140, 255, .3); }
+.research-focus-rank { align-self: stretch; display: flex; flex-direction: column; justify-content: center; align-items: center; border-right: 1px solid var(--line); }
+.research-focus-rank span { color: var(--text-2); font-size: 10px; font-weight: 750; }
+.research-focus-rank b { margin-top: 2px; font-size: 25px; }
+.research-focus-rank small { color: var(--text-3); font-size: 8.5px; }
+.research-focus-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.research-focus-title > b { font-size: 13px; line-height: 1.45; }
+.research-focus-title .tag.user { color: var(--accent-2); border-color: rgba(136, 92, 246, .35); }
+.research-focus-main > p { margin: 4px 0 6px; color: var(--text-3); font-size: 10.5px; line-height: 1.5; }
+.research-evidence-line { display: flex; gap: 6px; flex-wrap: wrap; }
+.research-evidence-line span { padding: 3px 6px; border-radius: 6px; background: var(--panel); color: var(--text-2); font-size: 9px; }
+.research-priority-why { margin-top: 7px; font-size: 9.5px; color: var(--text-3); }
+.research-priority-why summary { cursor: pointer; color: var(--accent-2); user-select: none; }
+.research-priority-why ul { display: flex; flex-wrap: wrap; gap: 5px 12px; list-style: none; padding: 6px 0 0; margin: 0; }
+.research-priority-why li span { margin-right: 4px; color: var(--green); font-family: var(--font-num); }
+.research-priority-why li.user-adjust span { color: var(--accent-2); }
+.research-focus-actions { min-width: 142px; display: grid; gap: 6px; }
+.research-focus-actions > .btn { justify-content: center; }
+.research-adjust-row { display: grid; grid-template-columns: repeat(2, minmax(62px, 1fr)); gap: 5px; }
+.research-adjust-row .btn { padding-inline: 7px; justify-content: center; }
+.research-cockpit-boundary { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 9.5px; line-height: 1.55; }
 .routine-boundary { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 9.5px; line-height: 1.5; }
 
 /* ---------------- 事件影响雷达 ---------------- */
@@ -1573,6 +1608,9 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .proactive-actions { grid-template-columns: 1fr; }
   .routine-main { align-items: stretch; flex-direction: column; gap: 10px; }
   .routine-options { max-width: none; }
+  .research-map { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .research-focus-item { grid-template-columns: 72px minmax(0, 1fr); }
+  .research-focus-actions { grid-column: 2; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -1628,6 +1666,15 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .routine-effect-head, .routine-effect-head > div { align-items: flex-start; flex-direction: column; }
   .routine-effect-periods { grid-template-columns: 1fr; }
   .routine-effect-suggestion, .routine-effect-action { align-items: flex-start; flex-direction: column; }
+  .research-cockpit-head { flex-direction: column; }
+  .research-cockpit-head .btn { width: 100%; min-height: 44px; }
+  .research-map { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .research-focus-item { grid-template-columns: 1fr; gap: 9px; }
+  .research-focus-rank { align-self: auto; flex-direction: row; justify-content: flex-start; gap: 7px; border-right: 0; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+  .research-focus-rank b { margin: 0; font-size: 20px; }
+  .research-focus-actions { grid-column: 1; grid-template-columns: 1fr 1fr; }
+  .research-adjust-row { grid-column: span 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .research-focus-actions .btn { min-height: 42px; }
   .monitor-control { align-items: stretch; flex-direction: column; gap: 10px; }
   .monitor-control .btn { min-height: 44px; }
 }

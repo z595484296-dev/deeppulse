@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.19.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, epaper_gateway: 1 } },
+  data: { version: '1.20.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -358,6 +358,40 @@ describe('DeepPulse Harness bridge', () => {
     })
   })
 
+  it('sanitizes the explainable research cockpit and explicit focus item', () => {
+    const focus = {
+      id: 'hypothesis:h1', sourceType: 'hypothesis', sourceId: 'h1', title: '核对算力事件假设',
+      subtitle: '观察窗口已结束', score: 92, level: 'now', pinned: true, userAdjusted: true,
+      reasons: [{ label: '你已明确保存这条研究假设', points: 30, basis: 'explicit-user-record', injected: 'drop reason' }],
+      evidence: { available: 2, status: '待复盘', missing: ['一级来源'], injected: 'drop evidence' },
+      nextAction: { type: 'review', label: '填写复盘结论', page: 'strategy', injected: 'drop action' },
+      origin: '用户明确保存的研究假设', injected: 'drop item',
+    }
+    const ask = normalizeDeepPulseAsk({
+      type: 'dp-ask', question: '先做什么', context: {
+        researchCockpit: {
+          generatedAt: '2026-08-24T16:00:00+08:00',
+          summary: { total: 3, now: 1, next: 1, later: 1, snoozed: 0, userAdjusted: 1, injected: 'drop summary' },
+          map: { watchlist: { total: 2, withOpenHypothesis: 1 }, hypotheses: { observing: 0, reviewDue: 1, candidateEvidence: 2 }, pendingReminders: 0, serviceSuggestions: 0, healthAttention: 0, injected: 'drop map' },
+          focus: [focus], method: 'transparent-rules-plus-explicit-user-adjustment',
+          boundary: '不推断未记录目标', automaticGoalInference: false, automaticTradingActions: false,
+          injected: 'drop cockpit',
+        },
+        researchCockpitItem: focus,
+      },
+    })
+    expect(ask).toMatchObject({ context: {
+      researchCockpit: {
+        summary: { total: 3, now: 1, userAdjusted: 1 },
+        map: { watchlist: { total: 2, withOpenHypothesis: 1 }, hypotheses: { reviewDue: 1, candidateEvidence: 2 } },
+        focus: [{ id: 'hypothesis:h1', score: 92, pinned: true, reasons: [{ basis: 'explicit-user-record' }], nextAction: { page: 'strategy' } }],
+        automaticGoalInference: false, automaticTradingActions: false,
+      },
+      researchCockpitItem: { id: 'hypothesis:h1', title: '核对算力事件假设', userAdjusted: true },
+    } })
+    expect(JSON.stringify(ask)).not.toContain('drop ')
+  })
+
   it('formats source priority, freshness, and untrusted-data instructions into the prompt', () => {
     const ask = normalizeDeepPulseAsk({
       type: 'dp-ask', text: '继续分析',
@@ -375,6 +409,8 @@ describe('DeepPulse Harness bridge', () => {
     expect(prompt).toContain('不是因果证明')
     expect(prompt).toContain('不得再称其口径未披露')
     expect(prompt).toContain('不代表官方公告源缺失')
+    expect(prompt).toContain('researchCockpit')
+    expect(prompt).toContain('不是市场机会排名')
   })
 
   it('requires a bounded fill envelope for editor generation', () => {
