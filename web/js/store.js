@@ -1,6 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.6.0';
+import { api } from './api.js?v=1.7.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.7.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -24,6 +25,8 @@ const PROFILE_KEYS = {
   journal: 'dp_journal_v1',
   chat_history: 'dp_chat_v1',
   brief_receipts: 'dp_brief_receipts_v1',
+  attention_inbox: 'dp_attention_inbox_v1',
+  attention_preferences: 'dp_attention_preferences_v1',
 };
 const profileTimers = new Map();
 
@@ -51,9 +54,10 @@ export async function syncProfile() {
       localStorage.setItem(storageKey, JSON.stringify(remote[key]));
     } else {
       try {
-        const localValue = JSON.parse(localStorage.getItem(storageKey) || '[]');
+        const localValue = JSON.parse(localStorage.getItem(storageKey) || (key === 'attention_preferences' ? '{}' : '[]'));
         // 空的新来源不能抢先覆盖旧来源中尚待迁移的真实数据。
-        if (Array.isArray(localValue) && localValue.length) migration[key] = localValue;
+        if ((Array.isArray(localValue) && localValue.length)
+          || (key === 'attention_preferences' && localValue && Object.keys(localValue).length)) migration[key] = localValue;
       } catch { /* 等待其他来源迁移或首次真实写入 */ }
     }
   });
@@ -62,6 +66,8 @@ export async function syncProfile() {
   emit('alerts', loadAlerts());
   emit('journal', loadJournal());
   emit('brief-receipts', loadBriefReceipts());
+  emit('attention', loadAttentionInbox());
+  emit('attention-preferences', loadAttentionPreferences());
   document.dispatchEvent(new CustomEvent('profile-synced'));
   return profile;
 }
@@ -229,6 +235,76 @@ export function setBriefRead(brief, read = true) {
     emit('brief-receipts', previous);
     emit('profile-sync', { ok: false, key: 'brief_receipts', error: error.message });
   });
+  return next;
+}
+
+/* ---------------- 提醒中心（跨运行端共享） ---------------- */
+const ATTENTION_INBOX_KEY = 'dp_attention_inbox_v1';
+const ATTENTION_PREFS_KEY = 'dp_attention_preferences_v1';
+
+export function loadAttentionInbox() {
+  try {
+    const value = JSON.parse(localStorage.getItem(ATTENTION_INBOX_KEY) || '[]');
+    return Array.isArray(value) ? value : [];
+  } catch { return []; }
+}
+
+export function saveAttentionInbox(list) {
+  const next = (Array.isArray(list) ? list : []).slice(-200);
+  localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(next));
+  persistProfile('attention_inbox', next);
+  emit('attention', next);
+  return next;
+}
+
+export function pushAttentionItem(item) {
+  if (!item || !item.id) return loadAttentionInbox();
+  const previous = loadAttentionInbox();
+  const next = [...previous.filter(row => row && row.id !== item.id), item].slice(-200);
+  localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(next));
+  emit('attention', next);
+  api.saveAttentionItem(item).then(profile => {
+    const remote = profile && profile.data && Array.isArray(profile.data.attention_inbox)
+      ? profile.data.attention_inbox : next;
+    localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(remote));
+    emit('attention', remote);
+    emit('profile-sync', { ok: true, key: 'attention_inbox' });
+  }).catch(error => emit('profile-sync', { ok: false, key: 'attention_inbox', error: error.message }));
+  return next;
+}
+
+export function markAttentionRead(id = null) {
+  const next = loadAttentionInbox().map(item => (!id || item.id === id)
+    ? { ...item, readAt: item.readAt || Date.now() } : item);
+  localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(next));
+  emit('attention', next);
+  if (!id) {
+    persistProfile('attention_inbox', next);
+    return next;
+  }
+  const updated = next.find(item => item && item.id === id);
+  if (updated) {
+    api.saveAttentionItem(updated).then(profile => {
+      const remote = profile && profile.data && Array.isArray(profile.data.attention_inbox)
+        ? profile.data.attention_inbox : next;
+      localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(remote));
+      emit('attention', remote);
+      emit('profile-sync', { ok: true, key: 'attention_inbox' });
+    }).catch(error => emit('profile-sync', { ok: false, key: 'attention_inbox', error: error.message }));
+  }
+  return next;
+}
+
+export function loadAttentionPreferences() {
+  try { return normalizeAttentionPreferences(JSON.parse(localStorage.getItem(ATTENTION_PREFS_KEY) || '{}')); }
+  catch { return normalizeAttentionPreferences(); }
+}
+
+export function saveAttentionPreferences(value) {
+  const next = normalizeAttentionPreferences(value);
+  localStorage.setItem(ATTENTION_PREFS_KEY, JSON.stringify(next));
+  persistProfile('attention_preferences', next);
+  emit('attention-preferences', next);
   return next;
 }
 

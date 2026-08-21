@@ -61,7 +61,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.6.0'
+VERSION = '1.7.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1320,6 +1320,10 @@ PROFILE_LIST_LIMITS = {
     'journal': 500,
     'chat_history': 60,
     'brief_receipts': 200,
+    'attention_inbox': 200,
+}
+PROFILE_OBJECT_LIMITS = {
+    'attention_preferences': 16 * 1024,
 }
 
 
@@ -1348,6 +1352,16 @@ def save_profile(patch):
         # JSON roundtrip rejects unserializable values and severs caller references.
         value = json.loads(json.dumps(value, ensure_ascii=False))[-limit:]
         if len(json.dumps(value, ensure_ascii=False).encode('utf-8')) > 512 * 1024:
+            raise ValueError('profile.%s is too large' % key)
+        clean[key] = value
+    for key, byte_limit in PROFILE_OBJECT_LIMITS.items():
+        if key not in patch:
+            continue
+        value = patch[key]
+        if not isinstance(value, dict):
+            raise ValueError('profile.%s must be an object' % key)
+        value = json.loads(json.dumps(value, ensure_ascii=False))
+        if len(json.dumps(value, ensure_ascii=False).encode('utf-8')) > byte_limit:
             raise ValueError('profile.%s is too large' % key)
         clean[key] = value
     if not clean:
@@ -1398,6 +1412,40 @@ def update_brief_receipt(receipt, read=True):
         if read:
             receipts.append(clean)
         current['data']['brief_receipts'] = receipts[-PROFILE_LIST_LIMITS['brief_receipts']:]
+        current['schema'] = 1
+        current['revision'] = int(current.get('revision') or 0) + 1
+        current['updated_at'] = now_bj().isoformat(timespec='seconds')
+        temp_file = PROFILE_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(current, f, ensure_ascii=False, indent=1)
+        os.replace(temp_file, PROFILE_FILE)
+        return current
+
+
+def update_attention_item(item, remove=False):
+    """Atomically merge one reminder so multiple surfaces cannot overwrite each other."""
+    if not isinstance(item, dict):
+        raise ValueError('attention item must be an object')
+    item_id = str(item.get('id') or '').strip()[:160]
+    if not item_id:
+        raise ValueError('attention item id is required')
+    clean = json.loads(json.dumps(item, ensure_ascii=False))
+    clean['id'] = item_id
+    if len(json.dumps(clean, ensure_ascii=False).encode('utf-8')) > 32 * 1024:
+        raise ValueError('attention item is too large')
+    with _profile_lock:
+        try:
+            with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
+                current = json.load(f)
+            if not isinstance(current, dict) or not isinstance(current.get('data'), dict):
+                current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        except Exception:
+            current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        items = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict) and row.get('id') != item_id]
+        if not remove:
+            items.append(clean)
+        current['data']['attention_inbox'] = items[-PROFILE_LIST_LIMITS['attention_inbox']:]
         current['schema'] = 1
         current['revision'] = int(current.get('revision') or 0) + 1
         current['updated_at'] = now_bj().isoformat(timespec='seconds')
@@ -2300,7 +2348,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.6.0'
+    server_version = 'DeepPulse/1.7.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -2417,6 +2465,8 @@ class Handler(BaseHTTPRequestHandler):
                           'emotion_context_full': True,
                           'proactive_brief': 1,
                           'profile_brief_receipts': 1,
+                          'attention_center': 1,
+                          'profile_attention': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -2608,6 +2658,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/profile/brief-receipt':
                 body = self.read_json_body()
                 saved = update_brief_receipt(body.get('receipt') or {}, body.get('read') is not False)
+                self.send_json({'ok': True, 'data': saved})
+            elif u.path == '/api/profile/attention-item':
+                body = self.read_json_body()
+                saved = update_attention_item(body.get('item') or {}, body.get('remove') is True)
                 self.send_json({'ok': True, 'data': saved})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()

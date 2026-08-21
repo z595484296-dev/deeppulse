@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.6.0'
+const MIN_BACKEND_VERSION = '1.7.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -61,6 +61,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['tdx_read_only'] === true
       && capabilities['proactive_brief'] === 1
       && capabilities['profile_brief_receipts'] === 1
+      && capabilities['attention_center'] === 1
+      && capabilities['profile_attention'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -169,6 +171,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const market = recordOf(raw['market'])
   const emotion = recordOf(raw['emotionAnalysis'])
   const proactive = recordOf(raw['proactiveBrief'])
+  const attention = recordOf(raw['attention'])
   const disclosures = Array.isArray(selected['officialDisclosures'])
     ? selected['officialDisclosures'].slice(0, 6).map(item => {
       const row = recordOf(item)
@@ -263,6 +266,16 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     })
     : []
   const hasProactiveBrief = Boolean(short(proactive['id'], 160) || short(proactive['headline'], 300))
+  const attentionPreferences = recordOf(attention['preferences'])
+  const attentionRecent = Array.isArray(attention['recent'])
+    ? attention['recent'].slice(0, 8).map(item => {
+      const row = recordOf(item)
+      return {
+        kind: short(row['kind'], 32), priority: short(row['priority'], 16), title: short(row['title'], 100),
+        detail: short(row['detail'], 260), reason: short(row['reason'], 180), createdAt: finite(row['createdAt']), read: row['read'] === true,
+      }
+    })
+    : []
   const hasSelectedSecurity = Boolean(short(selected['code'], 20) || short(selected['name'], 80))
   return {
     requestId: short(data['requestId'], 100) ?? `legacy-${Date.now()}`,
@@ -307,6 +320,15 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         triggerReason: short(proactive['triggerReason'], 160), missing: uniqueStrings(proactive['missing'], 8, 100),
         evidence: uniqueStrings(proactive['evidence'], 10, 120),
       } : null,
+      attention: {
+        unread: Math.max(0, Math.min(200, finite(attention['unread']) ?? 0)),
+        preferences: {
+          mode: short(attentionPreferences['mode'], 24), quietEnabled: attentionPreferences['quietEnabled'] !== false,
+          quietStart: short(attentionPreferences['quietStart'], 8), quietEnd: short(attentionPreferences['quietEnd'], 8),
+          pausedUntil: finite(attentionPreferences['pausedUntil']), systemDigestMinutes: finite(attentionPreferences['systemDigestMinutes']),
+        },
+        recent: attentionRecent,
+      },
       indices,
       sources,
       contextTruncated: {
@@ -436,6 +458,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '6. officialDisclosuresScope=not-applicable-no-security-selected 表示当前页面没有选中个股，不代表官方公告源缺失。',
     '7. transitionCalibrated=false 时只能称为启发式状态倾向，不得称为经过校准的预测概率。',
     '8. proactiveBrief 是深脉规则层整理的优先级与研究任务，不是新的市场事实；展开时仍需用 market、emotionAnalysis 和来源字段复核。',
+    '9. attention 是用户提醒中心状态；可用它解释最近提醒与未读事项，但不要替用户更改提醒偏好，也不要把提醒本身当成市场事实。',
   ].join('\n')
 }
 

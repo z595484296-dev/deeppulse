@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.6.0",
-  "minimumDesktopVersion": "1.6.0",
+  "version": "1.7.0",
+  "minimumDesktopVersion": "1.7.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -12,6 +12,8 @@
     "emotion-context-full-v1",
     "proactive-brief-v1",
     "profile-brief-receipts-v1",
+    "attention-center-v1",
+    "profile-attention-v1",
     "epaper-device-gateway-v1"
   ]
 }

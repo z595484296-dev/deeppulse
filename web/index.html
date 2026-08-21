@@ -7,7 +7,7 @@
 <meta name="dsh-deeppulse-entry" content="workbench">
 <title>深脉 DeepPulse · 金融工作台</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/app.css?v=1.6.0">
+<link rel="stylesheet" href="css/app.css?v=1.7.0">
 </head>
 <body>
 <div class="shell">
@@ -93,6 +93,10 @@
         <div class="tape-track" id="tape-track"></div>
       </div>
       <div class="topbar-right">
+        <button class="icon-btn attention-toggle" id="btn-attention" title="提醒中心" aria-label="打开提醒中心" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="attention-badge" id="attention-badge" hidden>0</span>
+        </button>
         <button class="harness-btn" id="btn-harness" title="把当前页面和数据上下文交给 DeepSeek" style="display:none">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h13M12 6l6 6-6 6M5 5v14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>交给 DeepSeek</span>
@@ -165,9 +169,28 @@
   <div class="mxc-body" id="mxc-body"></div>
 </div>
 
+<aside class="attention-panel" id="attention-panel" aria-hidden="true" aria-label="提醒中心">
+  <div class="attention-head">
+    <div><b>提醒中心</b><span id="attention-count">已全部读完</span></div>
+    <button class="icon-btn" id="attention-close" aria-label="关闭提醒中心">×</button>
+  </div>
+  <div class="attention-toolbar">
+    <button class="btn sm" id="attention-read-all">全部已读</button>
+    <button class="btn sm" id="attention-pause">暂停到明早</button>
+  </div>
+  <details class="attention-preferences">
+    <summary>提醒偏好</summary>
+    <label>提醒方式<select id="attention-mode"><option value="balanced">平衡</option><option value="high_only">只提醒重要事件</option><option value="center_only">仅收入提醒中心</option></select></label>
+    <label class="attention-check"><input type="checkbox" id="attention-quiet">启用安静时段</label>
+    <div class="attention-time"><label>开始<input type="time" id="attention-quiet-start"></label><label>结束<input type="time" id="attention-quiet-end"></label></div>
+    <p>你设置的价格到达属于高优先级；阶段和盘中异动默认合并摘要，减少打扰。</p>
+  </details>
+  <div class="attention-list" id="attention-list"></div>
+</aside>
+
 <div class="toast-wrap" id="toast-wrap"></div>
 
 <script src="assets/echarts.min.js"></script>
-<script type="module" src="js/app.js?v=1.6.0"></script>
+<script type="module" src="js/app.js?v=1.7.0"></script>
 </body>
 </html>

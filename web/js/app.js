@@ -1,21 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.6.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.6.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.6.0';
+import { api } from './api.js?v=1.7.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.7.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.7.0';
 
-import * as pageOverview from './pages/overview.js?v=1.6.0';
-import * as pageEmotion from './pages/emotion.js?v=1.6.0';
-import * as pageMarket from './pages/market.js?v=1.6.0';
-import * as pageLadder from './pages/ladder.js?v=1.6.0';
-import * as pageWatch from './pages/watch.js?v=1.6.0';
-import * as pageStrategy from './pages/strategy.js?v=1.6.0';
-import * as pageEpaper from './pages/epaper.js?v=1.6.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.6.0';
-import * as pageAbout from './pages/about.js?v=1.6.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.6.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.6.0';
-import { initOnboarding } from './onboarding.js?v=1.6.0';
+import * as pageOverview from './pages/overview.js?v=1.7.0';
+import * as pageEmotion from './pages/emotion.js?v=1.7.0';
+import * as pageMarket from './pages/market.js?v=1.7.0';
+import * as pageLadder from './pages/ladder.js?v=1.7.0';
+import * as pageWatch from './pages/watch.js?v=1.7.0';
+import * as pageStrategy from './pages/strategy.js?v=1.7.0';
+import * as pageEpaper from './pages/epaper.js?v=1.7.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.7.0';
+import * as pageAbout from './pages/about.js?v=1.7.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.7.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.7.0';
+import { initOnboarding } from './onboarding.js?v=1.7.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.7.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -155,6 +156,7 @@ function currentHarnessContext() {
     indices: (state.indices || []).slice(0, 5).map(i => ({
       code: i.code, name: i.name, price: i.price, pct: i.pct,
     })),
+    attention: attentionContext(),
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
       { name: '上交所/深交所/证监会', tier: 'official', role: '官方查验入口' },
@@ -318,7 +320,13 @@ async function pollEmotion() {
     // 情绪阶段变化提醒（周期切换是重要事件）
     const phase = data.engine && data.engine.phase;
     if (lastPhase && phase && phase !== lastPhase) {
-      toast(`情绪阶段切换：${lastPhase} → ${phase}（温度 ${data.engine.temp}°）`, 'err', 6000);
+      publishAttention({
+        kind: 'phase', priority: 'medium', delivery: 'digest', page: 'emotion',
+        fingerprint: `phase:${lastPhase}:${phase}:${data.date || ''}`,
+        title: `情绪阶段从${lastPhase}切换到${phase}`,
+        detail: `当前温度 ${data.engine.temp}°，已收入本轮市场摘要。`,
+        reason: '情绪周期引擎检测到阶段标签发生变化',
+      });
     }
     if (phase) lastPhase = phase;
     $('#identity-sub').textContent = data.engine && data.engine.phase
@@ -365,10 +373,20 @@ async function pollAlerts() {
       const q = await api.quote(al.code);
       if (al.dir === 'up' && q.price >= al.price) {
         markTriggered(al.id);
-        toast(`🔔 ${al.name || al.code} 已上破 ${al.price}（现价 ${q.price.toFixed(2)}）`, 'ok', 9000);
+        publishAttention({
+          id: `price:${al.id}`, kind: 'price', priority: 'high', delivery: 'immediate', page: 'watch',
+          title: `${al.name || al.code} 已上破 ${al.price}`,
+          detail: `现价 ${q.price.toFixed(2)}，这是你亲自设置的价格条件。`,
+          reason: `你为 ${al.name || al.code} 设置了上破 ${al.price} 的提醒`,
+        });
       } else if (al.dir === 'down' && q.price <= al.price) {
         markTriggered(al.id);
-        toast(`🔔 ${al.name || al.code} 已下破 ${al.price}（现价 ${q.price.toFixed(2)}）`, 'err', 9000);
+        publishAttention({
+          id: `price:${al.id}`, kind: 'price', priority: 'high', delivery: 'immediate', page: 'watch',
+          title: `${al.name || al.code} 已下破 ${al.price}`,
+          detail: `现价 ${q.price.toFixed(2)}，这是你亲自设置的价格条件。`,
+          reason: `你为 ${al.name || al.code} 设置了下破 ${al.price} 的提醒`,
+        });
       }
     } catch { /* 单只失败不影响其他 */ }
   }
@@ -401,7 +419,12 @@ function addMove(type, text) {
   moves.unshift({ t: new Date().toLocaleTimeString('zh-CN', { hour12: false }), type, text });
   if (moves.length > 30) moves.pop();
   emit('moves', moves.slice());
-  toast(text, type === 'zt' ? 'ok' : 'err', 7000);
+  publishAttention({
+    kind: 'move', priority: 'medium', delivery: 'digest', page: 'ladder',
+    fingerprint: `move:${type}:${text}:${new Date().toLocaleDateString('sv')}`,
+    title: type === 'zt' ? '出现新的涨停异动' : '出现炸板异动',
+    detail: text, reason: '盘中涨停池差分监测发现新的市场结构变化',
+  });
 }
 
 /** 盘中温度轨迹：交易时段每 5 分钟记录一点（localStorage 持久，按日重置） */
@@ -456,6 +479,7 @@ async function boot() {
   // 构建页面容器
   const pages = $('#pages');
   pages.innerHTML = Object.keys(PAGES).map(p => `<section class="page" id="page-${p}"></section>`).join('');
+  initAttentionCenter({ navigate: page => goto(page) });
 
   bus.addEventListener('profile-sync', e => {
     const result = e.detail || {};

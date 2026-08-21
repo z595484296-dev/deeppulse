@@ -30,7 +30,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 6, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 7, 0);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -474,7 +474,15 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("profile_brief_receipts", out var briefReceipts)
                 || briefReceipts.ValueKind != JsonValueKind.Number
                 || !briefReceipts.TryGetInt32(out var receiptsVersion)
-                || receiptsVersion != 1)
+                || receiptsVersion != 1
+                || !capabilities.TryGetProperty("attention_center", out var attentionCenter)
+                || attentionCenter.ValueKind != JsonValueKind.Number
+                || !attentionCenter.TryGetInt32(out var attentionVersion)
+                || attentionVersion != 1
+                || !capabilities.TryGetProperty("profile_attention", out var profileAttention)
+                || profileAttention.ValueKind != JsonValueKind.Number
+                || !profileAttention.TryGetInt32(out var profileAttentionVersion)
+                || profileAttentionVersion != 1)
             {
                 return null;
             }
@@ -535,7 +543,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.6.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.7.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
