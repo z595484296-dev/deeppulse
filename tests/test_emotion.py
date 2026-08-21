@@ -65,12 +65,12 @@ class EmotionEngineTests(unittest.TestCase):
         self.assertIsNotNone(result['dynamics']['delta1'])
         self.assertFalse(result['transition']['calibrated'])
 
-    def test_missing_core_pool_blocks_position_advice(self):
+    def test_missing_core_pool_blocks_risk_exposure_reference(self):
         result = self.compute(make_raw(pool_error=True))
         self.assertFalse(result['actionable'])
         self.assertEqual(result['phase'], '数据不足')
         self.assertEqual(result['advice']['position'], '--')
-        self.assertTrue(any('暂停仓位建议' in risk for risk in result['risks']))
+        self.assertTrue(any('暂停模型风险暴露区间' in risk for risk in result['risks']))
 
     def test_ma20_uses_exactly_twenty_latest_closes(self):
         rows = [{'close': value, 'volume': 100} for value in range(1, 22)]

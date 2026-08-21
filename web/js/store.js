@@ -1,6 +1,6 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.5.2';
+import { api } from './api.js?v=1.6.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -23,6 +23,7 @@ const PROFILE_KEYS = {
   alerts: 'dp_alerts_v1',
   journal: 'dp_journal_v1',
   chat_history: 'dp_chat_v1',
+  brief_receipts: 'dp_brief_receipts_v1',
 };
 const profileTimers = new Map();
 
@@ -60,6 +61,7 @@ export async function syncProfile() {
   emit('watch', loadWatch());
   emit('alerts', loadAlerts());
   emit('journal', loadJournal());
+  emit('brief-receipts', loadBriefReceipts());
   document.dispatchEvent(new CustomEvent('profile-synced'));
   return profile;
 }
@@ -190,6 +192,44 @@ function saveJournalRaw(list) {
 
 export function persistChatHistory(messages) {
   persistProfile('chat_history', (messages || []).slice(-60));
+}
+
+/* ---------------- 主动简报处理记录（跨运行端共享） ---------------- */
+const BRIEF_RECEIPTS_KEY = 'dp_brief_receipts_v1';
+
+export function loadBriefReceipts() {
+  try { return JSON.parse(localStorage.getItem(BRIEF_RECEIPTS_KEY)) || []; }
+  catch { return []; }
+}
+
+export function isBriefRead(id) {
+  return !!id && loadBriefReceipts().some(item => item && item.id === id);
+}
+
+export function setBriefRead(brief, read = true) {
+  if (!brief || !brief.id) return [];
+  const previous = loadBriefReceipts();
+  const list = previous.filter(item => item && item.id !== brief.id);
+  const receipt = {
+    id: brief.id, contentHash: brief.contentHash || null, dataDate: brief.dataDate || null,
+    readAt: Date.now(), surface: location.pathname.startsWith('/deeppulse/') ? 'harness' : 'local-web',
+  };
+  if (read) list.push(receipt);
+  const next = list.slice(-200);
+  localStorage.setItem(BRIEF_RECEIPTS_KEY, JSON.stringify(next));
+  emit('brief-receipts', next);
+  api.saveBriefReceipt(receipt, read).then(profile => {
+    const remote = profile && profile.data && Array.isArray(profile.data.brief_receipts)
+      ? profile.data.brief_receipts : next;
+    localStorage.setItem(BRIEF_RECEIPTS_KEY, JSON.stringify(remote));
+    emit('brief-receipts', remote);
+    emit('profile-sync', { ok: true, key: 'brief_receipts' });
+  }).catch(error => {
+    localStorage.setItem(BRIEF_RECEIPTS_KEY, JSON.stringify(previous));
+    emit('brief-receipts', previous);
+    emit('profile-sync', { ok: false, key: 'brief_receipts', error: error.message });
+  });
+  return next;
 }
 
 /* ---------------- 行情页状态 ---------------- */

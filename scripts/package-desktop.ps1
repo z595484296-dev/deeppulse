@@ -102,7 +102,7 @@ try {
     $textFiles = Get-ChildItem -LiteralPath $stageRoot -Recurse -File |
         Where-Object { $_.Length -lt 10MB -and $_.Extension -match '^\.(txt|md|json|js|css|html|py|ps1|bat)$' }
     $secretMatches = $textFiles | Select-String -Pattern (
-        'sk-[A-Za-z0-9_-]{12,}' +
+        '(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}' +
         '|authorization\s*[:=]\s*bearer\s+[A-Za-z0-9_.-]{12,}'
     ) -ErrorAction SilentlyContinue
     if (@($secretMatches).Count -gt 0) {

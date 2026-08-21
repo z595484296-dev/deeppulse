@@ -61,7 +61,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.5.2'
+VERSION = '1.6.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1236,7 +1236,7 @@ def build_chat_context():
     lines = [
         '【今日市场上下文 · 数据日期 %s】' % em.get('date'),
         '情绪温度 %s°（0-100），周期阶段：%s。' % (en.get('temp'), en.get('phase')),
-        '变化方向：%s，单期变化 %s°，三期变化 %s°；数据覆盖率 %s%%，可信度 %s%%，信号一致度 %s%%。'
+        '变化方向：%s，单期变化 %s°，三期变化 %s°；数据覆盖率 %s%%，数据质量分 %s（不代表预测准确率），信号一致度 %s%%。'
         % (dynamics.get('direction'), dynamics.get('delta1'), dynamics.get('delta3'),
            en.get('coverage'), en.get('confidence'), en.get('consensus')),
         '状态倾向（启发式、未校准）：升阶 %s，维持 %s，降阶 %s。'
@@ -1250,7 +1250,7 @@ def build_chat_context():
         '上证 %s 相对 MA20 %+.1f%%。'
         % (raw.get('up'), raw.get('down'), raw.get('turnover_yi'),
            raw.get('flow_yi') or 0, raw.get('close'), raw.get('trend_pct') or 0),
-        '引擎研究区间：仓位 %s，%s，可执行=%s。阶段说明：%s'
+        '模型风险暴露情景：%s，%s，可参考=%s；不是用户仓位建议。阶段说明：%s'
         % (adv.get('position'), adv.get('style'), adv.get('actionable'), en.get('phase_desc') or ''),
         '六维结构：%s' % '；'.join('%s=%s' % (item.get('name'), item.get('value'))
                                     for item in en.get('dimensions') or []),
@@ -1319,6 +1319,7 @@ PROFILE_LIST_LIMITS = {
     'alerts': 500,
     'journal': 500,
     'chat_history': 60,
+    'brief_receipts': 200,
 }
 
 
@@ -1360,6 +1361,43 @@ def save_profile(patch):
         except Exception:
             current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
         current['data'].update(clean)
+        current['schema'] = 1
+        current['revision'] = int(current.get('revision') or 0) + 1
+        current['updated_at'] = now_bj().isoformat(timespec='seconds')
+        temp_file = PROFILE_FILE + '.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(current, f, ensure_ascii=False, indent=1)
+        os.replace(temp_file, PROFILE_FILE)
+        return current
+
+
+def update_brief_receipt(receipt, read=True):
+    """按单条 ID 原子合并阅读回执，避免多个运行端整表覆盖。"""
+    if not isinstance(receipt, dict):
+        raise ValueError('brief receipt must be an object')
+    brief_id = str(receipt.get('id') or '').strip()[:160]
+    if not brief_id:
+        raise ValueError('brief receipt id is required')
+    clean = {
+        'id': brief_id,
+        'contentHash': str(receipt.get('contentHash') or '').strip()[:80] or None,
+        'dataDate': str(receipt.get('dataDate') or '').strip()[:30] or None,
+        'readAt': int(receipt.get('readAt') or int(time.time() * 1000)),
+        'surface': str(receipt.get('surface') or 'web').strip()[:40],
+    }
+    with _profile_lock:
+        try:
+            with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
+                current = json.load(f)
+            if not isinstance(current, dict) or not isinstance(current.get('data'), dict):
+                current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        except Exception:
+            current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        receipts = [item for item in (current['data'].get('brief_receipts') or [])
+                    if isinstance(item, dict) and item.get('id') != brief_id]
+        if read:
+            receipts.append(clean)
+        current['data']['brief_receipts'] = receipts[-PROFILE_LIST_LIMITS['brief_receipts']:]
         current['schema'] = 1
         current['revision'] = int(current.get('revision') or 0) + 1
         current['updated_at'] = now_bj().isoformat(timespec='seconds')
@@ -2262,7 +2300,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.5.2'
+    server_version = 'DeepPulse/1.6.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -2377,6 +2415,8 @@ class Handler(BaseHTTPRequestHandler):
                           'tdx_read_only': True,
                           'bridge_protocol': 3,
                           'emotion_context_full': True,
+                          'proactive_brief': 1,
+                          'profile_brief_receipts': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -2564,6 +2604,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/profile':
                 body = self.read_json_body()
                 saved = save_profile(body.get('data') or {})
+                self.send_json({'ok': True, 'data': saved})
+            elif u.path == '/api/profile/brief-receipt':
+                body = self.read_json_body()
+                saved = update_brief_receipt(body.get('receipt') or {}, body.get('read') is not False)
                 self.send_json({'ok': True, 'data': saved})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()

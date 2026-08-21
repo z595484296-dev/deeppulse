@@ -1,20 +1,20 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.5.2';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.5.2';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.5.2';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.5.2';
+import { api } from '../api.js?v=1.6.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.6.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.6.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.6.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
 let calRender = null; // 复盘日历渲染句柄（refresh 时重绘）
 
 const MATRIX = [
-  { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '空仓观察 · 等回暖' },
-  { phase: '修复期', color: 'cyan', range: '20≤T<40', pos: '2-4成', tip: '轻仓试错 · 低吸核心' },
-  { phase: '发酵期', color: 'amber', range: '40≤T<60', pos: '5-8成', tip: '主线进攻 · 强势接力' },
-  { phase: '高潮期', color: 'red', range: '60≤T<80', pos: '5-7成', tip: '持仓兑现 · 只做核心' },
-  { phase: '亢奋期', color: 'violet', range: '80≤T≤100', pos: '≤3成', tip: '防守减仓 · 谨防退潮' },
+  { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
+  { phase: '修复期', color: 'cyan', range: '20≤T<40', pos: '2-4成', tip: '验证场景 · 观察核心反馈' },
+  { phase: '发酵期', color: 'amber', range: '40≤T<60', pos: '5-8成', tip: '扩散场景 · 核对主线持续性' },
+  { phase: '高潮期', color: 'red', range: '60≤T<80', pos: '5-7成', tip: '分歧场景 · 核对兑现压力' },
+  { phase: '亢奋期', color: 'violet', range: '80≤T≤100', pos: '≤3成', tip: '过热场景 · 观察退潮信号' },
 ];
 
 const TEMPLATE = `【复盘模板 · 情绪周期版】
@@ -23,7 +23,7 @@ const TEMPLATE = `【复盘模板 · 情绪周期版】
 3. 主线题材：____（涨停最多的行业），龙头是谁，梯队是否完整？
 4. 今日操作：买入/卖出/持有/空仓，是否符合当前阶段的标准打法？
 5. 情绪归因：是什么事件或资金行为驱动了今天的情绪变化？
-6. 明日计划：温度若升/若降，仓位如何调整？候选标的是什么？
+6. 明日验证：温度若升/若降，风险暴露假设如何变化？需验证哪些板块或标的？
 `;
 
 /** Harness 内优先使用当前会话生成并回填；独立版或 Harness 失败时使用本地大脑接口。 */
@@ -59,11 +59,11 @@ export function init(container) {
       </div>
 
       <div class="card span-4">
-        <div class="card-head"><div class="card-title">仓位研究矩阵</div><div class="card-sub">阶段区间需由方向与可信度共同确认</div></div>
+        <div class="card-head"><div class="card-title">模型风险暴露矩阵</div><div class="card-sub">情景研究参考，不是用户仓位建议</div></div>
         <div class="pos-matrix" id="st-matrix"></div>
         <div style="margin-top:12px;font-size:11.5px;color:var(--text-3);line-height:1.8">
-          仓位矩阵由情绪温度动态驱动：温度越高越接近亢奋，越需要把利润装进口袋；
-          冰点越低越接近黎明，越要保留子弹等待右侧确认。
+          数值区间仅描述模型在不同情绪阶段下的风险暴露假设；实际决策仍需结合个人约束、
+          价格位置与反证条件，不由工作台替用户执行。
         </div>
       </div>
 
@@ -465,7 +465,7 @@ export async function refresh(container, data) {
       <div>
         <div><span class="badge lg ${esc(engine.color || 'gray')}">${esc(engine.phase || '--')}</span></div>
         <div style="font-size:12px;color:var(--text-2);margin-top:5px">研究仓位区间 <b style="font-size:17px;color:${color}">${esc(adv.position || '--')}</b> · ${esc(adv.style || '--')}</div>
-        <div style="font-size:11px;color:var(--text-3);margin-top:5px">数据覆盖 ${engine.coverage ?? 0}% · 可信度 ${engine.confidence ?? 0}% · 信号一致度 ${engine.consensus ?? 0}%</div>
+        <div style="font-size:11px;color:var(--text-3);margin-top:5px">数据覆盖 ${engine.coverage ?? 0}% · 数据质量分 ${engine.confidence ?? 0} · 信号一致度 ${engine.consensus ?? 0}%</div>
       </div>
     </div>
     <div class="advice-card">

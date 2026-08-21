@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 自选页（分组 · 排序 · 批量 · 提醒） */
 
-import { api } from '../api.js?v=1.5.2';
+import { api } from '../api.js?v=1.6.0';
 import {
   loadWatch, saveWatch, removeWatch, setWatchNote,
   batchRemoveWatch, batchMoveWatch, watchGroups, bus,
   loadAlerts, addAlert, removeAlert,
-} from '../store.js?v=1.5.2';
-import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.5.2';
+} from '../store.js?v=1.6.0';
+import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.6.0';
 
 let built = false;
 let timer = null;
@@ -39,7 +39,7 @@ export function init(container) {
             <input id="wt-new-group" placeholder="新分组名" style="display:none;height:30px;width:110px;border-radius:8px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);font-size:12px;padding:0 8px;outline:none">
             <button class="btn sm" id="wt-new-group-ok" style="display:none">确定</button>
           </div>
-          <span style="font-size:11.5px;color:var(--text-3)">数据保存在本地浏览器</span>
+          <span style="font-size:11.5px;color:var(--text-3)">保存在本机档案 · 各运行端同步</span>
           <div style="margin-left:auto;display:flex;gap:8px">
             <button class="btn sm" id="wt-export">导出 JSON</button>
             <button class="btn sm" id="wt-import">导入</button>
@@ -51,7 +51,7 @@ export function init(container) {
       <div class="card span-12" id="wt-alerts-card">
         <div class="card-head">
           <div class="card-title">🔔 价格提醒</div>
-          <div class="card-sub">自选股 5 秒自动检查 · 触发后播报一次</div>
+          <div class="card-sub">自选股交易时段 10 秒检查 · 触发后播报一次</div>
         </div>
         <div class="alert-bar">
           <select id="wt-alert-stock" style="flex:0 0 auto;min-width:150px"></select>

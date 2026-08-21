@@ -24,4 +24,5 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Check browser JavaScript
         run: find web -type f -name '*.js' -print0 | xargs -0 -n1 node --check
-
+      - name: Test proactive brief rules
+        run: node --test tests/*.mjs

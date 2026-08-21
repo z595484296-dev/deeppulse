@@ -4,10 +4,10 @@
    配置 DeepSeek API Key（data/config.json）后自动升级为云端大脑。
    ============================================================ */
 
-import { api } from './api.js?v=1.5.2';
-import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.5.2';
-import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.5.2';
-import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.5.2';
+import { api } from './api.js?v=1.6.0';
+import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.6.0';
+import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.6.0';
+import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.6.0';
 
 export const BOT_NAME = '蚂小财';
 const HISTORY_KEY = 'dp_chat_v1';
@@ -167,9 +167,9 @@ async function emotionSummary(em) {
   lines.push(`涨停 <b>${raw.zt ?? '--'}</b> 家 · 跌停 <b>${raw.dt ?? '--'}</b> 家 · 炸板率 <b>${raw.zb_rate != null ? (raw.zb_rate * 100).toFixed(0) + '%' : '--'}</b> · 最高 <b>${raw.height ?? '--'}</b> 连板`);
   lines.push(`昨日涨停指数 <b>${raw.zt_idx_pct != null ? fmtPct(raw.zt_idx_pct) : '--'}</b> · 昨日连板指数 <b>${raw.lb_idx_pct != null ? fmtPct(raw.lb_idx_pct) : '--'}</b>`);
   lines.push(`涨跌 <b>${raw.up ?? '--'} : ${raw.down ?? '--'}</b> · 主力净流入 <b class="${(raw.flow_yi ?? 0) >= 0 ? 'up' : 'down'}">${raw.flow_yi != null ? fmtBig(raw.flow_yi * 1e8) : '--'}</b>`);
-  lines.push(`方向 <b>${dyn.arrow || '·'} ${dyn.direction || '待积累'}</b>${dyn.delta1 == null ? '' : `（Δ1 ${dyn.delta1 > 0 ? '+' : ''}${dyn.delta1}°）`} · 数据覆盖 <b>${en.coverage ?? 0}%</b> · 可信度 <b>${en.confidence ?? 0}%</b>`);
+  lines.push(`方向 <b>${dyn.arrow || '·'} ${dyn.direction || '待积累'}</b>${dyn.delta1 == null ? '' : `（Δ1 ${dyn.delta1 > 0 ? '+' : ''}${dyn.delta1}°）`} · 数据覆盖 <b>${en.coverage ?? 0}%</b> · 数据质量分 <b>${en.confidence ?? 0}</b>`);
   lines.push(`状态倾向（未校准）：升阶 ${trans.upgrade ?? '--'} · 维持 ${trans.stay ?? '--'} · 降阶 ${trans.downgrade ?? '--'}`);
-  lines.push(`📌 研究仓位区间：<b>${adv.position || '--'}</b>，${adv.style || '--'}。`);
+  lines.push(`📌 风险暴露参考区间：<b>${adv.position || '--'}</b>，${adv.style || '--'}。`);
   if (en.risks && en.risks.length) lines.push(`⚠️ 风险：${en.risks[0]}`);
   return lines.join('<br>');
 }
@@ -184,9 +184,9 @@ async function answerAdvice() {
   const em = await getEmotion();
   const en = em.engine, adv = en.advice || {};
   const html = [
-    `当前阶段 <b>${en.phase}</b>，我的作战指令：`,
-    `💰 研究仓位区间 <b>${adv.position}</b> — ${adv.style}`,
-    `📊 数据覆盖 ${en.coverage ?? 0}% · 可信度 ${en.confidence ?? 0}%${adv.actionable ? '' : '（策略建议已暂停）'}`,
+    `当前阶段 <b>${en.phase}</b>，研究框架如下：`,
+    `💰 风险暴露参考区间 <b>${adv.position}</b> — ${adv.style}`,
+    `📊 数据覆盖 ${en.coverage ?? 0}% · 数据质量分 ${en.confidence ?? 0}${adv.actionable ? '' : '（区间参考已暂停）'}`,
     `📋 ${adv.plan || ''}`,
     `💡 主线打法：${adv.zhuXian || '跟随涨停题材热度榜的主线'}。`,
   ].join('<br>');
@@ -395,9 +395,9 @@ async function answerComfort() {
   const em = await getEmotion().catch(() => null);
   const lines = [];
   lines.push('抱抱你 🤗 账户绿的时候最考验的不是技术，是纪律。');
-  lines.push('记住三件事：<b>周期提供背景</b>、<b>仓位由温度×方向×可信度共同约束</b>、<b>冰点后的修复仍需溢价与广度确认</b>。');
+  lines.push('记住三件事：<b>周期提供背景</b>、<b>模型风险暴露由温度×方向×数据质量共同约束</b>、<b>冰点后的修复仍需溢价与广度确认</b>。');
   if (em) {
-    lines.push(`此刻市场温度 <b>${em.engine.temp}°</b>（${em.engine.phase}），我的建议是仓位 <b>${em.engine.advice.position}</b>。`);
+    lines.push(`此刻市场温度 <b>${em.engine.temp}°</b>（${em.engine.phase}），模型给出的风险暴露参考区间为 <b>${em.engine.advice.position}</b>。`);
     lines.push('要不要去「策略页」写一篇复盘日记？把今天记下来，比独自难受有用。');
   }
   return { html: lines.join('<br>'), actions: [{ type: 'nav', page: 'strategy' }], chipText: '写复盘日记' };
@@ -414,7 +414,7 @@ const HELP_HTML = [
   '我是 <b>蚂小财（DeepSeek 版）</b> 🧠 能读取工作台真实数据，也能直接<b>调度整个工作台</b>。标题下方会明确显示当前使用的是 DeepSeek 云端模型还是本地规则引擎。',
   '💬 <b>问数据</b>：今天情绪怎么样 / 涨停梯队如何 / 主力资金流向 / 题材主线是什么',
   '📈 <b>看个股</b>：帮我看看贵州茅台 / 600519 走势 / 宁德时代 K线',
-  '🎯 <b>问策略</b>：研究仓位区间 / 有什么风险 / 当前结论可信度',
+  '🎯 <b>问策略</b>：模型风险暴露 / 有什么风险 / 当前数据质量',
   '🕹️ <b>调度全局</b>：打开涨停梯队 / 加自选茅台 / 记录今日快照 / 刷新数据',
   '🛟 网络异常或 API 不可用时，我会自动切换到内置本地智脑兜底，保证随时在线。',
 ].join('<br>');
@@ -439,7 +439,7 @@ export async function ensureGreeting() {
     if (em && em.engine && em.engine.temp != null) {
       const en = em.engine;
       const c = PHASE_COLORS[en.color] || '#e9eef8';
-      chatStore.push('bot', `顺便播报一下：今天市场温度 <b style="color:${c}">${en.temp}°</b>（${esc(en.phase)}），${esc(en.advice ? en.advice.position : '--')} 仓位。`, [], true);
+      chatStore.push('bot', `顺便播报一下：今天市场温度 <b style="color:${c}">${en.temp}°</b>（${esc(en.phase)}），风险暴露参考区间为 ${esc(en.advice ? en.advice.position : '--')}。`, [], true);
     }
   } catch { /* 数据不可达就只问候 */ }
 }
@@ -526,7 +526,7 @@ export async function answer(text) {
       }
       default:
         return {
-          html: '这个问题我还拿不准 🤔 我是金融工作台里的助理，比较擅长：<br>· <b>情绪周期</b>：今天情绪怎么样 / 当前可信度如何<br>· <b>个股行情</b>：帮我看看贵州茅台<br>· <b>涨停梯队</b>：龙头是谁 / 主线题材是什么<br>· <b>指挥全局</b>：打开涨停梯队 / 加自选茅台',
+          html: '这个问题我还拿不准 🤔 我是金融工作台里的助理，比较擅长：<br>· <b>情绪周期</b>：今天情绪怎么样 / 当前数据质量如何<br>· <b>个股行情</b>：帮我看看贵州茅台<br>· <b>涨停梯队</b>：龙头是谁 / 主线题材是什么<br>· <b>指挥全局</b>：打开涨停梯队 / 加自选茅台',
           actions: [],
         };
     }
@@ -642,7 +642,7 @@ function typingBubble() {
 }
 
 export function createChatView(root) {
-  const CHIPS = ['今天情绪怎么样', '涨停梯队如何', '当前结论可信度', '有什么风险', '主力资金流向', '帮我看看贵州茅台', '加自选 宁德时代', '打开涨停梯队'];
+  const CHIPS = ['今天情绪怎么样', '涨停梯队如何', '当前数据质量', '有什么风险', '主力资金流向', '帮我看看贵州茅台', '加自选 宁德时代', '打开涨停梯队'];
   root.classList.add('chat-view');
   root.innerHTML = `
     <div class="chat-msgs" data-msgs></div>

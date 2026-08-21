@@ -1,14 +1,16 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.5.2';
-import { state, bus } from '../store.js?v=1.5.2';
-import { loadJournal } from '../store.js?v=1.5.2';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.5.2';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.5.2';
+import { api } from '../api.js?v=1.6.0';
+import { state, bus } from '../store.js?v=1.6.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.6.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.6.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.6.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.6.0';
 
 let built = false;
 let sparksAt = 0;
 let sectorTab = 'up';
+let currentBrief = null;
 
 const INDEX_CODES = [
   { code: '000001', name: '上证指数' },
@@ -22,21 +24,32 @@ export function init(container) {
   if (built) return;
   built = true;
   container.innerHTML = `
-    <div class="card ov-harness-card">
-      <div class="ov-harness-copy">
-        <div class="card-title">DeepSeek Harness 联动分析</div>
-        <div class="card-sub">发送当前页面、所选标的、数据时点和来源分级；官方披露优先，行情聚合只作线索。</div>
-        <div class="ov-source-row">
-          <span class="source-tier official">一级源 · 巨潮 / 交易所 / 证监会</span>
-          <span class="source-tier local">本地增强 · 通达信 TQ-Local（可选）</span>
-          <span class="source-tier market">行情源 · 东方财富 / 腾讯</span>
+    <section class="card proactive-card" id="ov-proactive" aria-labelledby="ov-proactive-title">
+      <div class="proactive-head">
+        <div>
+          <div class="proactive-kicker"><span class="proactive-pulse" aria-hidden="true"></span><span id="ov-proactive-period">主动简报</span><span class="proactive-status" id="ov-proactive-status">正在汇总</span></div>
+          <h2 id="ov-proactive-title">正在读取市场、风险和你的关注项…</h2>
+        </div>
+        <div class="proactive-head-actions">
+          <button class="btn sm" id="ov-proactive-refresh" title="刷新市场数据并重新生成简报">刷新全部数据</button>
+          <button class="btn sm ghost" id="ov-proactive-toggle" aria-expanded="true">收起</button>
         </div>
       </div>
-      <div class="ov-harness-actions">
-        <button class="btn primary" id="ov-ask-harness">让 DeepSeek 分析当前页</button>
-        <button class="btn" id="ov-open-assistant">打开深脉助手</button>
+      <div class="proactive-body" id="ov-proactive-body">
+        <p class="proactive-summary" id="ov-proactive-summary">简报不会替你做决定，只把可信事实整理成下一步研究任务。</p>
+        <div class="proactive-facts" id="ov-proactive-facts"></div>
+        <div class="proactive-actions" id="ov-proactive-actions"></div>
+        <button class="btn sm ghost proactive-more" id="ov-proactive-more" hidden></button>
+        <div class="proactive-foot">
+          <div class="proactive-evidence" id="ov-proactive-evidence"></div>
+          <div class="proactive-foot-actions">
+            <button class="btn sm primary" id="ov-ask-harness">让 DeepSeek 核对依据</button>
+            <button class="btn sm" id="ov-proactive-handle">标记已读</button>
+            <button class="btn sm ghost" id="ov-open-assistant">打开深脉助手</button>
+          </div>
+        </div>
       </div>
-    </div>
+    </section>
 
     <div class="grid idx-grid" id="ov-indices" style="margin-top:14px"></div>
 
@@ -57,9 +70,9 @@ export function init(container) {
       </div>
 
       <div class="card span-5">
-        <div class="card-head"><div class="card-title">今日作战指令</div><div class="card-sub">引擎自动生成</div></div>
+        <div class="card-head"><div class="card-title">今日研究框架</div><div class="card-sub">引擎自动整理 · 非投资建议</div></div>
         <div class="advice-card">
-          <div class="advice-title">研究仓位区间</div>
+          <div class="advice-title">风险暴露参考区间</div>
           <div class="advice-line"><span id="ov-position" style="font-size:26px;font-weight:800">--</span>
             <span style="margin-left:12px" id="ov-style"></span></div>
           <div class="advice-desc" id="ov-advice-desc">--</div>
@@ -153,11 +166,47 @@ export function init(container) {
   });
 
   container.querySelector('#ov-ask-harness').addEventListener('click', () => {
-    document.dispatchEvent(new CustomEvent('ask-harness'));
+    const brief = currentBrief || buildProactiveBrief({
+      emotion: state.emotion, indices: state.indices, watchlist: loadWatch(), alerts: loadAlerts(),
+      journal: loadJournal(), marketState: tradingState().state, asOf: state.lastUpdate,
+    });
+    document.dispatchEvent(new CustomEvent('ask-proactive-brief', { detail: { brief } }));
   });
   container.querySelector('#ov-open-assistant').addEventListener('click', () => {
     document.dispatchEvent(new CustomEvent('open-assistant'));
   });
+  container.querySelector('#ov-proactive-refresh').addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('refresh-all'));
+  });
+  container.querySelector('#ov-proactive-handle').addEventListener('click', () => {
+    if (currentBrief) setBriefRead(currentBrief, !isBriefRead(currentBrief.id));
+  });
+  container.querySelector('#ov-proactive-more').addEventListener('click', () => {
+    const card = container.querySelector('#ov-proactive');
+    const expanded = card.classList.toggle('mobile-expanded');
+    const count = Math.max(0, (currentBrief && currentBrief.actions.length || 0) - 1);
+    container.querySelector('#ov-proactive-more').textContent = expanded ? '收起次要任务' : `查看另外 ${count} 项`;
+  });
+  const toggle = container.querySelector('#ov-proactive-toggle');
+  const proactive = container.querySelector('#ov-proactive');
+  const setCollapsed = collapsed => {
+    proactive.classList.toggle('collapsed', collapsed);
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.textContent = collapsed ? '展开' : '收起';
+    localStorage.setItem('dp_proactive_collapsed_v1', collapsed ? '1' : '0');
+  };
+  setCollapsed(localStorage.getItem('dp_proactive_collapsed_v1') === '1');
+  toggle.addEventListener('click', () => setCollapsed(!proactive.classList.contains('collapsed')));
+  container.querySelector('#ov-proactive-actions').addEventListener('click', e => {
+    const button = e.target.closest('[data-brief-page]');
+    if (!button) return;
+    document.querySelector(`.nav-item[data-page="${button.dataset.briefPage}"]`)?.click();
+  });
+  const rerenderBrief = () => renderProactiveBrief(container, { emotion: state.emotion, indices: state.indices });
+  bus.addEventListener('watch', rerenderBrief);
+  bus.addEventListener('alerts', rerenderBrief);
+  bus.addEventListener('journal', rerenderBrief);
+  bus.addEventListener('brief-receipts', rerenderBrief);
 
   // 今日异动流（新涨停/炸板，app.js 差分后推送）
   const movesEl = container.querySelector('#ov-moves');
@@ -177,6 +226,50 @@ export function init(container) {
   bus.addEventListener('moves', e => renderMoves(e.detail));
 }
 
+function renderProactiveBrief(container, data) {
+  const card = container.querySelector('#ov-proactive');
+  if (!card) return;
+  const brief = buildProactiveBrief({
+    emotion: data && data.emotion,
+    indices: data && data.indices,
+    watchlist: loadWatch(),
+    alerts: loadAlerts(),
+    journal: loadJournal(),
+    marketState: tradingState().state,
+    asOf: state.lastUpdate,
+  });
+  currentBrief = brief;
+  const read = isBriefRead(brief.id);
+  card.classList.toggle('read', read);
+  card.dataset.tone = brief.tone;
+  container.querySelector('#ov-proactive-period').textContent = `${brief.period}主动简报`;
+  container.querySelector('#ov-proactive-status').textContent = read ? '已读' : brief.status;
+  container.querySelector('#ov-proactive-title').textContent = brief.headline;
+  container.querySelector('#ov-proactive-summary').textContent = brief.summary;
+  container.querySelector('#ov-proactive-facts').innerHTML = brief.facts.length
+    ? brief.facts.map(item => `<div class="proactive-fact"><span>${esc(item.label)}</span><b class="num">${esc(item.value)}</b></div>`).join('')
+    : '<div class="proactive-fact"><span>状态</span><b>等待首轮数据</b></div>';
+  container.querySelector('#ov-proactive-actions').innerHTML = brief.actions.map((item, index) => `
+    <article class="proactive-action ${esc(item.tone)}">
+      <div class="proactive-action-index">${index + 1}</div>
+      <div class="proactive-action-copy"><b>${esc(item.title)}</b><span>${esc(item.detail)}</span></div>
+      <button class="btn sm" data-brief-page="${esc(item.page)}">${esc(item.label)}</button>
+    </article>`).join('');
+  container.querySelector('#ov-proactive-evidence').innerHTML = brief.evidence
+    .map(item => `<span>${esc(item)}</span>`).join('');
+  const handleButton = container.querySelector('#ov-proactive-handle');
+  const hasData = Boolean(brief.dataDate);
+  handleButton.disabled = !hasData;
+  handleButton.textContent = hasData ? (read ? '标记未读' : '标记已读') : '等待数据';
+  handleButton.setAttribute('aria-pressed', String(read));
+  container.querySelector('#ov-ask-harness').disabled = !hasData;
+  const more = container.querySelector('#ov-proactive-more');
+  const hiddenActions = Math.max(0, brief.actions.length - 1);
+  more.hidden = hiddenActions === 0;
+  more.textContent = `查看另外 ${hiddenActions} 项`;
+  card.classList.remove('mobile-expanded');
+}
+
 function renderIndices(el, indices) {
   el.innerHTML = (indices || []).map((ix, i) => {
     if (!ix || ix.error) return '';
@@ -192,7 +285,9 @@ function renderIndices(el, indices) {
 
 export async function refresh(container, data) {
   init(container);
-  const em = data.emotion;
+  const safeData = data || {};
+  const em = safeData.emotion;
+  renderProactiveBrief(container, safeData);
   if (!em) return;
   const engine = em.engine || {};
   const raw = engine.raw || {};
@@ -227,7 +322,7 @@ export async function refresh(container, data) {
   const dynamics = engine.dynamics || {};
   if (dynamics.delta1 != null) {
     const d = dynamics.delta1;
-    trendEl.innerHTML = `${esc(dynamics.direction || '变化')} <b class="${d > 0 ? 'up' : d < 0 ? 'down' : 'flat'}">${dynamics.arrow || '→'} ${Math.abs(d)}°</b> · 覆盖率 ${engine.coverage ?? 0}% · 可信度 ${engine.confidence ?? 0}%`;
+    trendEl.innerHTML = `${esc(dynamics.direction || '变化')} <b class="${d > 0 ? 'up' : d < 0 ? 'down' : 'flat'}">${dynamics.arrow || '→'} ${Math.abs(d)}°</b> · 覆盖率 ${engine.coverage ?? 0}% · 数据质量分 ${engine.confidence ?? 0}`;
   } else {
     trendEl.textContent = '历史温度将随每个交易日收盘自动累积';
   }
@@ -243,7 +338,7 @@ export async function refresh(container, data) {
     ['昨日涨停指数', raw.zt_idx_pct != null ? fmtPct(raw.zt_idx_pct) : '--', '', (raw.zt_idx_pct ?? 0) >= 0 ? 'up' : 'down'],
     ['昨日连板指数', raw.lb_idx_pct != null ? fmtPct(raw.lb_idx_pct) : '--', '', (raw.lb_idx_pct ?? 0) >= 0 ? 'up' : 'down'],
     ['上涨占比', raw.up_ratio != null ? (raw.up_ratio * 100).toFixed(1) + '%' : '--', '', raw.up_ratio >= 0.6 ? 'up' : raw.up_ratio >= 0.4 ? 'flat' : 'down'],
-    ['数据可信度', engine.confidence != null ? engine.confidence + '%' : '--', '', engine.confidence >= 80 ? 'down' : engine.confidence >= 60 ? 'flat' : 'up'],
+    ['数据质量分', engine.confidence != null ? engine.confidence : '--', '', engine.confidence >= 80 ? 'down' : engine.confidence >= 60 ? 'flat' : 'up'],
     ['昨日涨停均涨', '<span id="ov-prem-avg" style="color:var(--flat)">--</span>', '', 'flat'],
   ];
   statsEl.innerHTML = S.map(([label, v, unit, cls]) => `

@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.5.2",
-  "minimumDesktopVersion": "1.5.0",
+  "version": "1.6.0",
+  "minimumDesktopVersion": "1.6.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -10,6 +10,8 @@
     "emotion-engine-v2",
     "confidence-gated-strategy",
     "emotion-context-full-v1",
+    "proactive-brief-v1",
+    "profile-brief-receipts-v1",
     "epaper-device-gateway-v1"
   ]
 }

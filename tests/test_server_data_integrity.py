@@ -68,7 +68,8 @@ class ProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             profile_file = os.path.join(tmp, 'profile.json')
             with patch.object(server, 'PROFILE_FILE', profile_file):
-                first = server.save_profile({'watchlist': [{'code': '600519'}], 'alerts': []})
+                first = server.save_profile({'watchlist': [{'code': '600519'}], 'alerts': [],
+                                             'brief_receipts': [{'id': '2026-08-21:47:closed'}]})
                 second = server.save_profile({'watchlist': []})
                 loaded = server.load_profile()
 
@@ -76,12 +77,26 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(second['revision'], 2)
         self.assertEqual(loaded['data']['watchlist'], [])
         self.assertEqual(loaded['data']['alerts'], [])
+        self.assertEqual(loaded['data']['brief_receipts'][0]['id'], '2026-08-21:47:closed')
 
     def test_profile_rejects_unknown_or_oversized_shapes(self):
         with self.assertRaises(ValueError):
             server.save_profile({'unknown': []})
         with self.assertRaises(ValueError):
             server.save_profile({'watchlist': 'not-a-list'})
+
+    def test_brief_receipts_are_merged_atomically_by_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_file = os.path.join(tmp, 'profile.json')
+            with patch.object(server, 'PROFILE_FILE', profile_file):
+                server.update_brief_receipt({'id': 'brief-a', 'contentHash': 'aaa', 'surface': 'harness'})
+                server.update_brief_receipt({'id': 'brief-b', 'contentHash': 'bbb', 'surface': 'local-web'})
+                server.update_brief_receipt({'id': 'brief-a'}, read=False)
+                loaded = server.load_profile()
+
+        receipts = loaded['data']['brief_receipts']
+        self.assertEqual([item['id'] for item in receipts], ['brief-b'])
+        self.assertEqual(receipts[0]['contentHash'], 'bbb')
 
 
 class SectorHistoryTests(unittest.TestCase):

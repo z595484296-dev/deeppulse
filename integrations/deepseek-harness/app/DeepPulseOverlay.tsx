@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.5.0'
+const MIN_BACKEND_VERSION = '1.6.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -57,7 +57,10 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
     const body = recordOf(await response.json())
     const health = recordOf(body['data'] ?? body)
     const capabilities = recordOf(health['capabilities'])
-    return versionAtLeast(health['version'], MIN_BACKEND_VERSION) && capabilities['tdx_read_only'] === true
+    return versionAtLeast(health['version'], MIN_BACKEND_VERSION)
+      && capabilities['tdx_read_only'] === true
+      && capabilities['proactive_brief'] === 1
+      && capabilities['profile_brief_receipts'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -165,6 +168,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const selected = recordOf(raw['selectedSecurity'])
   const market = recordOf(raw['market'])
   const emotion = recordOf(raw['emotionAnalysis'])
+  const proactive = recordOf(raw['proactiveBrief'])
   const disclosures = Array.isArray(selected['officialDisclosures'])
     ? selected['officialDisclosures'].slice(0, 6).map(item => {
       const row = recordOf(item)
@@ -243,6 +247,22 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     ? emotion['scoreRange'].slice(0, 2).map(finite).filter((item): item is number => item !== undefined)
     : []
   const truncated = recordOf(raw['contextTruncated'])
+  const proactiveFacts = Array.isArray(proactive['facts'])
+    ? proactive['facts'].slice(0, 6).map(item => {
+      const row = recordOf(item)
+      return { label: short(row['label'], 60), value: short(row['value'], 180) }
+    })
+    : []
+  const proactiveActions = Array.isArray(proactive['actions'])
+    ? proactive['actions'].slice(0, 3).map(item => {
+      const row = recordOf(item)
+      return {
+        id: short(row['id'], 60), tone: short(row['tone'], 20), title: short(row['title'], 100),
+        detail: short(row['detail'], 260), page: short(row['page'], 40), label: short(row['label'], 60),
+      }
+    })
+    : []
+  const hasProactiveBrief = Boolean(short(proactive['id'], 160) || short(proactive['headline'], 300))
   const hasSelectedSecurity = Boolean(short(selected['code'], 20) || short(selected['name'], 80))
   return {
     requestId: short(data['requestId'], 100) ?? `legacy-${Date.now()}`,
@@ -279,6 +299,14 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         transitionCalibrated: emotion['transitionCalibrated'] === true,
         raw: emotionRaw, signals, history, missing: uniqueStrings(emotion['missing'], 16, 100),
       },
+      proactiveBrief: hasProactiveBrief ? {
+        id: short(proactive['id'], 160), contentHash: short(proactive['contentHash'], 80), period: short(proactive['period'], 40),
+        dataDate: short(proactive['dataDate'], 30), headline: short(proactive['headline'], 300),
+        summary: short(proactive['summary'], 600), status: short(proactive['status'], 40),
+        degraded: proactive['degraded'] === true, stale: proactive['stale'] === true, facts: proactiveFacts, actions: proactiveActions,
+        triggerReason: short(proactive['triggerReason'], 160), missing: uniqueStrings(proactive['missing'], 8, 100),
+        evidence: uniqueStrings(proactive['evidence'], 10, 120),
+      } : null,
       indices,
       sources,
       contextTruncated: {
@@ -407,6 +435,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '5. emotionAnalysis 已披露模型版本、公式、阶段阈值、11项指标、历史和缺失项；存在这些字段时不得再称其口径未披露。',
     '6. officialDisclosuresScope=not-applicable-no-security-selected 表示当前页面没有选中个股，不代表官方公告源缺失。',
     '7. transitionCalibrated=false 时只能称为启发式状态倾向，不得称为经过校准的预测概率。',
+    '8. proactiveBrief 是深脉规则层整理的优先级与研究任务，不是新的市场事实；展开时仍需用 market、emotionAnalysis 和来源字段复核。',
   ].join('\n')
 }
 

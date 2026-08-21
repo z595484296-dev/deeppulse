@@ -2,7 +2,7 @@
 """深脉 DeepPulse · 情绪周期引擎 2.0。
 
 目标不是预测确定涨跌，而是把 A 股短线生态压缩成可解释、可降级、可验证的状态：
-温度 + 六维结构 + 变化速度 + 背离 + 数据可信度 + 启发式状态倾向。
+温度 + 六维结构 + 变化速度 + 背离 + 数据质量分 + 启发式状态倾向。
 """
 
 import json
@@ -141,11 +141,11 @@ PHASES = [
 ]
 
 POSITIONS = {
-    '冰点期': ('0-2成', 10, '观察为主 · 等待回暖确认'),
-    '修复期': ('2-4成', 30, '小仓验证 · 防止修复失败'),
-    '发酵期': ('5-8成', 65, '围绕主线 · 服从强弱反馈'),
-    '高潮期': ('5-7成', 55, '去弱留强 · 防范高位分歧'),
-    '亢奋期': ('≤3成', 20, '降低拥挤暴露 · 等待再平衡'),
+    '冰点期': ('0-2成', 10, '低暴露场景 · 等待修复证据'),
+    '修复期': ('2-4成', 30, '验证场景 · 观察核心反馈'),
+    '发酵期': ('5-8成', 65, '扩散场景 · 核对主线持续性'),
+    '高潮期': ('5-7成', 55, '分歧场景 · 核对兑现压力'),
+    '亢奋期': ('≤3成', 20, '过热场景 · 观察退潮信号'),
 }
 
 DIMENSIONS = [
@@ -433,7 +433,7 @@ def compute_emotion(raw, history=None):
         phase_desc += ' 当前温度已触及%s，等待下一次有效快照确认。' % candidate[1]
     if coverage < 50 or not deps['pool']:
         phase = '数据不足'
-        phase_desc = '核心数据覆盖不足，当前不输出周期和仓位结论。'
+        phase_desc = '核心数据覆盖不足，当前不输出周期和模型风险暴露结论。'
 
     score_map = {signal['key']: signal['score'] for signal in signals if signal['avail']}
     dimensions = _dimensions(signals)
@@ -470,11 +470,11 @@ def compute_emotion(raw, history=None):
     if missing:
         flags.append({'type': 'info', 'text': '数据覆盖率%d%%，暂缺：%s' % (coverage, '、'.join(missing[:4]))})
     if not actionable:
-        flags.append({'type': 'risk', 'text': '可信度门控：核心数据或覆盖率不足，暂停仓位建议'})
+        flags.append({'type': 'risk', 'text': '数据质量门控：核心数据或覆盖率不足，暂停模型风险暴露区间'})
 
-    position, position_pct, style = POSITIONS.get(phase, ('--', 0, '暂停策略建议'))
+    position, position_pct, style = POSITIONS.get(phase, ('--', 0, '暂停风险暴露参考'))
     if not actionable:
-        position, position_pct, style = '--', 0, '数据不足 · 暂停策略建议'
+        position, position_pct, style = '--', 0, '数据不足 · 暂停风险暴露参考'
 
     scenarios = [
         {'key': 'expansion', 'name': '扩张延续',
@@ -492,6 +492,7 @@ def compute_emotion(raw, history=None):
         'temp': round(temp), 'phase': phase, 'phase_idx': phase_idx, 'color': color,
         'phase_desc': phase_desc, 'position': position, 'position_pct': position_pct,
         'style': style, 'plan': phase_desc, 'actionable': actionable,
+        'position_nature': '模型风险暴露情景参考，不是用户仓位建议',
         'zhuXian': '以涨停梯队、题材持续性和次日溢价共同确认主线，不凭单一热度追逐',
         'scenarios': scenarios,
     }
@@ -500,7 +501,7 @@ def compute_emotion(raw, history=None):
         narrative = '核心数据覆盖不足，情绪温度与周期结论暂不可信；请查看数据源状态。'
     else:
         delta_text = '' if dynamics['delta1'] is None else '，较上一快照%+.1f°' % dynamics['delta1']
-        narrative = '今日情绪温度%d°，处于%s%s；覆盖率%d%%，数据可信度%d%%。' % (
+        narrative = '今日情绪温度%d°，处于%s%s；覆盖率%d%%，数据质量分%d（不代表预测准确率）。' % (
             round(temp), phase, delta_text, coverage, confidence)
         if deps['pool']:
             narrative += '涨停%d家、跌停%d家、炸板率%.0f%%；最高%d连板、连板%d家。' % (
@@ -515,7 +516,7 @@ def compute_emotion(raw, history=None):
                     turnover / 1e8, volume_basis, vol_ratio, trend_pct)
             else:
                 narrative += '%s量能%.2f×，上证相对MA20%+.1f%%。' % (volume_basis, vol_ratio, trend_pct)
-        narrative += '研究仓位区间：%s；%s。' % (position, style)
+        narrative += '模型风险暴露情景：%s；%s；仅供研究参考。' % (position, style)
 
     risks = [flag['text'] for flag in flags if flag['type'] in ('warn', 'risk')]
     if not risks:

@@ -690,6 +690,58 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .ov-harness-copy { min-width: 0; }
 .ov-source-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
 .ov-harness-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+/* 总览 · 主动简报：事实规则生成，AI 只负责展开解释 */
+.proactive-card {
+  position: relative; overflow: hidden; padding: 18px 20px;
+  border-color: rgba(79, 140, 255, .34);
+  background:
+    radial-gradient(circle at 92% -20%, rgba(79, 140, 255, .16), transparent 38%),
+    var(--panel);
+}
+.proactive-card::after {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+}
+.proactive-card[data-tone="risk"] { border-color: rgba(246, 70, 93, .34); }
+.proactive-card[data-tone="risk"]::after { background: var(--up); }
+.proactive-card[data-tone="warn"] { border-color: rgba(240, 185, 11, .38); }
+.proactive-card[data-tone="warn"]::after { background: var(--amber); }
+.proactive-card.read { border-color: var(--line); }
+.proactive-card.read::after { opacity: .45; }
+.proactive-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.proactive-head h2 { margin: 7px 0 0; color: var(--text); font-size: 20px; line-height: 1.42; letter-spacing: .01em; }
+.proactive-kicker { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 12px; font-weight: 750; }
+.proactive-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(79, 140, 255, .12); }
+.proactive-card[data-tone="risk"] .proactive-pulse { background: var(--up); box-shadow: 0 0 0 5px rgba(246, 70, 93, .11); }
+.proactive-card[data-tone="warn"] .proactive-pulse { background: var(--amber); box-shadow: 0 0 0 5px rgba(240, 185, 11, .11); }
+.proactive-status { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-3); font-size: 10px; font-weight: 700; }
+.proactive-head-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.proactive-body { margin-top: 12px; }
+.proactive-card.collapsed .proactive-body { display: none; }
+.proactive-card.collapsed { padding-top: 14px; padding-bottom: 14px; }
+.proactive-card.collapsed .proactive-head h2 { font-size: 15px; margin-top: 4px; }
+.proactive-summary { margin: 0; max-width: 1040px; color: var(--text-2); font-size: 13px; line-height: 1.75; }
+.proactive-facts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.proactive-fact { display: inline-flex; align-items: baseline; gap: 7px; min-width: 126px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(15, 23, 42, .28); }
+.proactive-fact span { color: var(--text-3); font-size: 10px; }
+.proactive-fact b { color: var(--text-2); font-size: 11.5px; font-weight: 700; }
+.proactive-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
+.proactive-action { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 76px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.proactive-action.risk { border-color: rgba(246, 70, 93, .25); }
+.proactive-action.warn { border-color: rgba(240, 185, 11, .28); }
+.proactive-action.accent { border-color: rgba(79, 140, 255, .28); }
+.proactive-action-index { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; color: var(--accent); background: rgba(79, 140, 255, .12); font: 750 11px var(--mono); }
+.proactive-action.risk .proactive-action-index { color: var(--up); background: rgba(246, 70, 93, .1); }
+.proactive-action.warn .proactive-action-index { color: var(--amber); background: rgba(240, 185, 11, .1); }
+.proactive-action-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.proactive-action-copy b { color: var(--text); font-size: 12px; }
+.proactive-action-copy span { color: var(--text-3); font-size: 10.5px; line-height: 1.45; }
+.proactive-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line); }
+.proactive-evidence { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--text-3); font: 10px var(--mono); }
+.proactive-evidence span::before { content: "·"; margin-right: 5px; color: var(--accent); }
+.proactive-foot-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
+.proactive-more { display: none; }
 .ma-item { display: flex; gap: 11px; align-items: flex-start; }
 .ma-icon {
   width: 34px; height: 34px; border-radius: 9px; background: var(--panel-3);
@@ -1294,6 +1346,7 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
 
 @media (max-width: 1100px) {
   .idx-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .proactive-actions { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
@@ -1323,6 +1376,24 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .topbar .market-tape { display: none; }
   .emotion-state-grid { grid-template-columns: repeat(2, 1fr); }
   .emotion-dim-grid { grid-template-columns: 1fr; }
+  .proactive-card { padding: 15px 14px; }
+  .proactive-head { position: relative; flex-direction: column; padding-right: 54px; }
+  .proactive-head-actions { position: absolute; top: 0; right: 0; width: auto; }
+  .proactive-head-actions #ov-proactive-refresh { display: none; }
+  .proactive-head h2 { font-size: 17px; }
+  .proactive-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .proactive-fact { min-width: 0; }
+  .proactive-fact:nth-child(n+3) { display: none; }
+  .proactive-action { grid-template-columns: 24px minmax(0, 1fr) auto; }
+  .proactive-action .btn { grid-column: auto; justify-self: end; }
+  .proactive-foot { align-items: flex-start; flex-direction: column; }
+  .proactive-evidence { display: none; }
+  .proactive-foot-actions { width: 100%; }
+  .proactive-foot-actions .btn { flex: 1; }
+  .proactive-head-actions .btn, .proactive-foot-actions .btn, .proactive-action .btn, .proactive-more { min-height: 44px; }
+  .proactive-action:nth-child(n+2) { display: none; }
+  .proactive-card.mobile-expanded .proactive-action:nth-child(n+2) { display: grid; }
+  .proactive-more:not([hidden]) { display: inline-flex; width: 100%; justify-content: center; margin-top: 9px; }
 }
 
 @media (max-width: 420px) {
@@ -1374,3 +1445,5 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .ov-harness-actions { width: 100%; }
   .ov-harness-actions .btn { flex: 1; }
 }
+
+body.light .proactive-fact { background: rgba(255, 255, 255, .58); }

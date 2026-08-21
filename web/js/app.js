@@ -1,21 +1,21 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.5.2';
-import { state, marketState, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.5.2';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.5.2';
+import { api } from './api.js?v=1.6.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.6.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.6.0';
 
-import * as pageOverview from './pages/overview.js?v=1.5.2';
-import * as pageEmotion from './pages/emotion.js?v=1.5.2';
-import * as pageMarket from './pages/market.js?v=1.5.2';
-import * as pageLadder from './pages/ladder.js?v=1.5.2';
-import * as pageWatch from './pages/watch.js?v=1.5.2';
-import * as pageStrategy from './pages/strategy.js?v=1.5.2';
-import * as pageEpaper from './pages/epaper.js?v=1.5.2';
-import * as pageDatasrc from './pages/datasrc.js?v=1.5.2';
-import * as pageAbout from './pages/about.js?v=1.5.2';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.5.2';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.5.2';
-import { initOnboarding } from './onboarding.js?v=1.5.2';
+import * as pageOverview from './pages/overview.js?v=1.6.0';
+import * as pageEmotion from './pages/emotion.js?v=1.6.0';
+import * as pageMarket from './pages/market.js?v=1.6.0';
+import * as pageLadder from './pages/ladder.js?v=1.6.0';
+import * as pageWatch from './pages/watch.js?v=1.6.0';
+import * as pageStrategy from './pages/strategy.js?v=1.6.0';
+import * as pageEpaper from './pages/epaper.js?v=1.6.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.6.0';
+import * as pageAbout from './pages/about.js?v=1.6.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.6.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.6.0';
+import { initOnboarding } from './onboarding.js?v=1.6.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -141,7 +141,7 @@ function currentHarnessContext() {
         { name: '高潮期', min: 60, max: 80, condition: '60 ≤ temp < 80' },
         { name: '亢奋期', min: 80, max: 100, condition: '80 ≤ temp ≤ 100' },
       ],
-      positionNature: '研究仓位区间；由阶段映射，并受数据可信度门控，不构成投资建议',
+      positionNature: '模型风险暴露区间；由阶段映射，并受数据质量门控，不构成投资建议',
       transitionCalibrated: engine.transition ? engine.transition.calibrated === true : false,
       raw: rawMetrics,
       signals: (engine.signals || []).slice(0, 16).map(s => ({
@@ -457,6 +457,11 @@ async function boot() {
   const pages = $('#pages');
   pages.innerHTML = Object.keys(PAGES).map(p => `<section class="page" id="page-${p}"></section>`).join('');
 
+  bus.addEventListener('profile-sync', e => {
+    const result = e.detail || {};
+    if (!result.ok) toast('本端已记录，但本机档案同步失败；请检查服务后重试', 'err', 6000);
+  });
+
   document.querySelectorAll('.nav-item').forEach(n => {
     n.addEventListener('click', e => {
       e.preventDefault();
@@ -571,6 +576,23 @@ async function boot() {
   }
   document.addEventListener('ask-harness', () => {
     if (!askCurrentPage()) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err');
+  });
+  document.addEventListener('ask-proactive-brief', e => {
+    const brief = e.detail && e.detail.brief;
+    const request = askDeepSeek({
+      question: '请解释当前主动简报的优先级，并给出反证条件和下一步应查的数据。',
+      context: {
+        intent: 'expand-proactive-brief',
+        proactiveBrief: brief ? {
+          id: brief.id, contentHash: brief.contentHash, period: brief.period, dataDate: brief.dataDate,
+          headline: brief.headline, summary: brief.summary,
+          status: brief.status, degraded: brief.degraded, stale: brief.stale,
+          triggerReason: brief.triggerReason, missing: brief.missing,
+          facts: brief.facts, actions: brief.actions, evidence: brief.evidence,
+        } : null,
+      },
+    });
+    if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用；独立模式可先打开深脉助手', 'err', 6000);
   });
   document.addEventListener('harness-ask-result', e => {
     harnessBtn?.classList.remove('pending');

@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 情绪周期页 */
 
-import { api } from '../api.js?v=1.5.2';
-import { bus } from '../store.js?v=1.5.2';
-import { tempHistoryChart, ztIdxChart, hbarChart, distChart, intradayChart } from '../charts.js?v=1.5.2';
-import { esc, PHASE_COLORS, fmtPct, pctClass } from '../util.js?v=1.5.2';
+import { api } from '../api.js?v=1.6.0';
+import { bus } from '../store.js?v=1.6.0';
+import { tempHistoryChart, ztIdxChart, hbarChart, distChart, intradayChart } from '../charts.js?v=1.6.0';
+import { esc, PHASE_COLORS, fmtPct, pctClass } from '../util.js?v=1.6.0';
 
 let built = false;
 let bkAt = 0;
@@ -11,11 +11,11 @@ let premAt = 0;
 let intradayPoints = [];
 
 const PHASES = [
-  { name: '冰点期', color: 'blue', range: '0≤T<20', desc: '亏钱效应极致，市场冰封。空仓观望，等待回暖信号。' },
-  { name: '修复期', color: 'cyan', range: '20≤T<40', desc: '情绪回暖，试错期。轻仓低吸超跌核心，打首板试错。' },
-  { name: '发酵期', color: 'amber', range: '40≤T<60', desc: '主线发酵，赚钱效应扩散。围绕主线做核心股低吸与弱转强接力。' },
-  { name: '高潮期', color: 'red', range: '60≤T<80', desc: '情绪高潮，普涨逼近分歧。持仓兑现、去弱留强，谨慎接力高位。' },
-  { name: '亢奋期', color: 'violet', range: '80≤T≤100', desc: '情绪过热，盛极而衰前夜。减仓防守，等待退潮出清后的新周期。' },
+  { name: '冰点期', color: 'blue', range: '0≤T<20', desc: '亏钱效应集中，重点验证恐慌是否收敛与回暖信号是否出现。' },
+  { name: '修复期', color: 'cyan', range: '20≤T<40', desc: '情绪开始回暖，重点验证溢价、广度与核心标的反馈是否同步。' },
+  { name: '发酵期', color: 'amber', range: '40≤T<60', desc: '赚钱效应扩散，重点验证主线梯队完整性与持续性。' },
+  { name: '高潮期', color: 'red', range: '60≤T<80', desc: '普涨接近分歧，重点核对拥挤度、兑现压力与高位反馈。' },
+  { name: '亢奋期', color: 'violet', range: '80≤T≤100', desc: '情绪过热，重点观察退潮迹象、风险扩散与新周期线索。' },
 ];
 
 export function init(container) {
@@ -36,7 +36,7 @@ export function init(container) {
       <div class="emotion-state"><span>情绪温度</span><b id="em-state-temp" class="num">--</b></div>
       <div class="emotion-state"><span>变化方向</span><b id="em-state-direction">--</b><small id="em-state-delta">--</small></div>
       <div class="emotion-state"><span>数据覆盖率</span><b id="em-state-coverage" class="num">--</b></div>
-      <div class="emotion-state"><span>数据可信度</span><b id="em-state-confidence" class="num">--</b></div>
+      <div class="emotion-state"><span>数据质量分</span><b id="em-state-confidence" class="num">--</b></div>
       <div class="emotion-state"><span>信号一致度</span><b id="em-state-consensus" class="num">--</b></div>
     </div>
 
@@ -165,7 +165,7 @@ export async function refresh(container, data) {
   container.querySelector('#em-state-direction').className = dynamics.direction === '升温' ? 'up' : dynamics.direction === '降温' ? 'down' : 'flat';
   container.querySelector('#em-state-delta').textContent = dynamics.delta1 == null ? '等待历史快照' : `Δ1 ${dynamics.delta1 > 0 ? '+' : ''}${dynamics.delta1}°${dynamics.delta3 == null ? '' : ` · Δ3 ${dynamics.delta3 > 0 ? '+' : ''}${dynamics.delta3}°`}`;
   container.querySelector('#em-state-coverage').textContent = `${engine.coverage ?? 0}%`;
-  container.querySelector('#em-state-confidence').textContent = `${engine.confidence ?? 0}%`;
+  container.querySelector('#em-state-confidence').textContent = `${engine.confidence ?? 0}`;
   container.querySelector('#em-state-consensus').textContent = `${engine.consensus ?? 0}%`;
 
   container.querySelector('#em-dimensions').innerHTML = (engine.dimensions || []).map(d => {
