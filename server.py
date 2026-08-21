@@ -53,6 +53,13 @@ except Exception:
     create_hypothesis = review_hypothesis = hypothesis_snapshot = None
     HYPOTHESIS_MODEL_VERSION = 'research-hypothesis-unavailable'
 
+try:
+    from hypothesis_evidence import (collect_candidate_evidence,
+                                     MODEL_VERSION as HYPOTHESIS_EVIDENCE_MODEL_VERSION)
+except Exception:
+    collect_candidate_evidence = None
+    HYPOTHESIS_EVIDENCE_MODEL_VERSION = 'hypothesis-evidence-unavailable'
+
 _akshare_module = None
 _akshare_error = None
 
@@ -80,7 +87,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.12.0'
+VERSION = '1.13.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -2277,7 +2284,13 @@ _event_service_runtime = {
     'checks': 0,
     'published_count': 0,
     'latest_summary': None,
+    'last_evidence_check_at': None,
+    'last_evidence_error': None,
+    'evidence_checks': 0,
+    'evidence_candidates': 0,
 }
+
+HYPOTHESIS_EVIDENCE_INTERVAL_SECONDS = 900
 
 
 def normalize_event_service_config(value=None):
@@ -2529,7 +2542,75 @@ def research_hypotheses_status(current=None):
                         'completed': 0, 'archived': 0},
             'error': '研究假设模型不可用',
         }
-    return hypothesis_snapshot(data.get('research_hypotheses') or [], now_bj())
+    result = hypothesis_snapshot(data.get('research_hypotheses') or [], now_bj())
+    items = result.get('items') or []
+    result['summary']['candidateEvidence'] = sum(
+        len(row.get('evidenceCandidates') or []) for row in items)
+    evidence_authorized = normalize_event_service_config(data.get('event_service'))['enabled']
+    with _event_service_lock:
+        result['evidenceService'] = {
+            'modelVersion': HYPOTHESIS_EVIDENCE_MODEL_VERSION,
+            'automaticCollectionAuthorized': evidence_authorized,
+            'intervalSeconds': HYPOTHESIS_EVIDENCE_INTERVAL_SECONDS,
+            'lastCheckedAt': _event_service_runtime.get('last_evidence_check_at'),
+            'lastError': _event_service_runtime.get('last_evidence_error'),
+            'automaticConclusion': False,
+        }
+    return result
+
+
+def refresh_hypothesis_evidence(item_id=None, current=None, quote_loader=None,
+                                 benchmark_loader=None, disclosure_loader=None):
+    """Collect timestamped evidence candidates without changing hypothesis outcomes."""
+    if collect_candidate_evidence is None or hypothesis_snapshot is None:
+        raise ValueError('研究假设证据采集模型不可用')
+    current_time = current if isinstance(current, datetime) else now_bj()
+    with _profile_lock:
+        profile = _read_profile_unlocked()
+        rows = [dict(row) for row in (profile['data'].get('research_hypotheses') or [])
+                if isinstance(row, dict) and row.get('id')]
+    live = hypothesis_snapshot(rows, current_time).get('items') or []
+    selected = [row for row in live if row.get('effectiveStatus') in {'observing', 'review_due'}
+                and (not item_id or row.get('id') == item_id)][:8]
+    if item_id and not selected:
+        raise ValueError('研究假设不存在或已结束')
+    quote_fn = quote_loader or quote_with_fallback
+    benchmark_fn = benchmark_loader or (lambda: cached('indices', 5, em_indices_any))
+    disclosure_fn = disclosure_loader or (
+        lambda code: cached('disclosures_' + normalize_code(code), 300,
+                            lambda: cninfo_disclosures(code, 12)))
+    updates, errors = {}, []
+    before = sum(len(row.get('evidenceCandidates') or []) for row in selected)
+    for row in selected:
+        try:
+            updates[row['id']] = collect_candidate_evidence(
+                row, quote_fn, benchmark_fn, disclosure_fn, current_time)
+        except Exception as exc:
+            errors.append('%s: %s' % (row.get('id'), str(exc)[:220]))
+    if updates:
+        with _profile_lock:
+            latest = _read_profile_unlocked()
+            merged = []
+            for row in (latest['data'].get('research_hypotheses') or []):
+                update = updates.get(row.get('id')) if isinstance(row, dict) else None
+                if update:
+                    preserved = dict(row)
+                    for key in ('marketBaseline', 'evidenceCandidates', 'evidenceState', 'evidenceContract'):
+                        if key in update:
+                            preserved[key] = update[key]
+                    row = preserved
+                merged.append(row)
+            latest['data']['research_hypotheses'] = merged[-PROFILE_LIST_LIMITS['research_hypotheses']:]
+            saved = _write_profile_unlocked(latest)
+    else:
+        saved = load_profile()
+    snapshot = research_hypotheses_status(saved)
+    after = sum(len(row.get('evidenceCandidates') or []) for row in
+                (snapshot.get('items') or []) if not item_id or row.get('id') == item_id)
+    return {
+        'checked': len(selected), 'added': max(0, after - before), 'errors': errors,
+        'hypotheses': snapshot, 'automaticConclusion': False,
+    }
 
 
 def mutate_research_hypothesis(action, payload=None):
@@ -2538,6 +2619,8 @@ def mutate_research_hypothesis(action, payload=None):
         raise ValueError('研究假设模型不可用')
     clean_action = str(action or '').strip()
     body = payload if isinstance(payload, dict) else {}
+    if clean_action == 'refresh_evidence':
+        return refresh_hypothesis_evidence(str(body.get('id') or '').strip()[:160] or None)
     with _profile_lock:
         current = _read_profile_unlocked()
         rows = [row for row in (current['data'].get('research_hypotheses') or [])
@@ -2636,6 +2719,35 @@ def _event_service_loop():
         except Exception as exc:
             log('hypothesis due reminder -> %s' % exc)
         cfg = load_event_service_config()
+        if cfg['enabled']:
+            with _event_service_lock:
+                last_evidence_at = _event_service_runtime.get('last_evidence_check_at')
+            evidence_due = True
+            if last_evidence_at:
+                try:
+                    last_evidence = datetime.fromisoformat(str(last_evidence_at).replace('Z', '+00:00'))
+                    evidence_due = (now_bj() - last_evidence.astimezone(BJC)).total_seconds() >= HYPOTHESIS_EVIDENCE_INTERVAL_SECONDS
+                except ValueError:
+                    evidence_due = True
+            if evidence_due:
+                checked_at = now_bj()
+                try:
+                    evidence_result = refresh_hypothesis_evidence(current=checked_at)
+                    with _event_service_lock:
+                        _event_service_runtime.update(
+                            last_evidence_check_at=checked_at.isoformat(timespec='seconds'),
+                            last_evidence_error='; '.join(evidence_result.get('errors') or []) or None,
+                            evidence_checks=int(_event_service_runtime.get('evidence_checks') or 0) + 1,
+                            evidence_candidates=int(_event_service_runtime.get('evidence_candidates') or 0)
+                            + int(evidence_result.get('added') or 0),
+                        )
+                except Exception as exc:
+                    with _event_service_lock:
+                        _event_service_runtime.update(
+                            last_evidence_check_at=checked_at.isoformat(timespec='seconds'),
+                            last_evidence_error=str(exc)[:240],
+                            evidence_checks=int(_event_service_runtime.get('evidence_checks') or 0) + 1,
+                        )
         wait_seconds = 30 if not cfg['enabled'] else cfg['interval_seconds']
         checked_at = now_bj()
         if not cfg['enabled']:
@@ -3632,7 +3744,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.12.0'
+    server_version = 'DeepPulse/1.13.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -3759,6 +3871,8 @@ class Handler(BaseHTTPRequestHandler):
                           'event_background_service': 1,
                           'research_hypotheses': 1,
                           'hypothesis_due_reminders': 1,
+                          'hypothesis_evidence_candidates': 1,
+                          'hypothesis_market_control': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}

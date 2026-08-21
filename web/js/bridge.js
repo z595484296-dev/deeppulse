@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.12.0';
+import { applyChartTheme } from './charts.js?v=1.13.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -31,6 +31,10 @@ function requestId() {
   try { return crypto.randomUUID(); } catch { return `dp-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 }
 
+function trimHypothesisEvidence(item, limit = 8) {
+  return item ? { ...item, evidenceCandidates: (item.evidenceCandidates || []).slice(0, limit) } : item;
+}
+
 export function boundedContext(value) {
   try {
     const plain = JSON.parse(JSON.stringify(value || {}));
@@ -45,7 +49,7 @@ export function boundedContext(value) {
       } : null,
       researchHypotheses: plain.researchHypotheses ? {
         ...plain.researchHypotheses,
-        items: (plain.researchHypotheses.items || []).slice(0, 5),
+        items: (plain.researchHypotheses.items || []).slice(0, 5).map(item => trimHypothesisEvidence(item, 8)),
       } : null,
       emotionAnalysis: {
         ...emotion,
@@ -83,9 +87,9 @@ export function boundedContext(value) {
         modelVersion: reduced.researchHypotheses.modelVersion,
         summary: reduced.researchHypotheses.summary,
         boundary: reduced.researchHypotheses.boundary,
-        items: (reduced.researchHypotheses.items || []).slice(0, 2),
+        items: (reduced.researchHypotheses.items || []).slice(0, 2).map(item => trimHypothesisEvidence(item, 5)),
       } : null,
-      researchHypothesis: reduced.researchHypothesis || null,
+      researchHypothesis: trimHypothesisEvidence(reduced.researchHypothesis, 12) || null,
       selectedSecurity: reduced.selectedSecurity,
       market: {
         ...market,

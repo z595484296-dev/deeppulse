@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.12.0",
-  "minimumDesktopVersion": "1.12.0",
+  "version": "1.13.0",
+  "minimumDesktopVersion": "1.13.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -22,6 +22,8 @@
     "event-background-service-v1",
     "research-hypothesis-v1",
     "hypothesis-due-reminders-v1",
+    "hypothesis-evidence-candidates-v1",
+    "hypothesis-market-control-v1",
     "epaper-device-gateway-v1"
   ]
 }

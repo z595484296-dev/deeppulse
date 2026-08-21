@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.12.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.12.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.12.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.12.0';
+import { api } from '../api.js?v=1.13.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus } from '../store.js?v=1.13.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.13.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.13.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -342,6 +342,10 @@ export function init(container) {
         const result = await api.mutateResearchHypothesis('review', { id: hypothesis.id, outcome, note });
         hypothesisData = result.hypotheses;
         toast('复盘结论已保存；原始假设仍完整保留');
+      } else if (action === 'evidence') {
+        const result = await api.mutateResearchHypothesis('refresh_evidence', { id: hypothesis.id });
+        hypothesisData = result.hypotheses;
+        toast(result.added ? `新增 ${result.added} 条候选证据` : '已更新证据时间线；系统不会自动修改结论');
       } else if (action === 'archive') {
         const result = await api.mutateResearchHypothesis('archive', { id: hypothesis.id });
         hypothesisData = result.hypotheses;
@@ -482,6 +486,11 @@ const HYP_STATUS = {
 const HYP_OUTCOME = {
   supported: '支持', mixed: '混合', not_supported: '不支持', invalid: '事件失效',
 };
+const EVIDENCE_KIND = {
+  official_disclosure: ['官方公告', 'official'],
+  relative_performance: ['相对表现', 'market'],
+  market_context: ['市场基准', 'control'],
+};
 
 function formatHypothesisTime(value) {
   const d = new Date(value);
@@ -502,7 +511,7 @@ function renderHypotheses(container) {
   const root = container.querySelector('#st-hyp-list');
   if (!root) return;
   const summary = hypothesisData?.summary || {};
-  container.querySelector('#st-hyp-summary').innerHTML = `观察中 <b>${summary.observing || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 已完成 <b>${summary.completed || 0}</b>`;
+  container.querySelector('#st-hyp-summary').innerHTML = `观察中 <b>${summary.observing || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 已完成 <b>${summary.completed || 0}</b> · 候选证据 <b>${summary.candidateEvidence || 0}</b>`;
   const items = (hypothesisData?.items || []).filter(row => row.effectiveStatus !== 'archived');
   if (!items.length) {
     root.innerHTML = '<div class="empty">还没有研究假设。到总览的事件影响雷达，选择观察窗口并保存一条事件。</div>';
@@ -514,6 +523,20 @@ function renderHypotheses(container) {
     const review = item.review || {};
     const watches = (baseline.watchlist || []).map(row => `<span>${esc(row.name || row.code)}</span>`).join('');
     const sectors = (baseline.sectors || []).slice(0, 6).map(row => `<span>${esc(row)}</span>`).join('');
+    const candidates = (item.evidenceCandidates || []).slice(0, 16);
+    const evidenceState = item.evidenceState || {};
+    const marketBaseline = item.marketBaseline || {};
+    const baselineWatch = (marketBaseline.watchlist || []).map(row => `${esc(row.name || row.code)} ${esc(row.price ?? '--')}`).join(' / ');
+    const timeline = candidates.map(row => {
+      const kind = EVIDENCE_KIND[row.kind] || ['候选事实', 'other'];
+      const source = row.source || {};
+      return `<li class="hypothesis-evidence-row" data-kind="${esc(kind[1])}">
+        <time>${esc(formatHypothesisTime(row.knowableAt))}</time>
+        <div><div class="hypothesis-evidence-title"><span>${kind[0]}</span><b>${esc(row.label || '未命名证据')}</b></div>
+        <ul>${(row.facts || []).slice(0, 4).map(fact => `<li>${esc(fact)}</li>`).join('')}</ul>
+        <small>${esc(source.name || '来源待确认')} · ${esc(source.tier || 'unknown')} · ${esc(row.interpretation || '')}</small></div>
+      </li>`;
+    }).join('');
     const due = item.effectiveStatus === 'review_due';
     return `<article class="hypothesis-item" data-status="${esc(item.effectiveStatus)}">
       <div class="hypothesis-head">
@@ -530,6 +553,11 @@ function renderHypotheses(container) {
           <div class="hypothesis-falsifiers"><b>出现以下情况应削弱或推翻</b><ul>${(item.falsifiers || []).map(row => `<li>${esc(row)}</li>`).join('')}</ul></div>
         </div>
       </details>
+      <details class="hypothesis-timeline" ${due && candidates.length ? 'open' : ''}><summary>候选证据时间线（${candidates.length}）· 只收集事实，不自动下结论</summary>
+        <div class="hypothesis-baseline"><b>对照基线</b><span>${marketBaseline.capturedAt ? esc(formatHypothesisTime(marketBaseline.capturedAt)) : '尚未建立'}</span><span>${baselineWatch || '暂无自选价格基线'}</span><span>${esc(marketBaseline.benchmark?.name || '市场基准')} ${esc(marketBaseline.benchmark?.price ?? '--')}</span></div>
+        ${timeline ? `<ol class="hypothesis-timeline-list">${timeline}</ol>` : '<div class="empty compact">点击“收集候选证据”建立创建时基线；之后按日期更新相对表现与官方公告。</div>'}
+        ${evidenceState.errors?.length ? `<div class="hypothesis-evidence-errors">部分来源暂不可用：${evidenceState.errors.slice(0, 3).map(esc).join('；')}</div>` : ''}
+      </details>
       ${review.outcome ? `<div class="hypothesis-review-result"><b>你的结论：${esc(HYP_OUTCOME[review.outcome] || review.outcome)}</b><span>${esc(review.note || '')}</span></div>` : ''}
       ${!review.outcome ? `<details class="hypothesis-review-box" ${due ? 'open' : ''}><summary>${due ? '观察窗口已结束，填写结论' : '事件提前失效或已有充分证据？可提前复盘'}</summary><div class="hypothesis-review-form">
         <select data-hyp-outcome aria-label="假设复盘结论">
@@ -540,6 +568,7 @@ function renderHypotheses(container) {
         <button class="btn sm primary" data-hyp-action="review" data-hyp-id="${esc(item.id)}">确认复盘结论</button>
       </div></details>` : ''}
       <div class="hypothesis-actions">
+        ${!review.outcome ? `<button class="btn sm" data-hyp-action="evidence" data-hyp-id="${esc(item.id)}">收集候选证据</button>` : ''}
         <button class="btn sm" data-hyp-action="ask" data-hyp-id="${esc(item.id)}">让 DeepSeek 按反证复盘</button>
         <button class="btn sm ghost" data-hyp-action="archive" data-hyp-id="${esc(item.id)}">归档</button>
       </div>

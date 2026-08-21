@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.12.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, epaper_gateway: 1 } },
+  data: { version: '1.13.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -212,7 +212,8 @@ describe('DeepPulse Harness bridge', () => {
         },
         researchHypotheses: {
           modelVersion: 'research-hypothesis-v1',
-          summary: { total: 1, observing: 0, review_due: 1, completed: 0, archived: 0, injected: 'drop hypothesis summary' },
+          summary: { total: 1, observing: 0, review_due: 1, completed: 0, archived: 0, candidateEvidence: 1, injected: 'drop hypothesis summary' },
+          evidenceService: { modelVersion: 'hypothesis-evidence-v1', automaticCollectionAuthorized: true, intervalSeconds: 900, automaticConclusion: false, injected: 'drop evidence service' },
           boundary: '不构成因果证明或交易指令',
           items: [{
             id: 'hypothesis:1', modelVersion: 'research-hypothesis-v1', status: 'observing', effectiveStatus: 'review_due',
@@ -221,6 +222,10 @@ describe('DeepPulse Harness bridge', () => {
             baseline: { eventId: 'event-1', title: 'AI算力中心建设提速', type: 'headline', sectors: ['通信设备'], watchlist: [{ code: '601138', name: '工业富联', basis: '行业重合' }], sources: [{ id: 'eastmoney:news', name: '东方财富快讯', tier: 'market' }], quality: { score: 75, corroborated: false, meaning: '不代表预测准确率' } },
             observationChecklist: [{ id: 'source', label: '是否被独立来源确认', injected: 'drop hypothesis check' }],
             falsifiers: ['行业没有独立反馈'], review: null,
+            marketBaseline: { capturedAt: '2026-08-15T10:01:00+08:00', benchmark: { code: '000001', name: '上证指数', price: 3900, injected: 'drop baseline benchmark' }, watchlist: [{ code: '601138', name: '工业富联', price: 60, source: { id: 'tdx_local', name: '通达信 TQ-Local', tier: 'local', injected: 'drop baseline source' }, injected: 'drop baseline watch' }], injected: 'drop market baseline' },
+            evidenceCandidates: [{ id: 'relative:1', kind: 'relative_performance', label: '工业富联相对表现', knowableAt: '2026-08-20T15:31:00+08:00', observedAt: '2026-08-20T15:31:00+08:00', facts: ['标的 +5.00%', '基准 +1.00%'], interpretation: '不能证明事件因果', source: { id: 'tdx_local', name: '通达信 TQ-Local', tier: 'local', injected: 'drop evidence source' }, metrics: { code: '601138', stockReturnPct: 5, benchmarkReturnPct: 1, excessReturnPct: 4, injected: 'drop evidence metrics' }, injected: 'drop evidence row' }],
+            evidenceState: { modelVersion: 'hypothesis-evidence-v1', status: 'ok', candidateCount: 1, automaticConclusion: false, injected: 'drop evidence state' },
+            evidenceContract: { candidateOnly: true, pointInTime: true, benchmarkAdjusted: true, causalClaim: false, automaticOutcome: false, automaticTradingAction: false, userReviewRequired: true, injected: 'drop evidence contract' },
             contract: { preRegistered: true, causalClaim: false, directionPrediction: false, automaticTradingAction: false, userReviewRequired: true, injected: 'drop hypothesis contract' },
             injected: 'drop hypothesis item',
           }],
@@ -294,12 +299,17 @@ describe('DeepPulse Harness bridge', () => {
         },
         researchHypotheses: {
           modelVersion: 'research-hypothesis-v1',
-          summary: { total: 1, observing: 0, reviewDue: 1, completed: 0, archived: 0 },
+          summary: { total: 1, observing: 0, reviewDue: 1, completed: 0, archived: 0, candidateEvidence: 1 },
+          evidenceService: { modelVersion: 'hypothesis-evidence-v1', automaticCollectionAuthorized: true, intervalSeconds: 900, automaticConclusion: false },
           items: [{
             id: 'hypothesis:1', effectiveStatus: 'review_due', horizonTradingDays: 3,
             baseline: { eventId: 'event-1', title: 'AI算力中心建设提速', sectors: ['通信设备'], watchlist: [{ code: '601138' }], quality: { score: 75, corroborated: false } },
             observationChecklist: [{ id: 'source', label: '是否被独立来源确认' }],
             falsifiers: ['行业没有独立反馈'],
+            marketBaseline: { capturedAt: '2026-08-15T10:01:00+08:00', benchmark: { code: '000001', name: '上证指数', price: 3900 }, watchlist: [{ code: '601138', price: 60 }] },
+            evidenceCandidates: [{ id: 'relative:1', kind: 'relative_performance', label: '工业富联相对表现', facts: ['标的 +5.00%', '基准 +1.00%'], metrics: { code: '601138', stockReturnPct: 5, benchmarkReturnPct: 1, excessReturnPct: 4 } }],
+            evidenceState: { modelVersion: 'hypothesis-evidence-v1', status: 'ok', candidateCount: 1, automaticConclusion: false },
+            evidenceContract: { candidateOnly: true, pointInTime: true, benchmarkAdjusted: true, causalClaim: false, automaticOutcome: false, automaticTradingAction: false, userReviewRequired: true },
             contract: { preRegistered: true, causalClaim: false, directionPrediction: false, automaticTradingAction: false, userReviewRequired: true },
           }],
         },

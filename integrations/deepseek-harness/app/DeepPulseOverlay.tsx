@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.12.0'
+const MIN_BACKEND_VERSION = '1.13.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -69,6 +69,10 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['akshare_enrichment'] === 1
       && capabilities['event_impact'] === 1
       && capabilities['event_background_service'] === 1
+      && capabilities['research_hypotheses'] === 1
+      && capabilities['hypothesis_due_reminders'] === 1
+      && capabilities['hypothesis_evidence_candidates'] === 1
+      && capabilities['hypothesis_market_control'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -184,6 +188,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const eventMethod = recordOf(eventImpact['method'])
   const researchHypotheses = recordOf(raw['researchHypotheses'])
   const researchHypothesisSummary = recordOf(researchHypotheses['summary'])
+  const hypothesisEvidenceService = recordOf(researchHypotheses['evidenceService'])
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -242,6 +247,10 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     const quality = recordOf(baseline['quality'])
     const review = recordOf(item['review'])
     const contract = recordOf(item['contract'])
+    const marketBaseline = recordOf(item['marketBaseline'])
+    const baselineBenchmark = recordOf(marketBaseline['benchmark'])
+    const evidenceState = recordOf(item['evidenceState'])
+    const evidenceContract = recordOf(item['evidenceContract'])
     const baselineSources = Array.isArray(baseline['sources']) ? baseline['sources'].slice(0, 6).map(source => {
       const row = recordOf(source)
       return { id: short(row['id'], 80), name: short(row['name'], 100), tier: short(row['tier'], 30), url: short(row['url'], 500) }
@@ -253,6 +262,33 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     const checklist = Array.isArray(item['observationChecklist']) ? item['observationChecklist'].slice(0, 6).map(check => {
       const row = recordOf(check)
       return { id: short(row['id'], 40), label: short(row['label'], 240) }
+    }) : []
+    const baselineMarketWatch = Array.isArray(marketBaseline['watchlist']) ? marketBaseline['watchlist'].slice(0, 8).map(stock => {
+      const row = recordOf(stock)
+      const source = recordOf(row['source'])
+      return {
+        code: short(row['code'], 20), name: short(row['name'], 80), price: finite(row['price']),
+        source: { id: short(source['id'], 60), name: short(source['name'], 100), tier: short(source['tier'], 30) },
+      }
+    }) : []
+    const evidenceCandidates = Array.isArray(item['evidenceCandidates']) ? item['evidenceCandidates'].slice(0, 20).map(candidate => {
+      const row = recordOf(candidate)
+      const source = recordOf(row['source'])
+      const metrics = recordOf(row['metrics'])
+      return {
+        id: short(row['id'], 120), kind: short(row['kind'], 40), label: short(row['label'], 300),
+        knowableAt: short(row['knowableAt'], 80), observedAt: short(row['observedAt'], 80),
+        firstObservedAt: short(row['firstObservedAt'], 80), facts: uniqueStrings(row['facts'], 6, 300),
+        interpretation: short(row['interpretation'], 300),
+        source: { id: short(source['id'], 60), name: short(source['name'], 100), tier: short(source['tier'], 30), url: short(source['url'], 500) },
+        metrics: {
+          code: short(metrics['code'], 20), name: short(metrics['name'], 80),
+          baselinePrice: finite(metrics['baselinePrice']), currentPrice: finite(metrics['currentPrice']),
+          stockReturnPct: finite(metrics['stockReturnPct']), benchmarkReturnPct: finite(metrics['benchmarkReturnPct']),
+          excessReturnPct: finite(metrics['excessReturnPct']), benchmarkCode: short(metrics['benchmarkCode'], 20),
+          benchmarkName: short(metrics['benchmarkName'], 80), announcementId: short(metrics['announcementId'], 100),
+        },
+      }
     }) : []
     return {
       id: short(item['id'], 160), modelVersion: short(item['modelVersion'], 60),
@@ -269,6 +305,26 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         quality: { score: finite(quality['score']), corroborated: quality['corroborated'] === true, meaning: short(quality['meaning'], 200) },
       },
       observationChecklist: checklist, falsifiers: uniqueStrings(item['falsifiers'], 8, 300),
+      marketBaseline: {
+        capturedAt: short(marketBaseline['capturedAt'], 80),
+        benchmark: { code: short(baselineBenchmark['code'], 20), name: short(baselineBenchmark['name'], 80), price: finite(baselineBenchmark['price']) },
+        watchlist: baselineMarketWatch,
+      },
+      evidenceCandidates,
+      evidenceState: {
+        modelVersion: short(evidenceState['modelVersion'], 60), status: short(evidenceState['status'], 30),
+        lastCheckedAt: short(evidenceState['lastCheckedAt'], 80), candidateCount: finite(evidenceState['candidateCount']),
+        errors: uniqueStrings(evidenceState['errors'], 8, 200), automaticConclusion: evidenceState['automaticConclusion'] === true,
+      },
+      evidenceContract: {
+        candidateOnly: evidenceContract['candidateOnly'] === true,
+        pointInTime: evidenceContract['pointInTime'] === true,
+        benchmarkAdjusted: evidenceContract['benchmarkAdjusted'] === true,
+        causalClaim: evidenceContract['causalClaim'] === true,
+        automaticOutcome: evidenceContract['automaticOutcome'] === true,
+        automaticTradingAction: evidenceContract['automaticTradingAction'] === true,
+        userReviewRequired: evidenceContract['userReviewRequired'] === true,
+      },
       review: Object.keys(review).length ? {
         outcome: short(review['outcome'], 30), note: short(review['note'], 2000),
         reviewedAt: short(review['reviewedAt'], 80), userConfirmed: review['userConfirmed'] === true,
@@ -520,7 +576,15 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         summary: {
           total: finite(researchHypothesisSummary['total']), observing: finite(researchHypothesisSummary['observing']),
           reviewDue: finite(researchHypothesisSummary['review_due']), completed: finite(researchHypothesisSummary['completed']),
-          archived: finite(researchHypothesisSummary['archived']),
+          archived: finite(researchHypothesisSummary['archived']), candidateEvidence: finite(researchHypothesisSummary['candidateEvidence']),
+        },
+        evidenceService: {
+          modelVersion: short(hypothesisEvidenceService['modelVersion'], 60),
+          automaticCollectionAuthorized: hypothesisEvidenceService['automaticCollectionAuthorized'] === true,
+          intervalSeconds: finite(hypothesisEvidenceService['intervalSeconds']),
+          lastCheckedAt: short(hypothesisEvidenceService['lastCheckedAt'], 80),
+          lastError: short(hypothesisEvidenceService['lastError'], 240),
+          automaticConclusion: hypothesisEvidenceService['automaticConclusion'] === true,
         },
         boundary: short(researchHypotheses['boundary'], 300), items: hypothesisItems,
       } : null,
@@ -657,7 +721,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '9. attention 是用户提醒中心状态；可用它解释最近提醒、未读事项、后台价格监控和主动服务日程，但不要替用户更改偏好或授权，也不要把提醒本身当成市场事实。',
     '10. attention.learning 只来自用户明确反馈，可解释当前降噪设置和完成情况；不得推断未记录的偏好，也不得据此触发交易。',
     '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',
-    '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；复盘时不得用后来信息改写原假设，必须区分支持、混合、不支持与事件失效，且最终结论由用户确认。',
+    '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；evidenceCandidates 只是按可知时间排列的候选事实与相对大盘对照，不得把相对涨跌直接解释成事件因果，不得自动修改结论；复盘必须区分支持、混合、不支持与事件失效，最终结论由用户确认。',
   ].join('\n')
 }
 

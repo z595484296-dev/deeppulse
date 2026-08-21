@@ -100,6 +100,29 @@ class ResearchHypothesisServerTests(unittest.TestCase):
             })
         self.assertEqual(result['item']['review']['outcome'], 'not_supported')
 
+    def test_evidence_refresh_persists_candidates_without_reviewing(self):
+        created_at = datetime(2026, 8, 21, 10, tzinfo=BJC)
+        with patch.object(server, 'now_bj', return_value=created_at):
+            created = server.mutate_research_hypothesis('create', {
+                'eventItem': event_item(), 'horizonDays': 3,
+            })['item']
+        loaders = {
+            'quote_loader': lambda code: {'code': code, 'name': '工业富联', 'price': 60, 'source': 'tdx_local'},
+            'benchmark_loader': lambda: [{'code': '000001', 'name': '上证指数', 'price': 3900}],
+            'disclosure_loader': lambda code: {'items': [], 'source': {'id': 'cninfo', 'name': '巨潮资讯'}},
+        }
+        first = server.refresh_hypothesis_evidence(created['id'], created_at, **loaders)
+        self.assertEqual(first['checked'], 1)
+        self.assertEqual(first['hypotheses']['items'][0]['status'], 'observing')
+        loaders['quote_loader'] = lambda code: {'code': code, 'name': '工业富联', 'price': 63, 'source': 'tdx_local'}
+        loaders['benchmark_loader'] = lambda: [{'code': '000001', 'name': '上证指数', 'price': 3939}]
+        second = server.refresh_hypothesis_evidence(
+            created['id'], datetime(2026, 8, 24, 10, tzinfo=BJC), **loaders)
+        item = second['hypotheses']['items'][0]
+        self.assertIsNone(item.get('review'))
+        self.assertGreaterEqual(len(item['evidenceCandidates']), 2)
+        self.assertFalse(second['automaticConclusion'])
+
 
 if __name__ == '__main__':
     unittest.main()

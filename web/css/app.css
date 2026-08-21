@@ -865,6 +865,23 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .hypothesis-evidence { padding: 8px 2px 0; color: var(--text-3); font-size: 11px; line-height: 1.65; }
 .hypothesis-evidence ol, .hypothesis-evidence ul { margin: 5px 0 0; padding-left: 20px; }
 .hypothesis-falsifiers { margin-top: 7px; color: var(--amber); }
+.hypothesis-baseline { margin: 9px 0; display: flex; gap: 7px; flex-wrap: wrap; align-items: center; font-size: 10.5px; color: var(--text-3); }
+.hypothesis-baseline b { color: var(--text-2); }
+.hypothesis-baseline span { padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; background: rgba(148,163,184,.04); }
+.hypothesis-timeline-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.hypothesis-evidence-row { position: relative; display: grid; grid-template-columns: 92px 1fr; gap: 11px; padding-left: 12px; }
+.hypothesis-evidence-row::before { content: ''; position: absolute; left: 0; top: 5px; bottom: -12px; width: 2px; background: rgba(79,140,255,.22); }
+.hypothesis-evidence-row:last-child::before { bottom: 6px; }
+.hypothesis-evidence-row > time { color: var(--text-3); font-size: 10px; }
+.hypothesis-evidence-title { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+.hypothesis-evidence-title span { padding: 2px 5px; border-radius: 4px; color: var(--accent); background: rgba(79,140,255,.1); font-size: 9.5px; }
+.hypothesis-evidence-row[data-kind="official"] .hypothesis-evidence-title span { color: #2ebd85; background: rgba(46,189,133,.1); }
+.hypothesis-evidence-row[data-kind="control"] .hypothesis-evidence-title span { color: var(--violet); background: rgba(168,85,247,.1); }
+.hypothesis-evidence-title b { font-size: 11.5px; color: var(--text-2); }
+.hypothesis-evidence-row ul { margin: 4px 0; padding-left: 17px; color: var(--text-2); font-size: 10.5px; line-height: 1.55; }
+.hypothesis-evidence-row small { display: block; color: var(--text-3); font-size: 9.5px; line-height: 1.5; }
+.hypothesis-evidence-errors { margin-top: 8px; padding: 7px 8px; border-radius: 6px; background: rgba(246,70,93,.06); color: var(--red); font-size: 10px; }
+.empty.compact { padding: 10px; font-size: 10.5px; }
 .hypothesis-review-form { display: grid; grid-template-columns: 220px 1fr auto; gap: 8px; margin-top: 10px; align-items: stretch; }
 .hypothesis-review-form select, .hypothesis-review-form textarea { border: 1px solid var(--line); border-radius: 7px; background: var(--bg-2); color: var(--text); padding: 7px 9px; font: inherit; }
 .hypothesis-review-form textarea { min-height: 50px; resize: vertical; }
@@ -1340,6 +1357,7 @@ body.light .newsline::before {
   .event-path-actions { justify-content: flex-start; }
   .hypothesis-review-form { grid-template-columns: 1fr; }
   .hypothesis-head > b { min-width: 160px; }
+  .hypothesis-evidence-row { grid-template-columns: 1fr; gap: 3px; }
 }
 body.light .card {
   background: linear-gradient(180deg, #ffffff, #fbfcfe);
