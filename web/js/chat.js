@@ -4,10 +4,10 @@
    配置 DeepSeek API Key（data/config.json）后自动升级为云端大脑。
    ============================================================ */
 
-import { api } from './api.js?v=1.21.0';
-import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.21.0';
-import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.21.0';
-import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.21.0';
+import { api } from './api.js?v=1.22.0';
+import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.22.0';
+import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.22.0';
+import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.22.0';
 
 export const BOT_NAME = '蚂小财';
 const HISTORY_KEY = 'dp_chat_v1';

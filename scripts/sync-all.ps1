@@ -41,6 +41,7 @@ $runtimeFiles = @(
     'event_impact.py',
     'research_hypothesis.py',
     'research_memory.py',
+    'akshare_research.py',
     'hypothesis_evidence.py',
     'tdx_local.py',
     'deeppulse.manifest.json',

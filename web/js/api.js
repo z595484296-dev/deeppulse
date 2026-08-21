@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.21.0';
+const MIN_VERSION = '1.22.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -52,6 +52,8 @@ async function probeBase(base, signal) {
       && capabilities.background_monitor === 1
       && capabilities.market_routine === 1
       && capabilities.akshare_enrichment === 1
+      && capabilities.akshare_research_snapshot === 1
+      && capabilities.source_lineage === 1
       && capabilities.event_impact === 1
       && capabilities.event_background_service === 1
       && capabilities.research_hypotheses === 1
@@ -95,7 +97,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.21.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.22.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -158,6 +160,7 @@ export const api = {
   repairDiagnostics: (action) => post('/api/diagnostics/repair', { action }, 30000),
   tdxStatus: (fresh = false) => request('/api/tdx/status?probe=1' + (fresh ? '&fresh=1' : ''), 10000),
   akshareStatus: (probe = true) => request('/api/akshare/status?probe=' + (probe ? '1' : '0'), 30000),
+  akshareResearch: (refresh = false) => request('/api/akshare/research-snapshot?refresh=' + (refresh ? '1' : '0'), 70000),
   disclosures: (code, n = 8) => request(`/api/disclosures?code=${encodeURIComponent(code)}&n=${n}`),
   brain: () => request('/api/brain'),
   profile: () => request('/api/profile', 5000),

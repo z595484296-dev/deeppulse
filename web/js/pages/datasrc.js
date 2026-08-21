@@ -1,7 +1,8 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.21.0';
-import { esc, toast, downloadText } from '../util.js?v=1.21.0';
+import { api } from '../api.js?v=1.22.0';
+import { esc, toast, downloadText } from '../util.js?v=1.22.0';
+import { state } from '../store.js?v=1.22.0';
 
 let built = false;
 
@@ -70,8 +71,13 @@ export function init(container) {
           <div id="ds-akshare-status" class="tdx-status"><div class="empty">正在读取本机环境…</div></div>
           <div class="tdx-actions">
             <button class="btn primary" id="ds-akshare-probe">核对交易日历</button>
+            <button class="btn" id="ds-akshare-research">生成研究增强快照</button>
+            <button class="btn" id="ds-akshare-ask" disabled>让 DeepSeek 解读</button>
             <a class="btn" href="https://akshare.akfamily.xyz/" target="_blank" rel="noopener noreferrer">官方文档</a>
           </div>
+        </div>
+        <div id="ds-akshare-research-panel" class="akresearch-panel">
+          <div class="empty">研究增强按需读取，不会自动影响情绪温度。点击“生成研究增强快照”查看宏观与利率背景。</div>
         </div>
         <div class="tdx-safety">分层原则：AKShare 不替代交易所公告、通达信本地行情或实时行情主链路；事件路径只表示透明规则识别的敏感性，不代表因果或方向预测。</div>
       </div>
@@ -129,6 +135,19 @@ export function init(container) {
     await renderAkshareStatus(container, true);
     await renderSources(container);
     btn.disabled = false; btn.textContent = '重新核对';
+  });
+  container.querySelector('#ds-akshare-research').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = '读取中，可能需要约 30–60 秒…';
+    await renderAkshareResearch(container, true);
+    await renderSources(container);
+    btn.disabled = false; btn.textContent = '重新生成研究增强快照';
+  });
+  container.querySelector('#ds-akshare-ask').addEventListener('click', () => {
+    if (!state.akshareResearch || state.akshareResearch.status === 'not_loaded') return;
+    document.dispatchEvent(new CustomEvent('ask-akshare-research', {
+      detail: { snapshot: state.akshareResearch },
+    }));
   });
   container.querySelector('#ds-run-diagnostics').addEventListener('click', async e => {
     const btn = e.currentTarget;
@@ -294,6 +313,48 @@ async function renderAkshareStatus(container, probe = false) {
   }
 }
 
+async function renderAkshareResearch(container, refresh = false) {
+  const el = container.querySelector('#ds-akshare-research-panel');
+  if (!el) return;
+  if (refresh) el.innerHTML = '<div class="empty">正在读取宏观与利率背景，并核对每项数据日期…</div>';
+  try {
+    const snapshot = await api.akshareResearch(refresh);
+    state.akshareResearch = snapshot;
+    if (!snapshot || snapshot.status === 'not_loaded') return;
+    const refreshButton = container.querySelector('#ds-akshare-research');
+    const askButton = container.querySelector('#ds-akshare-ask');
+    if (refreshButton) refreshButton.textContent = '重新生成研究增强快照';
+    if (askButton) askButton.disabled = snapshot.status === 'not_installed';
+    if (snapshot.status === 'not_installed') {
+      el.innerHTML = '<div class="tdx-error">本机未安装 AKShare，研究增强暂不可用。</div>';
+      return;
+    }
+    const statusLabels = { current: '时效正常', partial: '部分陈旧', stale: '数据陈旧', unavailable: '暂不可用' };
+    const metricLabels = { current: '可用', stale: '陈旧', unavailable: '缺失' };
+    const summary = snapshot.summary || {};
+    el.innerHTML = `
+      <div class="akresearch-head">
+        <div><b>研究增强快照</b><span>${esc(snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString('zh-CN', { hour12: false }) : '--')}</span></div>
+        <div class="akresearch-summary"><span class="ok">${Number(summary.current || 0)} 项可用</span><span class="warn">${Number(summary.stale || 0)} 项陈旧</span><span>${Number(summary.unavailable || 0)} 项缺失</span></div>
+      </div>
+      <div class="akresearch-modules">
+        ${(snapshot.modules || []).map(module => `<section class="akresearch-module ${esc(module.status || '')}">
+          <header><div><b>${esc(module.label)}</b><small>${esc(module.purpose)}</small></div><span>${esc(statusLabels[module.status] || module.status || '--')}</span></header>
+          <div class="akresearch-metrics">${(module.metrics || []).map(metric => `<div class="akresearch-metric ${esc(metric.status || '')}">
+            <div><span>${esc(metric.label)}</span><strong>${metric.value == null ? '--' : esc(metric.value)}${metric.value == null ? '' : `<small>${esc(metric.unit || '')}</small>`}</strong></div>
+            <div class="akresearch-meta"><span>${esc(metricLabels[metric.status] || metric.status || '--')} · ${esc(metric.asOf || '无数据日期')}</span><span>上游：${esc(metric.source?.upstream || '--')}</span></div>
+            ${metric.note ? `<p>${esc(metric.note)}</p>` : ''}
+          </div>`).join('')}</div>
+        </section>`).join('')}
+      </div>
+      ${(snapshot.errors || []).length ? `<div class="akresearch-errors"><b>降级记录：</b>${snapshot.errors.map(row => `${esc(row.interface)}：${esc(row.error)}`).join(' · ')}</div>` : ''}
+      <div class="akresearch-boundary"><b>来源规则：</b>${esc(snapshot.lineagePolicy || '')}<br><b>产品边界：</b>${esc(snapshot.boundary || '')}</div>
+    `;
+  } catch (error) {
+    el.innerHTML = `<div class="tdx-error">研究增强读取失败：${esc(error.message)}</div>`;
+  }
+}
+
 async function renderStatus(container) {
   const el = container.querySelector('#ds-status');
   el.innerHTML = '<div class="v">正在检测本地服务…</div>';
@@ -371,6 +432,6 @@ export async function refresh(container) {
   init(container);
   await Promise.allSettled([
     renderSources(container), renderStatus(container), renderTdxStatus(container), renderAkshareStatus(container),
-    renderDiagnostics(container),
+    renderAkshareResearch(container, false), renderDiagnostics(container),
   ]);
 }

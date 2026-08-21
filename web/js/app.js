@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.21.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.21.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.21.0';
+import { api } from './api.js?v=1.22.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.22.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.22.0';
 
-import * as pageOverview from './pages/overview.js?v=1.21.0';
-import * as pageEmotion from './pages/emotion.js?v=1.21.0';
-import * as pageMarket from './pages/market.js?v=1.21.0';
-import * as pageLadder from './pages/ladder.js?v=1.21.0';
-import * as pageWatch from './pages/watch.js?v=1.21.0';
-import * as pageStrategy from './pages/strategy.js?v=1.21.0';
-import * as pageEpaper from './pages/epaper.js?v=1.21.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.21.0';
-import * as pageAbout from './pages/about.js?v=1.21.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.21.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.21.0';
-import { initOnboarding } from './onboarding.js?v=1.21.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.21.0';
+import * as pageOverview from './pages/overview.js?v=1.22.0';
+import * as pageEmotion from './pages/emotion.js?v=1.22.0';
+import * as pageMarket from './pages/market.js?v=1.22.0';
+import * as pageLadder from './pages/ladder.js?v=1.22.0';
+import * as pageWatch from './pages/watch.js?v=1.22.0';
+import * as pageStrategy from './pages/strategy.js?v=1.22.0';
+import * as pageEpaper from './pages/epaper.js?v=1.22.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.22.0';
+import * as pageAbout from './pages/about.js?v=1.22.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.22.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.22.0';
+import { initOnboarding } from './onboarding.js?v=1.22.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.22.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -233,6 +233,28 @@ function currentHarnessContext() {
       automaticCausalInference: state.researchMemory.automaticCausalInference === true,
       automaticStrategyChange: state.researchMemory.automaticStrategyChange === true,
       automaticTradingAction: state.researchMemory.automaticTradingAction === true,
+    } : null,
+    akshareResearch: state.akshareResearch && state.akshareResearch.status !== 'not_loaded' ? {
+      modelVersion: state.akshareResearch.modelVersion,
+      provider: state.akshareResearch.provider,
+      generatedAt: state.akshareResearch.generatedAt,
+      status: state.akshareResearch.status,
+      summary: state.akshareResearch.summary,
+      modules: (state.akshareResearch.modules || []).map(module => ({
+        id: module.id, label: module.label, purpose: module.purpose, status: module.status,
+        metrics: (module.metrics || []).map(metric => ({
+          id: metric.id, label: metric.label, value: metric.value, unit: metric.unit,
+          asOf: metric.asOf, stalenessDays: metric.stalenessDays, status: metric.status,
+          note: metric.note, reference: metric.reference, source: metric.source,
+          includedInEmotionScore: metric.includedInEmotionScore === true,
+        })),
+      })),
+      errors: state.akshareResearch.errors || [],
+      marketBreadth: state.akshareResearch.marketBreadth,
+      lineagePolicy: state.akshareResearch.lineagePolicy,
+      boundary: state.akshareResearch.boundary,
+      includedInEmotionScore: state.akshareResearch.includedInEmotionScore === true,
+      automaticTradingAction: state.akshareResearch.automaticTradingAction === true,
     } : null,
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
@@ -786,6 +808,14 @@ async function boot() {
     const request = askDeepSeek({
       question: '请基于这条由我明确确认的研究记忆，总结以后遇到相似研究结构时可以改进的方法：区分当时已知事实、后来证据、反证命中与数据缺口；不要统计交易胜率，不要根据收益倒推因果，也不要自动修改策略。',
       context: { intent: 'review-research-memory', researchMemoryItem: memory || null },
+    });
+    if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);
+  });
+  document.addEventListener('ask-akshare-research', e => {
+    const snapshot = e.detail && e.detail.snapshot;
+    const request = askDeepSeek({
+      question: '请解读这份 AKShare 研究增强快照：先按数据日期区分可用、陈旧和缺失项，再说明宏观、价格与利率背景能支持哪些研究线索、不能支持哪些结论。相同独立来源组不得当作交叉验证，不得据此修改情绪温度、仓位或生成交易动作；最后列出应优先补查的一手来源。',
+      context: { intent: 'explain-akshare-research', akshareResearch: snapshot || null },
     });
     if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);
   });

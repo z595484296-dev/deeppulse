@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.21.0'
+const MIN_BACKEND_VERSION = '1.22.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -67,6 +67,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['background_monitor'] === 1
       && capabilities['market_routine'] === 1
       && capabilities['akshare_enrichment'] === 1
+      && capabilities['akshare_research_snapshot'] === 1
+      && capabilities['source_lineage'] === 1
       && capabilities['event_impact'] === 1
       && capabilities['event_background_service'] === 1
       && capabilities['research_hypotheses'] === 1
@@ -223,6 +225,9 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const researchMemorySummary = recordOf(researchMemory['summary'])
   const researchMemoryPreferences = recordOf(researchMemory['preferences'])
   const researchMemoryPatterns = recordOf(researchMemory['patterns'])
+  const akshareResearch = recordOf(raw['akshareResearch'])
+  const akshareProvider = recordOf(akshareResearch['provider'])
+  const akshareSummary = recordOf(akshareResearch['summary'])
   const sanitizeCockpitItem = (value: unknown) => {
     const item = recordOf(value)
     const evidence = recordOf(item['evidence'])
@@ -283,6 +288,31 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     ? researchMemory['items'].filter(item => recordOf(item)['hidden'] !== true).slice(0, 20).map(sanitizeResearchMemory) : []
   const standaloneResearchMemory = Object.keys(recordOf(raw['researchMemoryItem'])).length
     ? sanitizeResearchMemory(raw['researchMemoryItem']) : null
+  const akshareModules = Array.isArray(akshareResearch['modules'])
+    ? akshareResearch['modules'].slice(0, 5).map(value => {
+      const module = recordOf(value)
+      const metrics = Array.isArray(module['metrics']) ? module['metrics'].slice(0, 12).map(value => {
+        const metric = recordOf(value)
+        const source = recordOf(metric['source'])
+        return {
+          id: short(metric['id'], 60), label: short(metric['label'], 100),
+          value: finite(metric['value']), unit: short(metric['unit'], 30),
+          asOf: short(metric['asOf'], 30), stalenessDays: finite(metric['stalenessDays']),
+          status: short(metric['status'], 30), note: short(metric['note'], 300),
+          reference: short(metric['reference'], 200),
+          source: {
+            provider: short(source['provider'], 60), upstream: short(source['upstream'], 80),
+            upstreamUrl: short(source['upstreamUrl'], 500), tier: short(source['tier'], 30),
+            independentGroup: short(source['independentGroup'], 60),
+          },
+          includedInEmotionScore: metric['includedInEmotionScore'] === true,
+        }
+      }) : []
+      return {
+        id: short(module['id'], 60), label: short(module['label'], 100),
+        purpose: short(module['purpose'], 300), status: short(module['status'], 30), metrics,
+      }
+    }) : []
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -779,6 +809,31 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         automaticTradingAction: researchMemory['automaticTradingAction'] === true,
       } : null,
       researchMemoryItem: standaloneResearchMemory,
+      akshareResearch: Object.keys(akshareResearch).length ? {
+        modelVersion: short(akshareResearch['modelVersion'], 60),
+        provider: {
+          name: short(akshareProvider['name'], 60), version: short(akshareProvider['version'], 40),
+          tier: short(akshareProvider['tier'], 30),
+        },
+        generatedAt: short(akshareResearch['generatedAt'], 80), status: short(akshareResearch['status'], 30),
+        summary: {
+          metrics: finite(akshareSummary['metrics']), current: finite(akshareSummary['current']),
+          stale: finite(akshareSummary['stale']), unavailable: finite(akshareSummary['unavailable']),
+        },
+        modules: akshareModules,
+        errors: Array.isArray(akshareResearch['errors']) ? akshareResearch['errors'].slice(0, 8).map(value => {
+          const row = recordOf(value)
+          return { interface: short(row['interface'], 100), error: short(row['error'], 240) }
+        }) : [],
+        marketBreadth: {
+          status: short(recordOf(akshareResearch['marketBreadth'])['status'], 60),
+          statement: short(recordOf(akshareResearch['marketBreadth'])['statement'], 300),
+        },
+        lineagePolicy: short(akshareResearch['lineagePolicy'], 300),
+        boundary: short(akshareResearch['boundary'], 400),
+        includedInEmotionScore: akshareResearch['includedInEmotionScore'] === true,
+        automaticTradingAction: akshareResearch['automaticTradingAction'] === true,
+      } : null,
       indices,
       sources,
       contextTruncated: {
@@ -915,6 +970,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；evidenceCandidates 只是按可知时间排列的候选事实与相对大盘对照，不得把相对涨跌直接解释成事件因果，不得自动修改结论；复盘必须区分支持、混合、不支持与事件失效，最终结论由用户确认。',
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
+    '15. akshareResearch 是按需生成的研究增强背景；必须检查每项 asOf 和 status，陈旧或缺失数据不得描述为当前事实。source.independentGroup 相同表示最终上游相同，不能算独立互证；这些指标不参与情绪温度、仓位区间或交易触发。',
   ].join('\n')
 }
 

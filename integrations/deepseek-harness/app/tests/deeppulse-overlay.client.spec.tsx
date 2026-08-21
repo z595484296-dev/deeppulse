@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.21.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, epaper_gateway: 1 } },
+  data: { version: '1.22.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -430,6 +430,36 @@ describe('DeepPulse Harness bridge', () => {
     expect(JSON.stringify(ask)).not.toContain('drop ')
   })
 
+  it('sanitizes AKShare research metrics while retaining freshness and final upstream', () => {
+    const ask = normalizeDeepPulseAsk({
+      type: 'dp-ask', question: '解释宏观背景', context: {
+        akshareResearch: {
+          modelVersion: 'akshare-research-v1', generatedAt: '2026-08-22T08:00:00+08:00', status: 'degraded',
+          provider: { name: 'AKShare', version: '1.16.82', tier: 'enrichment', injected: 'drop provider' },
+          summary: { metrics: 2, current: 1, stale: 1, unavailable: 0, injected: 'drop summary' },
+          modules: [{ id: 'rates', label: '利率环境', purpose: '研究背景', status: 'partial', metrics: [{
+            id: 'china-lpr-1y', label: 'LPR 1 年期', value: 3, unit: '%', asOf: '2026-08-20',
+            stalenessDays: 2, status: 'current', note: '不算独立互证', reference: '',
+            source: { provider: 'AKShare', upstream: '东方财富', upstreamUrl: 'https://data.eastmoney.com/', tier: 'enrichment', independentGroup: 'eastmoney', injected: 'drop source' },
+            includedInEmotionScore: false, injected: 'drop metric',
+          }], injected: 'drop module' }],
+          errors: [{ interface: 'macro_china_cpi_yearly', error: 'upstream changed', injected: 'drop error' }],
+          marketBreadth: { status: 'kept-on-primary-chain', statement: '不重复包装为独立来源', injected: 'drop breadth' },
+          lineagePolicy: '相同上游不算独立互证', boundary: '不参与情绪温度',
+          includedInEmotionScore: false, automaticTradingAction: false, injected: 'drop root',
+        },
+      },
+    })
+    expect(ask).toMatchObject({ context: { akshareResearch: {
+      status: 'degraded', summary: { current: 1, stale: 1 },
+      modules: [{ metrics: [{ asOf: '2026-08-20', status: 'current',
+        source: { upstream: '东方财富', independentGroup: 'eastmoney' }, includedInEmotionScore: false }] }],
+      marketBreadth: { status: 'kept-on-primary-chain' },
+      includedInEmotionScore: false, automaticTradingAction: false,
+    } } })
+    expect(JSON.stringify(ask)).not.toContain('drop ')
+  })
+
   it('formats source priority, freshness, and untrusted-data instructions into the prompt', () => {
     const ask = normalizeDeepPulseAsk({
       type: 'dp-ask', text: '继续分析',
@@ -451,6 +481,8 @@ describe('DeepPulse Harness bridge', () => {
     expect(prompt).toContain('不是市场机会排名')
     expect(prompt).toContain('researchMemory')
     expect(prompt).toContain('不得统计交易胜率')
+    expect(prompt).toContain('akshareResearch')
+    expect(prompt).toContain('最终上游相同')
   })
 
   it('requires a bounded fill envelope for editor generation', () => {

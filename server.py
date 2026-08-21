@@ -64,6 +64,14 @@ except Exception:
     RESEARCH_MEMORY_MODEL_VERSION = 'research-memory-unavailable'
 
 try:
+    from akshare_research import (build_snapshot as build_akshare_research_snapshot,
+                                  unloaded_snapshot as unloaded_akshare_research_snapshot,
+                                  MODEL_VERSION as AKSHARE_RESEARCH_MODEL_VERSION)
+except Exception:
+    build_akshare_research_snapshot = unloaded_akshare_research_snapshot = None
+    AKSHARE_RESEARCH_MODEL_VERSION = 'akshare-research-unavailable'
+
+try:
     from hypothesis_evidence import (collect_candidate_evidence,
                                      MODEL_VERSION as HYPOTHESIS_EVIDENCE_MODEL_VERSION)
 except Exception:
@@ -98,7 +106,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.21.0'
+VERSION = '1.22.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -276,7 +284,9 @@ def akshare_status(probe=False):
         status = 'ok' if calendar.get('confirmed') else 'degraded'
     else:
         with _source_lock:
-            observation = dict(_source_stats.get('akshare:tool_trade_date_hist_sina') or {})
+            observations = [dict(value) for key, value in _source_stats.items()
+                            if key.startswith('akshare:')]
+            observation = max(observations, key=lambda row: row.get('last_at') or '') if observations else {}
         if observation:
             status = 'ok' if observation.get('ok') else 'degraded'
     return {
@@ -290,6 +300,7 @@ def akshare_status(probe=False):
             'macro_calendar': bool(module and hasattr(module, 'macro_info_ws')),
             'macro_corroboration': bool(module and hasattr(module, 'news_economic_baidu')),
             'stock_news': bool(module and hasattr(module, 'stock_news_em')),
+            'research_snapshot': bool(module and build_akshare_research_snapshot),
         },
         'event_service': load_event_service_config() if 'load_event_service_config' in globals() else None,
         'error': _akshare_error,
@@ -388,9 +399,11 @@ def source_catalog():
         elif src['id'] == 'akshare':
             environment = akshare_status(probe=False)
             status = environment['status']
-            observation = stats.get('akshare:tool_trade_date_hist_sina')
-            if observation:
-                last = observation
+            akshare_observations = [value for key, value in stats.items()
+                                    if key.startswith('akshare:')]
+            if akshare_observations:
+                last = max(akshare_observations,
+                           key=lambda row: row.get('last_at') or '')
         elif src['mode'] == 'reference':
             status = 'reference'
         elif circuit:
@@ -442,6 +455,44 @@ def cache_drop(prefix):
     with _cache_lock:
         for k in [k for k in _cache if k.startswith(prefix)]:
             del _cache[k]
+
+
+def akshare_research_snapshot(refresh=False):
+    """Return a cached, on-demand macro/rates snapshot with source lineage."""
+    module = load_akshare()
+    version = str(getattr(module, '__version__', '') or '') if module else ''
+    if module is None or build_akshare_research_snapshot is None:
+        if unloaded_akshare_research_snapshot:
+            return unloaded_akshare_research_snapshot(False, version)
+        return {'modelVersion': AKSHARE_RESEARCH_MODEL_VERSION, 'status': 'unavailable',
+                'modules': [], 'errors': [{'interface': 'akshare', 'error': _akshare_error or '不可用'}],
+                'includedInEmotionScore': False, 'automaticTradingAction': False}
+
+    key = 'akshare_research_snapshot_v1'
+    if refresh:
+        cache_drop(key)
+    else:
+        with _cache_lock:
+            hit = _cache.get(key)
+            if hit and hit[0] > time.monotonic():
+                return hit[1]
+        return unloaded_akshare_research_snapshot(True, version)
+
+    def fetcher(name, **kwargs):
+        fn = getattr(module, name, None)
+        if not callable(fn):
+            raise RuntimeError('%s 接口不可用' % name)
+        started = time.monotonic()
+        try:
+            value = fn(**kwargs)
+            _record_source('akshare:' + name, True, (time.monotonic() - started) * 1000)
+            return value
+        except Exception as exc:
+            _record_source('akshare:' + name, False, (time.monotonic() - started) * 1000, exc)
+            raise
+
+    return cached(key, 6 * 3600,
+                  lambda: build_akshare_research_snapshot(fetcher, version, now_bj()))
 
 
 # ---------------------------------------------------------------- 可选本地增强：通达信 TQ-Local（只读）
@@ -5085,7 +5136,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.21.0'
+    server_version = 'DeepPulse/1.22.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5208,6 +5259,8 @@ class Handler(BaseHTTPRequestHandler):
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,
+                          'akshare_research_snapshot': 1,
+                          'source_lineage': 1,
                           'event_impact': 1,
                           'event_background_service': 1,
                           'research_hypotheses': 1,
@@ -5259,6 +5312,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': tdx_status(probe=probe, fresh=fresh)})
         elif path == '/api/akshare/status':
             self.send_json({'ok': True, 'data': akshare_status(probe=qs.get('probe', '1') != '0')})
+        elif path == '/api/akshare/research-snapshot':
+            self.send_json({'ok': True, 'data': akshare_research_snapshot(
+                refresh=qs.get('refresh', '0') == '1')})
         elif path == '/api/disclosures':
             code = normalize_code(qs.get('code', ''))
             if not code:
