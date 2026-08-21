@@ -1,6 +1,6 @@
 /* 深脉 DeepPulse — 关于页（我的身体自述） */
 
-import { replayOnboarding } from '../onboarding.js?v=1.7.0';
+import { replayOnboarding } from '../onboarding.js?v=1.8.0';
 
 let built = false;
 
@@ -76,7 +76,7 @@ export function init(container) {
 
       <div class="card span-12" style="text-align:center;padding:20px">
         <div style="font-size:12px;color:var(--text-3);line-height:2">
-          深脉 DeepPulse v1.7.0 · 本地运行 · 数据来源：通达信 TQ-Local（可选）/ 东方财富 / 腾讯公开接口<br>
+          深脉 DeepPulse v1.8.0 · 本地运行 · 数据来源：通达信 TQ-Local（可选）/ 东方财富 / 腾讯公开接口<br>
           仅供研究参考，不构成投资建议 · 市场有风险，决策需独立<br>
           <span style="color:var(--text-3)">Made by DeepSeek, for a trader who reads the market's pulse.</span>
         </div>

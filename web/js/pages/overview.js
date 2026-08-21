@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.7.0';
-import { state, bus } from '../store.js?v=1.7.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.7.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.7.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.7.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.7.0';
+import { api } from '../api.js?v=1.8.0';
+import { state, bus } from '../store.js?v=1.8.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.8.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.8.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState } from '../util.js?v=1.8.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.8.0';
 
 let built = false;
 let sparksAt = 0;

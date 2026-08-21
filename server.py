@@ -61,7 +61,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.7.0'
+VERSION = '1.8.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1324,6 +1324,7 @@ PROFILE_LIST_LIMITS = {
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
+    'background_monitor': 16 * 1024,
 }
 
 
@@ -1454,6 +1455,237 @@ def update_attention_item(item, remove=False):
             json.dump(current, f, ensure_ascii=False, indent=1)
         os.replace(temp_file, PROFILE_FILE)
         return current
+
+
+# ---------------------------------------------------------------- 后台主动监控（显式授权、仅本机、仅交易时段）
+
+_monitor_lock = threading.Lock()
+_monitor_stop = threading.Event()
+_monitor_wake = threading.Event()
+_monitor_thread = None
+_monitor_runtime = {
+    'thread_running': False,
+    'state': 'disabled',
+    'last_check_at': None,
+    'last_success_at': None,
+    'next_check_at': None,
+    'last_error': None,
+    'checks': 0,
+    'triggered_count': 0,
+}
+
+
+def normalize_monitor_config(value=None):
+    source = value if isinstance(value, dict) else {}
+    interval = source.get('interval_seconds', source.get('intervalSeconds', 15))
+    try:
+        interval = int(interval)
+    except (TypeError, ValueError):
+        interval = 15
+    return {
+        'enabled': source.get('enabled') is True,
+        'interval_seconds': max(10, min(120, interval)),
+        'market_hours_only': True,
+        'enabled_at': str(source.get('enabled_at') or source.get('enabledAt') or '')[:40] or None,
+    }
+
+
+def load_monitor_config():
+    profile = load_profile().get('data') or {}
+    return normalize_monitor_config(profile.get('background_monitor'))
+
+
+def save_monitor_config(value):
+    cfg = normalize_monitor_config(value)
+    previous = load_monitor_config()
+    if cfg['enabled'] and not previous['enabled']:
+        cfg['enabled_at'] = now_bj().isoformat(timespec='seconds')
+    elif not cfg['enabled']:
+        cfg['enabled_at'] = None
+    saved = save_profile({'background_monitor': cfg})
+    _monitor_wake.set()
+    return saved
+
+
+def _read_profile_unlocked():
+    try:
+        with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
+            current = json.load(f)
+        if isinstance(current, dict) and isinstance(current.get('data'), dict):
+            return current
+    except Exception:
+        pass
+    return {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+
+
+def _write_profile_unlocked(current):
+    current['schema'] = 1
+    current['revision'] = int(current.get('revision') or 0) + 1
+    current['updated_at'] = now_bj().isoformat(timespec='seconds')
+    temp_file = PROFILE_FILE + '.tmp'
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        json.dump(current, f, ensure_ascii=False, indent=1)
+    os.replace(temp_file, PROFILE_FILE)
+    return current
+
+
+def commit_background_alert(alert_id, quote, triggered_at=None):
+    """Atomically mark one alert and publish its matching attention item."""
+    clean_id = str(alert_id or '').strip()[:160]
+    price = quote.get('price') if isinstance(quote, dict) else None
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return None
+    timestamp = int(triggered_at or time.time() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        alerts = current['data'].get('alerts') or []
+        target = next((row for row in alerts if isinstance(row, dict)
+                       and str(row.get('id') or '') == clean_id and not row.get('triggered')), None)
+        if not target:
+            return None
+        try:
+            threshold = float(target.get('price'))
+        except (TypeError, ValueError):
+            return None
+        direction = target.get('dir')
+        reached = (direction == 'up' and price >= threshold) or (direction == 'down' and price <= threshold)
+        if not reached:
+            return None
+        target['triggered'] = True
+        target['triggered_at'] = timestamp
+        target['triggered_price'] = price
+        target['triggered_by'] = 'background-monitor'
+        name = str(target.get('name') or target.get('code') or '关注标的')[:80]
+        verb = '上破' if direction == 'up' else '下破'
+        item = {
+            'id': 'price:' + clean_id,
+            'fingerprint': 'price:' + clean_id,
+            'kind': 'price',
+            'priority': 'high',
+            'title': '%s 已%s %.2f' % (name, verb, threshold),
+            'detail': '现价 %.2f；本机后台监控在页面关闭后检测到你设置的价格条件。' % price,
+            'reason': '你为 %s 设置了%s %.2f 的提醒' % (name, verb, threshold),
+            'page': 'watch',
+            'delivery': 'immediate',
+            'createdAt': timestamp,
+            'readAt': None,
+        }
+        inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict) and row.get('id') != item['id']]
+        inbox.append(item)
+        current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+        return _write_profile_unlocked(current)
+
+
+def process_background_alerts_once(now=None, quote_loader=None):
+    current = now or now_bj()
+    if _market_session_label(current) != 'OPEN':
+        return {'checked': 0, 'triggered': 0, 'state': 'paused_market_closed'}
+    profile = load_profile().get('data') or {}
+    pending = [row for row in (profile.get('alerts') or [])
+               if isinstance(row, dict) and not row.get('triggered') and row.get('id')]
+    loader = quote_loader or quote_with_fallback
+    checked = triggered = 0
+    errors = []
+    for alert in pending:
+        code = normalize_code(str(alert.get('code') or ''))
+        if len(code) != 6:
+            continue
+        try:
+            quote = cached('quote_' + code, 4, lambda c=code: loader(c))
+            checked += 1
+            if commit_background_alert(alert.get('id'), quote):
+                triggered += 1
+        except Exception as exc:
+            errors.append('%s: %s' % (code, str(exc)[:120]))
+    return {
+        'checked': checked,
+        'triggered': triggered,
+        'state': 'monitoring' if pending else 'idle_no_alerts',
+        'errors': errors[:5],
+    }
+
+
+def background_monitor_status():
+    cfg = load_monitor_config()
+    profile = load_profile().get('data') or {}
+    pending = sum(1 for row in (profile.get('alerts') or [])
+                  if isinstance(row, dict) and not row.get('triggered'))
+    with _monitor_lock:
+        runtime = dict(_monitor_runtime)
+    state = runtime['state']
+    if not cfg['enabled']:
+        state = 'disabled'
+    elif _market_session_label() != 'OPEN' and state not in ('error',):
+        state = 'paused_market_closed'
+    elif pending == 0 and state not in ('error',):
+        state = 'idle_no_alerts'
+    elif state in ('disabled', 'stopped'):
+        state = 'starting'
+    return {
+        'config': cfg,
+        'runtime': dict(runtime, state=state),
+        'pending_alerts': pending,
+        'service_continues_when_page_closed': True,
+        'service_stops_when_local_server_stops': True,
+    }
+
+
+def _background_monitor_loop():
+    with _monitor_lock:
+        _monitor_runtime['thread_running'] = True
+    while not _monitor_stop.is_set():
+        cfg = load_monitor_config()
+        wait_seconds = 30
+        if not cfg['enabled']:
+            with _monitor_lock:
+                _monitor_runtime.update(state='disabled', next_check_at=None, last_error=None)
+        elif _market_session_label() != 'OPEN':
+            with _monitor_lock:
+                _monitor_runtime.update(state='paused_market_closed', next_check_at=None, last_error=None)
+        else:
+            wait_seconds = cfg['interval_seconds']
+            checked_at = now_bj()
+            try:
+                result = process_background_alerts_once(checked_at)
+                with _monitor_lock:
+                    _monitor_runtime.update(
+                        state=result['state'],
+                        last_check_at=checked_at.isoformat(timespec='seconds'),
+                        last_success_at=checked_at.isoformat(timespec='seconds'),
+                        next_check_at=(checked_at + timedelta(seconds=wait_seconds)).isoformat(timespec='seconds'),
+                        last_error='; '.join(result.get('errors') or []) or None,
+                        checks=int(_monitor_runtime.get('checks') or 0) + 1,
+                        triggered_count=int(_monitor_runtime.get('triggered_count') or 0) + result['triggered'],
+                    )
+            except Exception as exc:
+                with _monitor_lock:
+                    _monitor_runtime.update(state='error', last_check_at=checked_at.isoformat(timespec='seconds'),
+                                            next_check_at=None, last_error=str(exc)[:240])
+        _monitor_wake.wait(wait_seconds)
+        _monitor_wake.clear()
+    with _monitor_lock:
+        _monitor_runtime.update(thread_running=False, state='stopped', next_check_at=None)
+
+
+def start_background_monitor():
+    global _monitor_thread
+    if _monitor_thread and _monitor_thread.is_alive():
+        return
+    _monitor_stop.clear()
+    _monitor_thread = threading.Thread(target=_background_monitor_loop,
+                                       name='deeppulse-background-monitor', daemon=True)
+    _monitor_thread.start()
+
+
+def stop_background_monitor():
+    _monitor_stop.set()
+    _monitor_wake.set()
+    thread = _monitor_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=3)
 
 
 # ---------------------------------------------------------------- 墨水屏设备网关（ESP32 只读终端）
@@ -2348,7 +2580,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.7.0'
+    server_version = 'DeepPulse/1.8.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -2467,6 +2699,7 @@ class Handler(BaseHTTPRequestHandler):
                           'profile_brief_receipts': 1,
                           'attention_center': 1,
                           'profile_attention': 1,
+                          'background_monitor': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -2506,6 +2739,8 @@ class Handler(BaseHTTPRequestHandler):
                 'model': cfg.get('deepseek_model') or 'deepseek-chat'}})
         elif path == '/api/profile':
             self.send_json({'ok': True, 'data': load_profile()})
+        elif path == '/api/monitor/status':
+            self.send_json({'ok': True, 'data': background_monitor_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -2663,6 +2898,13 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 saved = update_attention_item(body.get('item') or {}, body.get('remove') is True)
                 self.send_json({'ok': True, 'data': saved})
+            elif u.path == '/api/monitor/config':
+                body = self.read_json_body()
+                saved = save_monitor_config(body.get('config') or {})
+                self.send_json({'ok': True, 'data': {
+                    'profile': saved,
+                    'monitor': background_monitor_status(),
+                }})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()
                 saved = save_device_config(body.get('config') or {})
@@ -2860,6 +3102,7 @@ def main():
     log('=== DeepPulse server start on 127.0.0.1:%d ===' % port)
     print('深脉 DeepPulse 已启动: http://127.0.0.1:%d  (Ctrl+C 退出)' % port)
     sync_device_gateway(device_config)
+    start_background_monitor()
 
     # 预热线程：启动 2s 后后台装配一次情绪全景，让首个页面请求命中热缓存
     def warmup():
@@ -2878,6 +3121,7 @@ def main():
         log('server stopped')
         print('\n已退出。')
     finally:
+        stop_background_monitor()
         stop_device_gateway()
 
 

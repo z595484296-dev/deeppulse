@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.7.0'
+const MIN_BACKEND_VERSION = '1.8.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -63,6 +63,7 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['profile_brief_receipts'] === 1
       && capabilities['attention_center'] === 1
       && capabilities['profile_attention'] === 1
+      && capabilities['background_monitor'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -267,6 +268,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     : []
   const hasProactiveBrief = Boolean(short(proactive['id'], 160) || short(proactive['headline'], 300))
   const attentionPreferences = recordOf(attention['preferences'])
+  const backgroundMonitor = recordOf(attention['backgroundMonitor'])
   const attentionRecent = Array.isArray(attention['recent'])
     ? attention['recent'].slice(0, 8).map(item => {
       const row = recordOf(item)
@@ -328,6 +330,11 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           pausedUntil: finite(attentionPreferences['pausedUntil']), systemDigestMinutes: finite(attentionPreferences['systemDigestMinutes']),
         },
         recent: attentionRecent,
+        backgroundMonitor: Object.keys(backgroundMonitor).length ? {
+          enabled: backgroundMonitor['enabled'] === true, state: short(backgroundMonitor['state'], 40),
+          pendingAlerts: finite(backgroundMonitor['pendingAlerts']), lastCheckAt: short(backgroundMonitor['lastCheckAt'], 80),
+          lastError: short(backgroundMonitor['lastError'], 240), pageClosedCoverage: backgroundMonitor['pageClosedCoverage'] === true,
+        } : null,
       },
       indices,
       sources,
@@ -458,7 +465,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '6. officialDisclosuresScope=not-applicable-no-security-selected 表示当前页面没有选中个股，不代表官方公告源缺失。',
     '7. transitionCalibrated=false 时只能称为启发式状态倾向，不得称为经过校准的预测概率。',
     '8. proactiveBrief 是深脉规则层整理的优先级与研究任务，不是新的市场事实；展开时仍需用 market、emotionAnalysis 和来源字段复核。',
-    '9. attention 是用户提醒中心状态；可用它解释最近提醒与未读事项，但不要替用户更改提醒偏好，也不要把提醒本身当成市场事实。',
+    '9. attention 是用户提醒中心状态；可用它解释最近提醒、未读事项和后台监控状态，但不要替用户更改提醒偏好，也不要把提醒本身当成市场事实。',
   ].join('\n')
 }
 

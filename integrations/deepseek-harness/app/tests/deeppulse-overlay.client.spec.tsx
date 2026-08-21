@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.7.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, epaper_gateway: 1 } },
+  data: { version: '1.8.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, background_monitor: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -45,7 +45,7 @@ describe('DeepPulseView', () => {
       if (url === ENTRY_PATH) return Promise.resolve(response(true, '<!doctype html><title>DeepSeek Harness</title>'))
       if (url.includes(':8971/')) {
         return Promise.resolve(response(true, '', {
-          data: { version: '1.7.0', capabilities: { tdx_read_only: true } },
+          data: { version: '1.8.0', capabilities: { tdx_read_only: true } },
         }))
       }
       return Promise.resolve(response(true))
@@ -178,6 +178,7 @@ describe('DeepPulse Harness bridge', () => {
           unread: 2,
           preferences: { mode: 'balanced', quietEnabled: true, quietStart: '22:30', quietEnd: '08:00', systemDigestMinutes: 15 },
           recent: [{ kind: 'phase', priority: 'medium', title: '阶段变化', detail: '发酵期到高潮期', reason: '阶段标签变化', createdAt: 123, read: false }],
+          backgroundMonitor: { enabled: true, state: 'monitoring', pendingAlerts: 2, lastCheckAt: '2026-08-15T10:00:00+08:00', pageClosedCoverage: true, injected: 'drop monitor field' },
         },
         sources: [{ name: '巨潮资讯', tier: 'official', role: '公告原文' }],
         contextTruncated: { value: true, sections: ['history:8'], injected: 'drop truncation field' },
@@ -216,6 +217,7 @@ describe('DeepPulse Harness bridge', () => {
           unread: 2,
           preferences: { mode: 'balanced', quietEnabled: true },
           recent: [{ kind: 'phase', priority: 'medium', title: '阶段变化', read: false }],
+          backgroundMonitor: { enabled: true, state: 'monitoring', pendingAlerts: 2, pageClosedCoverage: true },
         },
         contextTruncated: { value: true, sections: ['history:8'] },
       },

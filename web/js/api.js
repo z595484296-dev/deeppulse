@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.7.0';
+const MIN_VERSION = '1.8.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -47,7 +47,8 @@ async function probeBase(base, signal) {
       && capabilities.proactive_brief === 1
       && capabilities.profile_brief_receipts === 1
       && capabilities.attention_center === 1
-      && capabilities.profile_attention === 1 ? base : '';
+      && capabilities.profile_attention === 1
+      && capabilities.background_monitor === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -61,7 +62,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.7.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.8.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -126,6 +127,8 @@ export const api = {
   saveProfile: (data) => post('/api/profile', { data }, 5000),
   saveBriefReceipt: (receipt, read = true) => post('/api/profile/brief-receipt', { receipt, read }, 5000),
   saveAttentionItem: (item, remove = false) => post('/api/profile/attention-item', { item, remove }, 5000),
+  monitorStatus: () => request('/api/monitor/status', 5000),
+  saveMonitorConfig: (config) => post('/api/monitor/config', { config }, 5000),
   deviceConfig: () => request('/api/device/config', 10000),
   saveDeviceConfig: (config) => post('/api/device/config', { config }, 15000),
   rotateDeviceToken: () => post('/api/device/token/rotate', undefined, 15000),

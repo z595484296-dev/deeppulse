@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.7.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.7.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.7.0';
+import { api } from './api.js?v=1.8.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.8.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.8.0';
 
-import * as pageOverview from './pages/overview.js?v=1.7.0';
-import * as pageEmotion from './pages/emotion.js?v=1.7.0';
-import * as pageMarket from './pages/market.js?v=1.7.0';
-import * as pageLadder from './pages/ladder.js?v=1.7.0';
-import * as pageWatch from './pages/watch.js?v=1.7.0';
-import * as pageStrategy from './pages/strategy.js?v=1.7.0';
-import * as pageEpaper from './pages/epaper.js?v=1.7.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.7.0';
-import * as pageAbout from './pages/about.js?v=1.7.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.7.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.7.0';
-import { initOnboarding } from './onboarding.js?v=1.7.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.7.0';
+import * as pageOverview from './pages/overview.js?v=1.8.0';
+import * as pageEmotion from './pages/emotion.js?v=1.8.0';
+import * as pageMarket from './pages/market.js?v=1.8.0';
+import * as pageLadder from './pages/ladder.js?v=1.8.0';
+import * as pageWatch from './pages/watch.js?v=1.8.0';
+import * as pageStrategy from './pages/strategy.js?v=1.8.0';
+import * as pageEpaper from './pages/epaper.js?v=1.8.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.8.0';
+import * as pageAbout from './pages/about.js?v=1.8.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.8.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.8.0';
+import { initOnboarding } from './onboarding.js?v=1.8.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.8.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -156,7 +156,17 @@ function currentHarnessContext() {
     indices: (state.indices || []).slice(0, 5).map(i => ({
       code: i.code, name: i.name, price: i.price, pct: i.pct,
     })),
-    attention: attentionContext(),
+    attention: {
+      ...attentionContext(),
+      backgroundMonitor: state.monitor ? {
+        enabled: !!state.monitor.config?.enabled,
+        state: state.monitor.runtime?.state || null,
+        pendingAlerts: state.monitor.pending_alerts ?? null,
+        lastCheckAt: state.monitor.runtime?.last_check_at || null,
+        lastError: state.monitor.runtime?.last_error || null,
+        pageClosedCoverage: state.monitor.service_continues_when_page_closed === true,
+      } : null,
+    },
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
       { name: '上交所/深交所/证监会', tier: 'official', role: '官方查验入口' },
@@ -366,6 +376,14 @@ function pulseRefresh() {
 
 /** 价格提醒轮询（全局，自选页未打开也生效） */
 async function pollAlerts() {
+  try {
+    const monitor = await api.monitorStatus();
+    state.monitor = monitor;
+    if (monitor && monitor.config && monitor.config.enabled) {
+      await syncProfile();
+      return;
+    }
+  } catch { /* 后台监控不可用时继续使用当前页面轮询兜底 */ }
   const pending = loadAlerts().filter(a => !a.triggered);
   if (!pending.length) return;
   for (const al of pending) {

@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.7.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.7.0';
+import { api } from './api.js?v=1.8.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.8.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -11,6 +11,7 @@ export const state = {
   lastUpdate: null,
   degraded: false,
   sparks: null,       // 指数迷你K线
+  monitor: null,
 };
 
 export const bus = new EventTarget();
@@ -27,7 +28,9 @@ const PROFILE_KEYS = {
   brief_receipts: 'dp_brief_receipts_v1',
   attention_inbox: 'dp_attention_inbox_v1',
   attention_preferences: 'dp_attention_preferences_v1',
+  background_monitor: 'dp_background_monitor_v1',
 };
+const PROFILE_OBJECT_KEYS = new Set(['attention_preferences', 'background_monitor']);
 const profileTimers = new Map();
 
 function persistProfile(key, value) {
@@ -54,10 +57,10 @@ export async function syncProfile() {
       localStorage.setItem(storageKey, JSON.stringify(remote[key]));
     } else {
       try {
-        const localValue = JSON.parse(localStorage.getItem(storageKey) || (key === 'attention_preferences' ? '{}' : '[]'));
+        const localValue = JSON.parse(localStorage.getItem(storageKey) || (PROFILE_OBJECT_KEYS.has(key) ? '{}' : '[]'));
         // 空的新来源不能抢先覆盖旧来源中尚待迁移的真实数据。
         if ((Array.isArray(localValue) && localValue.length)
-          || (key === 'attention_preferences' && localValue && Object.keys(localValue).length)) migration[key] = localValue;
+          || (PROFILE_OBJECT_KEYS.has(key) && localValue && Object.keys(localValue).length)) migration[key] = localValue;
       } catch { /* 等待其他来源迁移或首次真实写入 */ }
     }
   });
@@ -68,6 +71,7 @@ export async function syncProfile() {
   emit('brief-receipts', loadBriefReceipts());
   emit('attention', loadAttentionInbox());
   emit('attention-preferences', loadAttentionPreferences());
+  emit('background-monitor', loadBackgroundMonitor());
   document.dispatchEvent(new CustomEvent('profile-synced'));
   return profile;
 }
@@ -306,6 +310,15 @@ export function saveAttentionPreferences(value) {
   persistProfile('attention_preferences', next);
   emit('attention-preferences', next);
   return next;
+}
+
+const BACKGROUND_MONITOR_KEY = 'dp_background_monitor_v1';
+
+export function loadBackgroundMonitor() {
+  try {
+    const value = JSON.parse(localStorage.getItem(BACKGROUND_MONITOR_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
 }
 
 /* ---------------- 行情页状态 ---------------- */

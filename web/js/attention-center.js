@@ -1,15 +1,16 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.7.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.8.0';
 import {
   bus, loadAttentionInbox, loadAttentionPreferences, markAttentionRead,
   pushAttentionItem, saveAttentionPreferences,
-} from './store.js?v=1.7.0';
-import { esc, toast } from './util.js?v=1.7.0';
+} from './store.js?v=1.8.0';
+import { esc, toast } from './util.js?v=1.8.0';
 
 let navigate = () => {};
 let digestTimer = null;
 let initialized = false;
+let knownIds = new Set();
 const $ = selector => document.querySelector(selector);
 
 function timeLabel(timestamp) {
@@ -69,14 +70,18 @@ function scheduleDigest(preferences) {
   }, preferences.systemDigestMinutes * 60 * 1000);
 }
 
-export function publishAttention(input) {
-  const item = makeAttentionItem(input);
-  pushAttentionItem(item);
+function deliverItem(item) {
   const prefs = loadAttentionPreferences();
   const decision = attentionDecision(item, prefs);
   if (decision.interrupt) toast(`${item.title}：${item.detail}`, item.priority === 'high' ? 'err' : 'ok', 9000);
   else if (decision.reason === 'digest') scheduleDigest(prefs);
-  return { item, decision };
+  return decision;
+}
+
+export function publishAttention(input) {
+  const item = makeAttentionItem(input);
+  pushAttentionItem(item);
+  return { item, decision: attentionDecision(item, loadAttentionPreferences()) };
 }
 
 export function attentionContext() {
@@ -94,6 +99,7 @@ export function attentionContext() {
 export function initAttentionCenter(options = {}) {
   if (initialized) return;
   initialized = true;
+  knownIds = new Set(loadAttentionInbox().map(item => item && item.id).filter(Boolean));
   navigate = typeof options.navigate === 'function' ? options.navigate : navigate;
   const panel = $('#attention-panel');
   const toggle = open => {
@@ -118,7 +124,13 @@ export function initAttentionCenter(options = {}) {
     const prefs = loadAttentionPreferences();
     saveAttentionPreferences({ ...prefs, pausedUntil: prefs.pausedUntil && Date.now() < prefs.pausedUntil ? null : nextMorning() });
   });
-  bus.addEventListener('attention', render);
+  bus.addEventListener('attention', event => {
+    const items = Array.isArray(event.detail) ? event.detail : loadAttentionInbox();
+    const fresh = items.filter(item => item && item.id && !knownIds.has(item.id));
+    items.forEach(item => { if (item && item.id) knownIds.add(item.id); });
+    fresh.forEach(deliverItem);
+    render();
+  });
   bus.addEventListener('attention-preferences', renderPreferences);
   document.addEventListener('click', event => {
     if (panel.classList.contains('open') && !panel.contains(event.target) && !event.target.closest('#btn-attention')) toggle(false);

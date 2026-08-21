@@ -1,15 +1,16 @@
 /* 深脉 DeepPulse — 自选页（分组 · 排序 · 批量 · 提醒） */
 
-import { api } from '../api.js?v=1.7.0';
+import { api } from '../api.js?v=1.8.0';
 import {
   loadWatch, saveWatch, removeWatch, setWatchNote,
   batchRemoveWatch, batchMoveWatch, watchGroups, bus,
   loadAlerts, addAlert, removeAlert,
-} from '../store.js?v=1.7.0';
-import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.7.0';
+} from '../store.js?v=1.8.0';
+import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.8.0';
 
 let built = false;
 let timer = null;
+let monitorTimer = null;
 let emCache = null;
 let alertDraft = null;    // 待填提醒的股票（表格 🔔 点击预填）
 let curGroup = '默认';     // 新添加自选的入组
@@ -52,6 +53,14 @@ export function init(container) {
         <div class="card-head">
           <div class="card-title">🔔 价格提醒</div>
           <div class="card-sub">自选股交易时段 10 秒检查 · 触发后播报一次</div>
+        </div>
+        <div class="monitor-control" id="wt-monitor-control">
+          <div class="monitor-copy">
+            <div><span class="monitor-dot"></span><b>页面关闭后继续监控</b><span class="tag" id="wt-monitor-state">读取中</span></div>
+            <p id="wt-monitor-detail">正在读取本机服务状态…</p>
+            <small>仅在 A 股交易时段检查等待中的价格条件；关闭本机深脉服务后监控也会停止，不会连接交易账户或自动下单。</small>
+          </div>
+          <button class="btn sm" id="wt-monitor-toggle" disabled>读取中</button>
         </div>
         <div class="alert-bar">
           <select id="wt-alert-stock" style="flex:0 0 auto;min-width:150px"></select>
@@ -286,6 +295,54 @@ export function init(container) {
   });
 
   // ---- 价格提醒（设定与展示；到价检查由 app.js 全局轮询驱动） ----
+  let monitor = null;
+  const monitorLabels = {
+    disabled: ['未开启', '页面关闭后不会检查价格条件'],
+    starting: ['正在启动', '本机服务正在接管等待中的价格条件'],
+    monitoring: ['监控中', '本机服务正在检查等待中的价格条件'],
+    paused_market_closed: ['休市暂停', '已开启；下一个交易时段会自动恢复'],
+    idle_no_alerts: ['等待任务', '已开启；添加价格提醒后自动开始检查'],
+    error: ['需要检查', '后台检查发生错误，请查看状态后重试'],
+    stopped: ['已停止', '本机监控线程已经停止'],
+  };
+  async function refreshMonitor() {
+    const root = container.querySelector('#wt-monitor-control');
+    try {
+      monitor = await api.monitorStatus();
+      const enabled = !!(monitor.config && monitor.config.enabled);
+      const state = monitor.runtime && monitor.runtime.state || (enabled ? 'monitoring' : 'disabled');
+      const labels = monitorLabels[state] || monitorLabels.disabled;
+      root.dataset.state = state;
+      root.querySelector('#wt-monitor-state').textContent = labels[0];
+      const checked = monitor.runtime && monitor.runtime.last_check_at
+        ? ` · 最近检查 ${new Date(monitor.runtime.last_check_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}` : '';
+      root.querySelector('#wt-monitor-detail').textContent = `${labels[1]} · ${monitor.pending_alerts || 0} 个等待中${checked}`;
+      const button = root.querySelector('#wt-monitor-toggle');
+      button.disabled = false;
+      button.textContent = enabled ? '停止后台监控' : '开启后台监控';
+      button.classList.toggle('primary', !enabled);
+    } catch {
+      root.dataset.state = 'error';
+      root.querySelector('#wt-monitor-state').textContent = '连接失败';
+      root.querySelector('#wt-monitor-detail').textContent = '暂时无法读取本机监控服务；页面内提醒仍会继续工作。';
+      root.querySelector('#wt-monitor-toggle').disabled = true;
+    }
+  }
+  container.querySelector('#wt-monitor-toggle').addEventListener('click', async () => {
+    const button = container.querySelector('#wt-monitor-toggle');
+    const enabled = !!(monitor && monitor.config && monitor.config.enabled);
+    button.disabled = true;
+    button.textContent = enabled ? '正在停止…' : '正在开启…';
+    try {
+      await api.saveMonitorConfig({ enabled: !enabled, intervalSeconds: 15 });
+      toast(enabled ? '后台监控已停止' : '后台监控已开启；页面关闭后仍由本机服务检查');
+      await refreshMonitor();
+    } catch {
+      toast('后台监控设置失败，请确认本机深脉服务正在运行', 'err');
+      await refreshMonitor();
+    }
+  });
+
   const alertsListEl = container.querySelector('#wt-alerts-list');
   function refreshStockOptions(c) {
     const sel = c.querySelector('#wt-alert-stock');
@@ -333,11 +390,14 @@ export function init(container) {
   refreshStockOptions(container);
   renderGroups();
   renderAlerts();
+  refreshMonitor();
 
   bus.addEventListener('watch', () => refresh(container));
 
   if (timer) clearInterval(timer);
   timer = setInterval(() => refresh(container), 5000);
+  if (monitorTimer) clearInterval(monitorTimer);
+  monitorTimer = setInterval(refreshMonitor, 15000);
 }
 
 function renderBatchBar(container) {
