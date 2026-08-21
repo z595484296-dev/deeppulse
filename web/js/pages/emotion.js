@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 情绪周期页 */
 
-import { api } from '../api.js?v=1.17.0';
-import { bus } from '../store.js?v=1.17.0';
-import { tempHistoryChart, ztIdxChart, hbarChart, distChart, intradayChart } from '../charts.js?v=1.17.0';
-import { esc, PHASE_COLORS, fmtPct, pctClass } from '../util.js?v=1.17.0';
+import { api } from '../api.js?v=1.18.0';
+import { bus } from '../store.js?v=1.18.0';
+import { tempHistoryChart, ztIdxChart, hbarChart, distChart, intradayChart } from '../charts.js?v=1.18.0';
+import { esc, PHASE_COLORS, fmtPct, pctClass } from '../util.js?v=1.18.0';
 
 let built = false;
 let bkAt = 0;

@@ -139,6 +139,17 @@ class MarketRoutineTests(unittest.TestCase):
         self.assertFalse(info['confirmed'])
         self.assertEqual(info['basis'], '工作日降级判断')
 
+    def test_paused_routine_does_not_publish(self):
+        self._enable(intraday=True)
+        cfg = server.load_routine_config()
+        cfg['paused_until'] = '2026-08-21T11:00+08:00'
+        server.save_routine_config(cfg)
+        result = server.process_market_routine_once(
+            datetime(2026, 8, 21, 10, 30, tzinfo=server.BJC),
+            emotion_loader=lambda force: self._emotion())
+        self.assertEqual(result['state'], 'paused')
+        self.assertEqual(result['published'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

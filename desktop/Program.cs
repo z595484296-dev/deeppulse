@@ -31,7 +31,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 17, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 18, 0);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -584,7 +584,23 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("diagnostic_issue_template", out var diagnosticIssueTemplate)
                 || diagnosticIssueTemplate.ValueKind != JsonValueKind.Number
                 || !diagnosticIssueTemplate.TryGetInt32(out var diagnosticIssueTemplateVersion)
-                || diagnosticIssueTemplateVersion != 1)
+                || diagnosticIssueTemplateVersion != 1
+                || !capabilities.TryGetProperty("service_plan_preview", out var servicePlanPreview)
+                || servicePlanPreview.ValueKind != JsonValueKind.Number
+                || !servicePlanPreview.TryGetInt32(out var servicePlanPreviewVersion)
+                || servicePlanPreviewVersion != 1
+                || !capabilities.TryGetProperty("service_plan_confirm", out var servicePlanConfirm)
+                || servicePlanConfirm.ValueKind != JsonValueKind.Number
+                || !servicePlanConfirm.TryGetInt32(out var servicePlanConfirmVersion)
+                || servicePlanConfirmVersion != 1
+                || !capabilities.TryGetProperty("routine_timeline", out var routineTimeline)
+                || routineTimeline.ValueKind != JsonValueKind.Number
+                || !routineTimeline.TryGetInt32(out var routineTimelineVersion)
+                || routineTimelineVersion != 1
+                || !capabilities.TryGetProperty("routine_skip_pause", out var routineSkipPause)
+                || routineSkipPause.ValueKind != JsonValueKind.Number
+                || !routineSkipPause.TryGetInt32(out var routineSkipPauseVersion)
+                || routineSkipPauseVersion != 1)
             {
                 return null;
             }
@@ -645,7 +661,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.17.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.18.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

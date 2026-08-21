@@ -77,14 +77,14 @@ class ProductDiagnosticsTests(unittest.TestCase):
                        'sk-private-value', '601138'):
             self.assertNotIn(secret, encoded)
         self.assertIn('API 密钥', report['privacy'])
-        self.assertEqual(report['version'], '1.17.0')
+        self.assertEqual(report['version'], '1.18.0')
 
     def test_desktop_heartbeat_changes_optional_desktop_state(self):
         before = self.report()
         desktop = next(row for row in before['components'] if row['id'] == 'desktop_app')
         self.assertEqual(desktop['state'], 'info')
         server.update_desktop_heartbeat({
-            'appVersion': '1.17.0', 'productVersion': '1.17.0+test',
+            'appVersion': '1.18.0', 'productVersion': '1.18.0+test',
             'ignoredSecret': 'must-not-appear',
         })
         after = self.report()

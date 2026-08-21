@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.17.0",
-  "minimumDesktopVersion": "1.17.0",
+  "version": "1.18.0",
+  "minimumDesktopVersion": "1.18.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -35,6 +35,10 @@
     "desktop-heartbeat-v1",
     "diagnostic-repairs-v1",
     "diagnostic-history-v1",
-    "diagnostic-issue-template-v1"
+    "diagnostic-issue-template-v1",
+    "service-plan-preview-v1",
+    "service-plan-confirm-v1",
+    "routine-timeline-v1",
+    "routine-skip-pause-v1"
   ]
 }

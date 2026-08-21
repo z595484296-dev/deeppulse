@@ -90,7 +90,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.17.0'
+VERSION = '1.18.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1454,6 +1454,7 @@ PROFILE_LIST_LIMITS = {
     'attention_inbox': 200,
     'attention_feedback': 500,
     'routine_receipts': 180,
+    'routine_skips': 180,
     'event_receipts': 500,
     'research_hypotheses': 300,
     'hypothesis_receipts': 500,
@@ -2205,6 +2206,7 @@ def normalize_routine_config(value=None):
         'enabled': any(normalized.values()),
         'market_hours_basis': 'Asia/Shanghai weekday windows; data date is always disclosed',
         'enabled_at': str(source.get('enabled_at') or source.get('enabledAt') or '')[:40] or None,
+        'paused_until': str(source.get('paused_until') or source.get('pausedUntil') or '')[:40] or None,
     }
 
 
@@ -2221,6 +2223,122 @@ def save_routine_config(value):
     elif not cfg['enabled']:
         cfg['enabled_at'] = None
     saved = save_profile({'market_routine': cfg})
+    _routine_wake.set()
+    return saved
+
+
+def _valid_clock(value, fallback):
+    text = str(value or '').strip()
+    match = re.fullmatch(r'(\d{1,2}):(\d{2})', text)
+    if not match:
+        return fallback
+    hour, minute = int(match.group(1)), int(match.group(2))
+    return '%02d:%02d' % (hour, minute) if hour < 24 and minute < 60 else fallback
+
+
+def parse_service_intent(text, profile=None):
+    """Turn a short Chinese service request into a transparent, non-mutating draft."""
+    clean = ' '.join(str(text or '').strip().split())[:300]
+    if not clean:
+        raise ValueError('请先描述你希望深脉如何主动服务')
+    data = profile if isinstance(profile, dict) else (load_profile().get('data') or {})
+    current_routine = normalize_routine_config(data.get('market_routine'))
+    current_prefs = data.get('attention_preferences') or {}
+    routine_patch, prefs_patch, understood, unresolved = {}, {}, [], []
+
+    task_words = {
+        'pre_market': ('盘前', '盘前准备'),
+        'intraday': ('盘中', '盘中检查'),
+        'close_review': ('盘后|收盘后|收盘', '收盘复盘'),
+    }
+    for key, (pattern, label) in task_words.items():
+        if re.search(r'(不要|取消|关闭|停止)[^，。；]{0,6}(?:%s)|(?:%s)[^，。；]{0,6}(不要|取消|关闭|停止)' % (pattern, pattern), clean):
+            routine_patch[key] = False
+            understood.append('关闭%s' % label)
+        elif re.search(pattern, clean):
+            routine_patch[key] = True
+            understood.append('开启%s' % label)
+
+    if re.search(r'只(报|提醒|推送).{0,4}(重要|高优先)|重要.{0,4}才(报|提醒|推送)', clean):
+        prefs_patch['mode'] = 'high_only'
+        understood.append('只主动推送重要提醒')
+    elif re.search(r'(只|都).{0,5}(提醒中心|中心)|(不要|关闭).{0,4}(弹窗|推送)', clean):
+        prefs_patch['mode'] = 'center_only'
+        understood.append('提醒只收入提醒中心')
+    elif '平衡' in clean or '正常提醒' in clean:
+        prefs_patch['mode'] = 'balanced'
+        understood.append('使用平衡提醒模式')
+
+    if re.search(r'(不要|关闭|取消).{0,5}(静默|安静|免打扰|勿扰)', clean):
+        prefs_patch['quietEnabled'] = False
+        understood.append('关闭安静时段')
+    elif re.search(r'(晚上|夜间|睡觉|下班后).{0,6}(别|不要|停止|免).{0,4}(打扰|提醒|推送)|免打扰|勿扰', clean):
+        prefs_patch.update(quietEnabled=True, quietStart='22:30', quietEnd='08:00')
+        understood.append('开启夜间安静时段 22:30–08:00')
+
+    range_match = re.search(
+        r'(\d{1,2})(?:[:点时](\d{1,2}))?\s*(?:到|至|[-~—])\s*(\d{1,2})(?:[:点时](\d{1,2}))?', clean)
+    if range_match:
+        start = _valid_clock('%s:%s' % (range_match.group(1), range_match.group(2) or '00'), '22:30')
+        end = _valid_clock('%s:%s' % (range_match.group(3), range_match.group(4) or '00'), '08:00')
+        prefs_patch.update(quietEnabled=True, quietStart=start, quietEnd=end)
+        understood = [row for row in understood if not row.startswith('开启夜间安静时段')]
+        understood.append('设置安静时段 %s–%s' % (start, end))
+
+    focus_match = re.search(r'(?:关注|看|盯|跟踪)\s*([\u4e00-\u9fa5A-Za-z0-9]{2,16})', clean)
+    focus_text = focus_match.group(1) if focus_match else None
+    if focus_text:
+        unresolved.append('识别到关注对象“%s”，本次不会自动修改自选股' % focus_text)
+    if not routine_patch and not prefs_patch:
+        unresolved.append('没有识别出可应用的时段或提醒偏好')
+
+    draft = {
+        'marketRoutine': {'tasks': dict(current_routine['tasks'], **routine_patch)},
+        'attentionPreferences': prefs_patch,
+        'focusText': focus_text,
+    }
+    changes = []
+    for key, value in routine_patch.items():
+        if current_routine['tasks'].get(key) != value:
+            changes.append({'field': 'marketRoutine.tasks.%s' % key,
+                            'from': current_routine['tasks'].get(key), 'to': value})
+    normalized_prefs = _delivery_preferences(data)
+    for key, value in prefs_patch.items():
+        if normalized_prefs.get(key) != value:
+            changes.append({'field': 'attentionPreferences.%s' % key,
+                            'from': normalized_prefs.get(key), 'to': value})
+    return {
+        'schema': 1, 'input': clean, 'confidence': min(0.98, 0.45 + len(understood) * 0.13),
+        'understood': understood, 'unresolved': unresolved, 'changes': changes, 'draft': draft,
+        'requires_confirmation': True,
+        'boundary': '这只是本机规则草稿；确认前不会修改设置，也不会更改自选或执行交易。',
+    }
+
+
+def apply_service_plan_draft(draft, confirmed=False):
+    if confirmed is not True:
+        raise ValueError('必须由用户明确确认后才能应用服务草稿')
+    if not isinstance(draft, dict):
+        raise ValueError('服务草稿格式无效')
+    data = load_profile().get('data') or {}
+    routine_source = draft.get('marketRoutine') if isinstance(draft.get('marketRoutine'), dict) else {}
+    routine = normalize_routine_config(routine_source)
+    previous = normalize_routine_config(data.get('market_routine'))
+    routine['enabled_at'] = (previous.get('enabled_at') or now_bj().isoformat(timespec='seconds')) if routine['enabled'] else None
+    routine['paused_until'] = previous.get('paused_until')
+
+    preferences = json.loads(json.dumps(data.get('attention_preferences') or {}, ensure_ascii=False))
+    patch = draft.get('attentionPreferences') if isinstance(draft.get('attentionPreferences'), dict) else {}
+    allowed = {'mode', 'quietEnabled', 'quietStart', 'quietEnd'}
+    for key in allowed:
+        if key in patch:
+            preferences[key] = patch[key]
+    if preferences.get('mode') not in {'balanced', 'high_only', 'center_only'}:
+        preferences['mode'] = 'balanced'
+    preferences['quietEnabled'] = preferences.get('quietEnabled') is not False
+    preferences['quietStart'] = _valid_clock(preferences.get('quietStart'), '22:30')
+    preferences['quietEnd'] = _valid_clock(preferences.get('quietEnd'), '08:00')
+    saved = save_profile({'market_routine': routine, 'attention_preferences': preferences})
     _routine_wake.set()
     return saved
 
@@ -2260,13 +2378,28 @@ def _routine_occurrences(start, days=8):
 
 def _routine_receipt_ids(profile=None):
     data = profile if isinstance(profile, dict) else (load_profile().get('data') or {})
-    return {str(row.get('id')) for row in (data.get('routine_receipts') or [])
-            if isinstance(row, dict) and row.get('id')}
+    rows = list(data.get('routine_receipts') or []) + list(data.get('routine_skips') or [])
+    return {str(row.get('id')) for row in rows if isinstance(row, dict) and row.get('id')}
+
+
+def _routine_is_paused(config, current=None):
+    value = config.get('paused_until') if isinstance(config, dict) else None
+    if not value:
+        return False
+    try:
+        until = datetime.fromisoformat(value)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=BJC)
+        return (current or now_bj()).astimezone(BJC) < until.astimezone(BJC)
+    except (TypeError, ValueError):
+        return False
 
 
 def next_routine_service(current=None, config=None, profile=None):
     now = (current or now_bj()).astimezone(BJC)
     cfg = config or load_routine_config()
+    if _routine_is_paused(cfg, now):
+        return None
     receipts = _routine_receipt_ids(profile)
     due = _routine_due_kind(now)
     if due and cfg['tasks'].get(due):
@@ -2281,6 +2414,68 @@ def next_routine_service(current=None, config=None, profile=None):
         if receipt_id not in receipts:
             return {'kind': kind, 'label': ROUTINE_LABELS[kind], 'at': at.isoformat(timespec='minutes')}
     return None
+
+
+def routine_timeline(current=None, config=None, profile=None, limit=6):
+    now = (current or now_bj()).astimezone(BJC)
+    cfg = config or load_routine_config()
+    data = profile if isinstance(profile, dict) else (load_profile().get('data') or {})
+    receipts = {str(row.get('id')) for row in (data.get('routine_receipts') or [])
+                if isinstance(row, dict)}
+    skips = {str(row.get('id')) for row in (data.get('routine_skips') or [])
+             if isinstance(row, dict)}
+    paused = _routine_is_paused(cfg, now)
+    rows = []
+    for kind, at in _routine_occurrences(now.replace(hour=0, minute=0, second=0, microsecond=0), days=10):
+        if not cfg['tasks'].get(kind):
+            continue
+        item_id = 'routine:%s:%s' % (kind, at.strftime('%Y-%m-%d'))
+        if item_id in receipts:
+            state = 'completed'
+        elif item_id in skips:
+            state = 'skipped'
+        elif paused and at >= now:
+            state = 'paused'
+        elif at < now:
+            state = 'missed'
+        else:
+            state = 'upcoming'
+        rows.append({'id': item_id, 'kind': kind, 'label': ROUTINE_LABELS[kind],
+                     'at': at.isoformat(timespec='minutes'), 'state': state})
+        if len(rows) >= max(3, min(int(limit or 6), 12)):
+            break
+    return rows
+
+
+def mutate_routine_action(action, current=None):
+    now = (current or now_bj()).astimezone(BJC)
+    clean_action = str(action or '').strip()
+    data = load_profile().get('data') or {}
+    cfg = normalize_routine_config(data.get('market_routine'))
+    patch = {}
+    if clean_action == 'pause_until_morning':
+        tomorrow = now + timedelta(days=1)
+        cfg['paused_until'] = tomorrow.replace(hour=8, minute=0, second=0, microsecond=0).isoformat(timespec='minutes')
+        patch['market_routine'] = cfg
+    elif clean_action == 'resume':
+        cfg['paused_until'] = None
+        patch['market_routine'] = cfg
+    elif clean_action == 'skip_next':
+        next_service = next_routine_service(now, cfg, data)
+        if not next_service:
+            raise ValueError('当前没有可跳过的下一次服务')
+        service_day = next_service['at'][:10]
+        item_id = 'routine:%s:%s' % (next_service['kind'], service_day)
+        skips = [row for row in (data.get('routine_skips') or [])
+                 if isinstance(row, dict) and row.get('id') != item_id]
+        skips.append({'id': item_id, 'kind': next_service['kind'], 'serviceDate': service_day,
+                      'skippedAt': now.isoformat(timespec='seconds')})
+        patch['routine_skips'] = skips
+    else:
+        raise ValueError('不支持的主动服务操作')
+    saved = save_profile(patch)
+    _routine_wake.set()
+    return saved
 
 
 def _journal_has_date(rows, data_date):
@@ -2408,6 +2603,8 @@ def process_market_routine_once(current=None, emotion_loader=None):
     kind = _routine_due_kind(now)
     if not cfg['enabled']:
         return {'state': 'disabled', 'published': 0, 'kind': None}
+    if _routine_is_paused(cfg, now):
+        return {'state': 'paused', 'published': 0, 'kind': kind}
     if not kind or not cfg['tasks'].get(kind):
         return {'state': 'waiting', 'published': 0, 'kind': kind}
     receipt_id = 'routine:%s:%s' % (kind, now.strftime('%Y-%m-%d'))
@@ -2428,12 +2625,16 @@ def market_routine_status(current=None):
     today = now.strftime('%Y-%m-%d')
     completed = [row.get('kind') for row in (profile.get('routine_receipts') or [])
                  if isinstance(row, dict) and row.get('serviceDate') == today]
+    skipped = [row.get('kind') for row in (profile.get('routine_skips') or [])
+               if isinstance(row, dict) and row.get('serviceDate') == today]
     next_service = next_routine_service(now, cfg, profile)
     with _routine_lock:
         runtime = dict(_routine_runtime)
     state = runtime.get('state') or 'disabled'
     if not cfg['enabled']:
         state = 'disabled'
+    elif _routine_is_paused(cfg, now):
+        state = 'paused'
     elif not calendar.get('is_trade_date'):
         state = 'non_trading_day'
     elif due and cfg['tasks'].get(due) and due in completed:
@@ -2448,7 +2649,9 @@ def market_routine_status(current=None):
                         next_service_at=next_service.get('at') if next_service else None),
         'due_kind': due,
         'completed_today': completed,
+        'skipped_today': skipped,
         'next_service': next_service,
+        'timeline': routine_timeline(now, cfg, profile),
         'calendar': calendar,
         'service_continues_when_page_closed': True,
         'service_stops_when_local_server_stops': True,
@@ -4323,7 +4526,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.17.0'
+    server_version = 'DeepPulse/1.18.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -4463,6 +4666,10 @@ class Handler(BaseHTTPRequestHandler):
                           'diagnostic_repairs': 1,
                           'diagnostic_history': 1,
                           'diagnostic_issue_template': 1,
+                          'service_plan_preview': 1,
+                          'service_plan_confirm': 1,
+                          'routine_timeline': 1,
+                          'routine_skip_pause': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -4724,6 +4931,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'data': {
                     'profile': saved,
                     'routine': market_routine_status(),
+                }})
+            elif u.path == '/api/service-plan/preview':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': parse_service_intent(body.get('text'))})
+            elif u.path == '/api/service-plan/apply':
+                body = self.read_json_body(16384)
+                saved = apply_service_plan_draft(
+                    body.get('draft'), confirmed=body.get('confirmed') is True)
+                self.send_json({'ok': True, 'data': {
+                    'profile': saved, 'routine': market_routine_status(),
+                }})
+            elif u.path == '/api/routine/action':
+                body = self.read_json_body(4096)
+                saved = mutate_routine_action(body.get('action'))
+                self.send_json({'ok': True, 'data': {
+                    'profile': saved, 'routine': market_routine_status(),
                 }})
             elif u.path == '/api/event-service/config':
                 body = self.read_json_body()

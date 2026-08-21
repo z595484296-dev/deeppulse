@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 微雪 7.5 英寸墨水屏开发模式 */
 
-import { api } from '../api.js?v=1.17.0';
-import { esc, debounce, toast } from '../util.js?v=1.17.0';
+import { api } from '../api.js?v=1.18.0';
+import { esc, debounce, toast } from '../util.js?v=1.18.0';
 
 let built = false;
 let snapshot = null;

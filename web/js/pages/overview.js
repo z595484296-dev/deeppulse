@@ -1,16 +1,17 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.17.0';
-import { state, bus, syncProfile } from '../store.js?v=1.17.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.17.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.17.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.17.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.17.0';
+import { api } from '../api.js?v=1.18.0';
+import { state, bus, syncProfile } from '../store.js?v=1.18.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.18.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.18.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.18.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.18.0';
 
 let built = false;
 let sparksAt = 0;
 let sectorTab = 'up';
 let currentBrief = null;
+let servicePlanDraft = null;
 
 const INDEX_CODES = [
   { code: '000001', name: '上证指数' },
@@ -63,6 +64,15 @@ export function init(container) {
           <label><input type="checkbox" data-routine-task="intraday"><span><b>盘中检查</b><small>只做一次结构检查</small></span></label>
           <label><input type="checkbox" data-routine-task="close_review"><span><b>收盘复盘</b><small>15:10 后生成复盘待办</small></span></label>
         </div>
+      </div>
+      <div class="service-plan-composer">
+        <label for="ov-service-intent"><b>用一句话安排深脉</b><span>先生成透明草稿，确认后才生效</span></label>
+        <div class="service-plan-input"><input id="ov-service-intent" maxlength="300" placeholder="例如：盘前提醒我准备，盘中只报重要变化，晚上 22:30 到 8:00 别打扰"><button class="btn sm primary" id="ov-service-preview">生成草稿</button></div>
+        <div class="service-plan-draft" id="ov-service-draft" hidden></div>
+      </div>
+      <div class="routine-timeline-wrap">
+        <div class="routine-timeline-head"><b>服务时间线</b><div><button class="btn sm ghost" id="ov-routine-skip">跳过下一次</button><button class="btn sm ghost" id="ov-routine-pause">暂停到明早</button></div></div>
+        <div class="routine-timeline" id="ov-routine-timeline"><span class="muted">等待读取日程</span></div>
       </div>
       <p class="routine-boundary">逐项授权，关闭网页后仍由本机服务执行；关闭本机服务即停止。按北京时间工作日窗口运行，每条提醒都会注明数据日，不会把旧数据冒充实时行情。</p>
     </section>
@@ -287,6 +297,58 @@ export function init(container) {
       inputs.forEach(node => { node.disabled = false; });
     }
   });
+  container.querySelector('#ov-service-preview').addEventListener('click', async () => {
+    const input = container.querySelector('#ov-service-intent');
+    const button = container.querySelector('#ov-service-preview');
+    if (!input.value.trim()) { toast('先用一句话描述你希望深脉怎么服务'); return; }
+    button.disabled = true;
+    try {
+      servicePlanDraft = await api.previewServicePlan(input.value.trim());
+      renderServicePlanDraft(container, servicePlanDraft);
+    } catch (error) {
+      toast(error.message || '暂时无法理解这条安排', 'err');
+    } finally { button.disabled = false; }
+  });
+  container.querySelector('#ov-service-draft').addEventListener('click', async e => {
+    if (e.target.closest('[data-service-discard]')) {
+      servicePlanDraft = null;
+      renderServicePlanDraft(container, null);
+      return;
+    }
+    if (!e.target.closest('[data-service-apply]') || !servicePlanDraft) return;
+    const button = e.target.closest('[data-service-apply]');
+    button.disabled = true;
+    try {
+      const result = await api.applyServicePlan(servicePlanDraft.draft);
+      state.routine = result.routine;
+      await syncProfile();
+      renderRoutine(container, result.routine);
+      servicePlanDraft = null;
+      renderServicePlanDraft(container, null);
+      toast('服务安排已确认并生效', 'ok');
+    } catch (error) {
+      toast(error.message || '应用服务安排失败', 'err');
+    } finally { button.disabled = false; }
+  });
+  const routineAction = async action => {
+    const result = await api.mutateRoutine(action);
+    state.routine = result.routine;
+    await syncProfile();
+    renderRoutine(container, result.routine);
+  };
+  container.querySelector('#ov-routine-skip').addEventListener('click', async e => {
+    e.currentTarget.disabled = true;
+    try { await routineAction('skip_next'); toast('下一次服务已跳过，本次之后自动恢复', 'ok'); }
+    catch (error) { toast(error.message || '当前没有可跳过的服务', 'err'); }
+    finally { e.currentTarget.disabled = false; }
+  });
+  container.querySelector('#ov-routine-pause').addEventListener('click', async e => {
+    const paused = state.routine && state.routine.runtime && state.routine.runtime.state === 'paused';
+    e.currentTarget.disabled = true;
+    try { await routineAction(paused ? 'resume' : 'pause_until_morning'); toast(paused ? '主动服务已恢复' : '已暂停到明早', 'ok'); }
+    catch (error) { toast(error.message || '调整日程失败', 'err'); }
+    finally { e.currentTarget.disabled = false; }
+  });
   refreshRoutine(container);
 
   container.querySelector('#ov-event-toggle').addEventListener('click', async e => {
@@ -448,7 +510,27 @@ const ROUTINE_STATES = {
   completed_window: '本时段已完成',
   error: '需要检查',
   stopped: '服务已停止',
+  paused: '已暂停',
 };
+
+const ROUTINE_TIMELINE_STATES = {
+  completed: '已完成', skipped: '已跳过', paused: '暂停中', missed: '已错过', upcoming: '待执行',
+};
+
+function renderServicePlanDraft(container, plan) {
+  const target = container.querySelector('#ov-service-draft');
+  if (!target) return;
+  target.hidden = !plan;
+  if (!plan) { target.innerHTML = ''; return; }
+  const understood = (plan.understood || []).map(row => `<li>${esc(row)}</li>`).join('');
+  const unresolved = (plan.unresolved || []).map(row => `<li class="unresolved">${esc(row)}</li>`).join('');
+  const noChanges = !(plan.changes || []).length;
+  target.innerHTML = `
+    <div class="service-plan-summary"><b>我理解的是</b><span>置信度 ${Math.round((plan.confidence || 0) * 100)}%</span></div>
+    <ul>${understood || '<li>暂未识别出可应用设置</li>'}${unresolved}</ul>
+    <p>${esc(plan.boundary || '')}</p>
+    <div class="service-plan-actions"><button class="btn sm primary" data-service-apply ${noChanges ? 'disabled' : ''}>确认应用 ${noChanges ? '' : `(${plan.changes.length} 项变化)`}</button><button class="btn sm ghost" data-service-discard>放弃</button></div>`;
+}
 
 function renderRoutine(container, routine) {
   const root = container.querySelector('#ov-routine');
@@ -471,6 +553,15 @@ function renderRoutine(container, routine) {
     root.querySelector('#ov-routine-next').textContent = value.config && value.config.enabled
       ? '等待下一个已授权时段' : '选择时段后由本机主动服务';
   }
+  const timeline = value.timeline || [];
+  root.querySelector('#ov-routine-timeline').innerHTML = timeline.length ? timeline.map(item => {
+    const at = new Date(item.at);
+    const when = `${at.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} ${at.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+    return `<div class="routine-time-item ${esc(item.state)}"><i></i><span><b>${esc(item.label)}</b><small>${esc(when)}</small></span><em>${ROUTINE_TIMELINE_STATES[item.state] || ''}</em></div>`;
+  }).join('') : '<span class="muted">开启至少一个服务时段后，这里会显示未来安排</span>';
+  root.querySelector('#ov-routine-skip').disabled = !value.next_service;
+  root.querySelector('#ov-routine-pause').disabled = !(value.config && value.config.enabled);
+  root.querySelector('#ov-routine-pause').textContent = stateName === 'paused' ? '恢复服务' : '暂停到明早';
 }
 
 async function refreshRoutine(container) {

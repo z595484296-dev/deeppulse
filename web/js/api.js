@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.17.0';
+const MIN_VERSION = '1.18.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -68,7 +68,11 @@ async function probeBase(base, signal) {
       && capabilities.desktop_heartbeat === 1
       && capabilities.diagnostic_repairs === 1
       && capabilities.diagnostic_history === 1
-      && capabilities.diagnostic_issue_template === 1 ? base : '';
+      && capabilities.diagnostic_issue_template === 1
+      && capabilities.service_plan_preview === 1
+      && capabilities.service_plan_confirm === 1
+      && capabilities.routine_timeline === 1
+      && capabilities.routine_skip_pause === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -82,7 +86,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.17.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.18.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -163,6 +167,9 @@ export const api = {
   saveMonitorConfig: (config) => post('/api/monitor/config', { config }, 5000),
   routineStatus: () => request('/api/routine/status', 5000),
   saveRoutineConfig: (config) => post('/api/routine/config', { config }, 5000),
+  previewServicePlan: (text) => post('/api/service-plan/preview', { text }, 5000),
+  applyServicePlan: (draft) => post('/api/service-plan/apply', { draft, confirmed: true }, 5000),
+  mutateRoutine: (action) => post('/api/routine/action', { action }, 5000),
   eventImpact: () => request('/api/event-impact', 90000),
   eventServiceStatus: () => request('/api/event-service/status', 5000),
   saveEventServiceConfig: (config) => post('/api/event-service/config', { config }, 10000),
