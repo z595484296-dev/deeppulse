@@ -25,7 +25,7 @@ class ProductDiagnosticsTests(unittest.TestCase):
         self.temp.cleanup()
 
     def report(self, *, harness=True, device_enabled=False, device_running=False,
-               device_last_seen=None, failed=0):
+               device_last_seen=None, failed=0, market_items=None):
         delivery = {
             'channels': {
                 'desktop': {'enabled': True, 'failed': failed},
@@ -51,7 +51,7 @@ class ProductDiagnosticsTests(unittest.TestCase):
                 patch.object(server, 'akshare_status', return_value={
                     'installed': True, 'status': 'ok', 'error': 'sk-private-value',
                 }), \
-                patch.object(server, 'source_catalog', return_value={'items': [
+                patch.object(server, 'source_catalog', return_value={'items': market_items or [
                     {'id': 'eastmoney', 'status': 'ok'},
                     {'id': 'tencent', 'status': 'unobserved'},
                 ]}), \
@@ -59,6 +59,15 @@ class ProductDiagnosticsTests(unittest.TestCase):
                 patch.object(server, 'load_device_config', return_value=device_config), \
                 patch.object(server, 'device_gateway_status', return_value=gateway):
             return server.build_product_diagnostics()
+
+    def test_recent_primary_success_prevents_aggregate_circuit_false_alarm(self):
+        report = self.report(market_items=[
+            {'id': 'eastmoney', 'status': 'degraded', 'latest_ok': True},
+            {'id': 'tencent', 'status': 'unobserved', 'latest_ok': None},
+        ])
+        market = next(row for row in report['components'] if row['id'] == 'market_sources')
+        self.assertEqual(market['state'], 'ok')
+        self.assertIn('最近访问正常', market['summary'])
 
     def test_report_uses_whitelist_and_excludes_private_values(self):
         report = self.report()

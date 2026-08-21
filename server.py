@@ -398,6 +398,7 @@ def source_catalog():
             'last_ok': last.get('last_ok') if last else None,
             'latency_ms': last.get('latency_ms') if last else None,
             'failures': last.get('failures') if last else 0,
+            'latest_ok': bool(last.get('ok')) if last else None,
             'circuit_seconds': circuit,
         })
         if environment is not None:
@@ -4147,12 +4148,16 @@ def build_product_diagnostics(record=True):
     eastmoney = source_by_id.get('eastmoney') or {}
     tencent = source_by_id.get('tencent') or {}
     market_states = {eastmoney.get('status'), tencent.get('status')}
-    if eastmoney.get('status') == 'ok':
+    eastmoney_ok = eastmoney.get('status') == 'ok' or eastmoney.get('latest_ok') is True
+    tencent_ok = tencent.get('status') == 'ok' or tencent.get('latest_ok') is True
+    if eastmoney_ok:
         market_state, market_summary, market_action = 'ok', '公开行情主链路最近访问正常。', ''
     elif market_states <= {'unobserved', None}:
         market_state, market_summary = 'info', '本次启动尚未访问公开行情链路。'
         market_action = '点击核对可完成一次只读行情请求。'
-    elif eastmoney.get('status') in ('degraded', 'unavailable') and tencent.get('status') in ('degraded', 'unavailable'):
+    elif (not eastmoney_ok and not tencent_ok
+          and eastmoney.get('status') in ('degraded', 'unavailable')
+          and tencent.get('status') in ('degraded', 'unavailable')):
         market_state, market_summary = 'error', '公开行情主源与备援最近均不可用。'
         market_action = '重新核对网络与公开行情链路。'
     else:
