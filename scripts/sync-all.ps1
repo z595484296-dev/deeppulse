@@ -38,6 +38,7 @@ $methodologyFile = -join @([char]0x60C5, [char]0x7EEA, [char]0x5468, [char]0x671
 $runtimeFiles = @(
     'server.py',
     'emotion.py',
+    'event_impact.py',
     'tdx_local.py',
     'deeppulse.manifest.json',
     'README.md',

@@ -1,18 +1,18 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.10.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.11.0';
 import {
   attentionLearningContext, bus, feedbackAttentionItem, loadAttentionInbox, loadAttentionPreferences, markAttentionRead,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences,
-} from './store.js?v=1.10.0';
-import { esc, toast } from './util.js?v=1.10.0';
+} from './store.js?v=1.11.0';
+import { esc, toast } from './util.js?v=1.11.0';
 
 let navigate = () => {};
 let digestTimer = null;
 let initialized = false;
 let knownIds = new Set();
 const $ = selector => document.querySelector(selector);
-const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', system: '系统更新' };
+const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', event: '事件影响', system: '系统更新' };
 const FEEDBACK_LABELS = { helpful: '有用', done: '已完成', too_frequent: '少一点', irrelevant: '不相关' };
 
 function isExpired(item, now = Date.now()) {

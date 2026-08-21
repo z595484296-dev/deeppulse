@@ -38,7 +38,7 @@ X-DeepPulse-Bpp: 1
 X-DeepPulse-Frame-SHA256: <lowercase hex>
 X-DeepPulse-Content-SHA256: <lowercase hex, volatile clock area excluded>
 X-DeepPulse-Sequence: <unix seconds>
-X-DeepPulse-Mode: focus|overview|emotion|watch|hotspot|alert
+X-DeepPulse-Mode: focus|overview|emotion|watch|hotspot|event|alert
 X-DeepPulse-Refresh-Policy: stable|smart|fast
 X-DeepPulse-Poll-Seconds: 15..300
 X-DeepPulse-Display-Seconds: 60..1800

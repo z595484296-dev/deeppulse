@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.10.0'
+const MIN_BACKEND_VERSION = '1.11.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -67,6 +67,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['background_monitor'] === 1
       && capabilities['market_routine'] === 1
       && capabilities['akshare_enrichment'] === 1
+      && capabilities['event_impact'] === 1
+      && capabilities['event_background_service'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -176,6 +178,62 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const emotion = recordOf(raw['emotionAnalysis'])
   const proactive = recordOf(raw['proactiveBrief'])
   const attention = recordOf(raw['attention'])
+  const eventImpact = recordOf(raw['eventImpact'])
+  const eventAuthorization = recordOf(eventImpact['authorization'])
+  const eventSummary = recordOf(eventImpact['summary'])
+  const eventMethod = recordOf(eventImpact['method'])
+  const sanitizeEventItem = (value: unknown) => {
+    const item = recordOf(value)
+    const event = recordOf(item['event'])
+    const quality = recordOf(item['quality'])
+    const contract = recordOf(item['contract'])
+    const eventSources = Array.isArray(event['sources']) ? event['sources'].slice(0, 4).map(source => {
+      const row = recordOf(source)
+      return { id: short(row['id'], 80), name: short(row['name'], 100), tier: short(row['tier'], 30), url: short(row['url'], 500) }
+    }) : []
+    const watchlist = Array.isArray(item['watchlist']) ? item['watchlist'].slice(0, 8).map(stock => {
+      const row = recordOf(stock)
+      return {
+        code: short(row['code'], 20), name: short(row['name'], 80), industry: short(row['industry'], 80),
+        match: short(row['match'], 20), matchedSectors: uniqueStrings(row['matchedSectors'], 6, 80),
+        basis: short(row['basis'], 180),
+      }
+    }) : []
+    const rules = Array.isArray(item['rules']) ? item['rules'].slice(0, 6).map(rule => {
+      const row = recordOf(rule)
+      return {
+        id: short(row['id'], 60), matchedKeywords: uniqueStrings(row['matchedKeywords'], 6, 60),
+        sectors: uniqueStrings(row['sectors'], 8, 80), reason: short(row['reason'], 240),
+        relation: short(row['relation'], 60), causal: row['causal'] === true,
+      }
+    }) : []
+    return {
+      event: {
+        id: short(event['id'], 80), type: short(event['type'], 30), title: short(event['title'], 300),
+        region: short(event['region'], 60), scheduledAt: short(event['scheduledAt'], 80),
+        observedAt: short(event['observedAt'], 80), importance: finite(event['importance']),
+        actual: finite(event['actual']), expected: finite(event['expected']), previous: finite(event['previous']),
+        status: short(event['status'], 30), sources: eventSources,
+      },
+      sectors: uniqueStrings(item['sectors'], 12, 80), watchlist, rules,
+      surprise: finite(item['surprise']), explanation: short(item['explanation'], 400),
+      quality: {
+        score: finite(quality['score']), corroborated: quality['corroborated'] === true,
+        sourceCount: finite(quality['sourceCount']), missing: uniqueStrings(quality['missing'], 8, 80),
+        meaning: short(quality['meaning'], 200),
+      },
+      contract: {
+        facts: contract['facts'] === true, rules: contract['rules'] === true,
+        quality: contract['quality'] === true, aiExplanationOptional: contract['aiExplanationOptional'] === true,
+        causalClaim: contract['causalClaim'] === true,
+      },
+    }
+  }
+  const eventItems = Array.isArray(eventImpact['items'])
+    ? eventImpact['items'].slice(0, 8).map(sanitizeEventItem)
+    : []
+  const standaloneEventItem = Object.keys(recordOf(raw['eventImpactItem'])).length
+    ? sanitizeEventItem(raw['eventImpactItem']) : null
   const disclosures = Array.isArray(selected['officialDisclosures'])
     ? selected['officialDisclosures'].slice(0, 6).map(item => {
       const row = recordOf(item)
@@ -385,6 +443,27 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           pageClosedCoverage: marketRoutine['pageClosedCoverage'] === true,
         } : null,
       },
+      eventImpact: Object.keys(eventImpact).length ? {
+        enabled: eventImpact['enabled'] === true, state: short(eventImpact['state'], 40),
+        modelVersion: short(eventImpact['modelVersion'], 60), dataDate: short(eventImpact['dataDate'], 30),
+        generatedAt: short(eventImpact['generatedAt'], 80),
+        authorization: {
+          required: eventAuthorization['required'] === true, granted: eventAuthorization['granted'] === true,
+          grantedAt: short(eventAuthorization['grantedAt'], 80),
+          scope: uniqueStrings(eventAuthorization['scope'], 4, 40),
+          statement: short(eventAuthorization['statement'], 240),
+        },
+        summary: {
+          events: finite(eventSummary['events']), linkedEvents: finite(eventSummary['linkedEvents']),
+          watchMatches: finite(eventSummary['watchMatches']), highImportance: finite(eventSummary['highImportance']),
+        },
+        method: {
+          relation: short(eventMethod['relation'], 60), causal: eventMethod['causal'] === true,
+          statement: short(eventMethod['statement'], 300),
+        },
+        items: eventItems, errors: uniqueStrings(eventImpact['errors'], 6, 200),
+      } : null,
+      eventImpactItem: standaloneEventItem,
       indices,
       sources,
       contextTruncated: {
@@ -516,6 +595,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '8. proactiveBrief 是深脉规则层整理的优先级与研究任务，不是新的市场事实；展开时仍需用 market、emotionAnalysis 和来源字段复核。',
     '9. attention 是用户提醒中心状态；可用它解释最近提醒、未读事项、后台价格监控和主动服务日程，但不要替用户更改偏好或授权，也不要把提醒本身当成市场事实。',
     '10. attention.learning 只来自用户明确反馈，可解释当前降噪设置和完成情况；不得推断未记录的偏好，也不得据此触发交易。',
+    '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',
   ].join('\n')
 }
 

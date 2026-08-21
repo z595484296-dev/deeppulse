@@ -46,7 +46,7 @@ export function normalizeAttentionPreferences(value = {}) {
 }
 
 function defaultExpiry(kind, createdAt) {
-  const hours = kind === 'move' ? 2 : kind === 'phase' ? 24 : kind === 'price' ? 24 : 36;
+  const hours = kind === 'move' ? 2 : kind === 'phase' ? 24 : kind === 'price' ? 24 : kind === 'event' ? 24 : 36;
   return createdAt + hours * 60 * 60 * 1000;
 }
 
@@ -118,10 +118,12 @@ export function digestMessage(items = []) {
   const unread = items.filter(item => item && !item.readAt);
   const phases = unread.filter(item => item.kind === 'phase').length;
   const moves = unread.filter(item => item.kind === 'move').length;
+  const events = unread.filter(item => item.kind === 'event').length;
   const parts = [];
   if (phases) parts.push(`${phases} 项阶段变化`);
   if (moves) parts.push(`${moves} 项盘中异动`);
-  const rest = unread.length - phases - moves;
+  if (events) parts.push(`${events} 项事件影响`);
+  const rest = unread.length - phases - moves - events;
   if (rest > 0) parts.push(`${rest} 项其他更新`);
   return parts.length ? `市场摘要：${parts.join('、')}` : '暂无新的系统更新';
 }

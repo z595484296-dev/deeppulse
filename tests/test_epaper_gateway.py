@@ -75,7 +75,7 @@ class DeviceConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.normalize_device_config({'focus_code': 'not-a-security'})
 
-    def test_all_six_display_modes_are_supported(self):
+    def test_all_display_modes_are_supported(self):
         for mode in server.DEVICE_MODES:
             self.assertEqual(server.normalize_device_config({'mode': mode})['mode'], mode)
         self.assertEqual(server.normalize_device_config({'mode': 'unknown'})['mode'], 'focus')

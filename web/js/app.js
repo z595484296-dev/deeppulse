@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.10.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.10.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.10.0';
+import { api } from './api.js?v=1.11.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.11.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.11.0';
 
-import * as pageOverview from './pages/overview.js?v=1.10.0';
-import * as pageEmotion from './pages/emotion.js?v=1.10.0';
-import * as pageMarket from './pages/market.js?v=1.10.0';
-import * as pageLadder from './pages/ladder.js?v=1.10.0';
-import * as pageWatch from './pages/watch.js?v=1.10.0';
-import * as pageStrategy from './pages/strategy.js?v=1.10.0';
-import * as pageEpaper from './pages/epaper.js?v=1.10.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.10.0';
-import * as pageAbout from './pages/about.js?v=1.10.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.10.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.10.0';
-import { initOnboarding } from './onboarding.js?v=1.10.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.10.0';
+import * as pageOverview from './pages/overview.js?v=1.11.0';
+import * as pageEmotion from './pages/emotion.js?v=1.11.0';
+import * as pageMarket from './pages/market.js?v=1.11.0';
+import * as pageLadder from './pages/ladder.js?v=1.11.0';
+import * as pageWatch from './pages/watch.js?v=1.11.0';
+import * as pageStrategy from './pages/strategy.js?v=1.11.0';
+import * as pageEpaper from './pages/epaper.js?v=1.11.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.11.0';
+import * as pageAbout from './pages/about.js?v=1.11.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.11.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.11.0';
+import { initOnboarding } from './onboarding.js?v=1.11.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.11.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -31,7 +31,7 @@ const PAGES = {
 };
 
 let currentPage = 'overview';
-let emotionTimer = null, indicesTimer = null, newsTimer = null, alertTimer = null, routineTimer = null;
+let emotionTimer = null, indicesTimer = null, newsTimer = null, alertTimer = null, routineTimer = null, eventTimer = null;
 let booted = false;
 let lastPhase = null;      // 情绪阶段变化提醒
 let netFailures = 0;       // 连续失败计数 → 全局断线横幅
@@ -178,6 +178,18 @@ function currentHarnessContext() {
         pageClosedCoverage: state.routine.service_continues_when_page_closed === true,
       } : null,
     },
+    eventImpact: state.eventImpact && state.eventImpact.impact ? {
+      enabled: !!state.eventImpact.enabled,
+      state: state.eventImpact.state,
+      authorization: state.eventImpact.authorization,
+      modelVersion: state.eventImpact.impact.modelVersion,
+      dataDate: state.eventImpact.impact.dataDate,
+      generatedAt: state.eventImpact.impact.generatedAt,
+      summary: state.eventImpact.impact.summary,
+      method: state.eventImpact.impact.method,
+      items: (state.eventImpact.impact.items || []).slice(0, 8),
+      errors: state.eventImpact.errors || [],
+    } : null,
     sources: [
       { name: '巨潮资讯', tier: 'official', role: '公司公告原文' },
       { name: '上交所/深交所/证监会', tier: 'official', role: '官方查验入口' },
@@ -434,6 +446,18 @@ async function pollRoutine() {
   } catch { /* 主行情与页面交互不受主动日程状态影响 */ }
 }
 
+let lastEventPublished = 0;
+async function pollEventImpact() {
+  try {
+    const snapshot = await api.eventImpact();
+    state.eventImpact = snapshot;
+    emit('event-impact', snapshot);
+    const published = Number(snapshot.runtime && snapshot.runtime.published_count || 0);
+    if (published > lastEventPublished) await syncProfile();
+    lastEventPublished = Math.max(lastEventPublished, published);
+  } catch { /* 可选事件服务失败不影响行情主链路 */ }
+}
+
 /** 异动差分：新涨停 / 炸板（仅交易时段播报，防止盘后修订误报） */
 function diffMoves(data) {
   const ztPool = (data.pools && data.pools.ZT && data.pools.ZT.pool) || [];
@@ -503,14 +527,17 @@ function schedule() {
   if (newsTimer) clearInterval(newsTimer);
   if (alertTimer) clearInterval(alertTimer);
   if (routineTimer) clearInterval(routineTimer);
+  if (eventTimer) clearInterval(eventTimer);
   const open = tradingState().state === 'open';
   emotionTimer = setInterval(pollEmotion, open ? 30000 : 120000);
   indicesTimer = setInterval(pollIndices, open ? 8000 : 60000);
   newsTimer = setInterval(pollNews, open ? 60000 : 300000);
   alertTimer = setInterval(pollAlerts, 10000);
   routineTimer = setInterval(pollRoutine, 30000);
+  eventTimer = setInterval(pollEventImpact, 300000);
   if (open) pollAlerts();
   pollRoutine();
+  pollEventImpact();
 }
 
 /* ---------------- 时钟 ---------------- */
@@ -663,6 +690,14 @@ async function boot() {
     });
     if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用；独立模式可先打开深脉助手', 'err', 6000);
   });
+  document.addEventListener('ask-event-impact', e => {
+    const item = e.detail && e.detail.item;
+    const request = askDeepSeek({
+      question: '请核对这条事件影响路径：先复述事实和数据时点，再解释规则关联，明确哪些只是相关性，并给出反证条件与应查的一手来源。',
+      context: { intent: 'verify-event-impact', eventImpactItem: item || null },
+    });
+    if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);
+  });
   document.addEventListener('harness-ask-result', e => {
     harnessBtn?.classList.remove('pending');
     const result = e.detail || {};
@@ -699,7 +734,7 @@ async function boot() {
   }
 
   goto(location.hash.slice(1) || 'overview', true);
-  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews()]);
+  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact()]);
   booted = true;
   schedule();
 
@@ -712,8 +747,9 @@ async function boot() {
       if (emotionTimer) clearInterval(emotionTimer);
       if (indicesTimer) clearInterval(indicesTimer);
       if (newsTimer) clearInterval(newsTimer);
+      if (eventTimer) clearInterval(eventTimer);
     } else {
-      pollEmotion(); pollIndices(); pollNews();
+      pollEmotion(); pollIndices(); pollNews(); pollEventImpact();
       schedule();
     }
   });

@@ -39,6 +39,12 @@ try:
 except Exception:
     tdx_local_api = None
 
+try:
+    from event_impact import build_event_impact, MODEL_VERSION as EVENT_IMPACT_MODEL_VERSION
+except Exception:
+    build_event_impact = None
+    EVENT_IMPACT_MODEL_VERSION = 'event-impact-unavailable'
+
 _akshare_module = None
 _akshare_error = None
 
@@ -66,7 +72,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.10.0'
+VERSION = '1.11.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -245,6 +251,13 @@ def akshare_status(probe=False):
         'status': status,
         'calendar': calendar,
         'role': '补充层：交易日历、宏观与跨市场公开数据；不提升为官方或实时主源',
+        'interfaces': {
+            'trade_calendar': bool(module and hasattr(module, 'tool_trade_date_hist_sina')),
+            'macro_calendar': bool(module and hasattr(module, 'macro_info_ws')),
+            'macro_corroboration': bool(module and hasattr(module, 'news_economic_baidu')),
+            'stock_news': bool(module and hasattr(module, 'stock_news_em')),
+        },
+        'event_service': load_event_service_config() if 'load_event_service_config' in globals() else None,
         'error': _akshare_error,
     }
 
@@ -887,12 +900,12 @@ def em_all_stocks():
             return _all_stocks
     url = ('https://%s/api/qt/clist/get?pn=1&pz=6500&po=1&np=1'
            '&fltt=2&invt=2&fid=f20&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23'
-           '&fields=f12,f13,f14' % '{HOST}')
+           '&fields=f12,f13,f14,f100' % '{HOST}')
     j = json_loads(fetch_clist_any(url))
     out = []
     for d in ((j.get('data') or {}).get('diff') or []):
         out.append({'code': d.get('f12'), 'market': d.get('f13'),
-                    'name': d.get('f14')})
+                    'name': d.get('f14'), 'industry': d.get('f100') or ''})
     with _all_stocks_lock:
         _all_stocks = out
     return out
@@ -1414,11 +1427,13 @@ PROFILE_LIST_LIMITS = {
     'attention_inbox': 200,
     'attention_feedback': 500,
     'routine_receipts': 180,
+    'event_receipts': 500,
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
     'background_monitor': 16 * 1024,
     'market_routine': 16 * 1024,
+    'event_service': 16 * 1024,
 }
 
 
@@ -2236,6 +2251,318 @@ def stop_market_routine():
         thread.join(timeout=3)
 
 
+# ---------------------------------------------------------------- 事件影响雷达（单独授权、透明规则、跨端主动服务）
+
+_event_service_lock = threading.Lock()
+_event_service_stop = threading.Event()
+_event_service_wake = threading.Event()
+_event_service_thread = None
+_event_service_runtime = {
+    'thread_running': False,
+    'state': 'disabled',
+    'last_check_at': None,
+    'last_success_at': None,
+    'next_check_at': None,
+    'last_error': None,
+    'checks': 0,
+    'published_count': 0,
+    'latest_summary': None,
+}
+
+
+def normalize_event_service_config(value=None):
+    source = value if isinstance(value, dict) else {}
+    scopes = source.get('scopes') if isinstance(source.get('scopes'), dict) else {}
+    try:
+        interval = int(source.get('interval_seconds', source.get('intervalSeconds', 300)))
+    except (TypeError, ValueError):
+        interval = 300
+    delivery = str(source.get('delivery') or 'digest')
+    return {
+        'enabled': source.get('enabled') is True,
+        'scopes': {
+            'macro': scopes.get('macro') is not False,
+            'market_news': scopes.get('market_news', scopes.get('marketNews')) is not False,
+        },
+        'watchlist_link': source.get('watchlist_link', source.get('watchlistLink')) is not False,
+        'delivery': delivery if delivery in ('digest', 'center_only') else 'digest',
+        'interval_seconds': max(180, min(1800, interval)),
+        'enabled_at': str(source.get('enabled_at') or source.get('enabledAt') or '')[:40] or None,
+        'consent_version': 'event-impact-v1' if source.get('enabled') is True else None,
+    }
+
+
+def load_event_service_config():
+    profile = load_profile().get('data') or {}
+    return normalize_event_service_config(profile.get('event_service'))
+
+
+def save_event_service_config(value):
+    cfg = normalize_event_service_config(value)
+    previous = load_event_service_config()
+    if cfg['enabled'] and not previous['enabled']:
+        cfg['enabled_at'] = now_bj().isoformat(timespec='seconds')
+    elif not cfg['enabled']:
+        cfg['enabled_at'] = None
+        cfg['consent_version'] = None
+    saved = save_profile({'event_service': cfg})
+    _event_service_wake.set()
+    return saved
+
+
+def _frame_records(frame):
+    if frame is None:
+        return []
+    try:
+        return frame.to_dict(orient='records')
+    except Exception:
+        return []
+
+
+def akshare_macro_event_rows(day):
+    module = load_akshare()
+    if module is None:
+        raise RuntimeError('AKShare 未安装或导入失败')
+    result = {'calendar': [], 'corroboration': [], 'errors': []}
+    for name, key in (('macro_info_ws', 'calendar'), ('news_economic_baidu', 'corroboration')):
+        if not hasattr(module, name):
+            result['errors'].append('%s 接口不可用' % name)
+            continue
+        started = time.monotonic()
+        try:
+            frame = getattr(module, name)(date=day)
+            result[key] = _frame_records(frame)
+            _record_source('akshare:' + name, True, (time.monotonic() - started) * 1000)
+        except Exception as exc:
+            _record_source('akshare:' + name, False, (time.monotonic() - started) * 1000, exc)
+            result['errors'].append('%s: %s' % (name, str(exc)[:140]))
+    return result
+
+
+def collect_event_impact(current=None, profile_data=None, macro_loader=None, news_loader=None,
+                         stock_loader=None):
+    now = (current or now_bj()).astimezone(BJC)
+    profile = profile_data if isinstance(profile_data, dict) else (load_profile().get('data') or {})
+    cfg = normalize_event_service_config(profile.get('event_service'))
+    base = {
+        'enabled': cfg['enabled'], 'config': cfg,
+        'authorization': {
+            'required': True, 'granted': cfg['enabled'],
+            'grantedAt': cfg.get('enabled_at'),
+            'scope': [key for key, value in cfg['scopes'].items() if value],
+            'statement': '仅在用户明确开启后读取宏观日历和市场快讯；不会连接交易账户或自动下单。',
+        },
+        'serviceContinuesWhenPageClosed': True,
+        'serviceStopsWhenLocalServerStops': True,
+    }
+    if not cfg['enabled']:
+        return dict(base, state='disabled', impact={
+            'modelVersion': EVENT_IMPACT_MODEL_VERSION,
+            'dataDate': now.strftime('%Y-%m-%d'), 'generatedAt': None,
+            'summary': {'events': 0, 'linkedEvents': 0, 'watchMatches': 0, 'highImportance': 0},
+            'items': [],
+            'method': {'relation': 'rule-based-sensitivity', 'causal': False,
+                       'statement': '尚未授权，未访问事件数据源。'},
+        }, sources=[], errors=[])
+    if build_event_impact is None:
+        return dict(base, state='error', impact=None, sources=[],
+                    errors=['事件影响模型不可用'])
+    day = now.strftime('%Y%m%d')
+    errors = []
+    macro = {'calendar': [], 'corroboration': [], 'errors': []}
+    if cfg['scopes']['macro']:
+        try:
+            loader = macro_loader or (lambda d: cached(
+                'event_macro_' + d, 15 * 60, lambda: akshare_macro_event_rows(d)))
+            macro = loader(day)
+            errors.extend(macro.get('errors') or [])
+        except Exception as exc:
+            errors.append('AKShare 宏观日历: %s' % str(exc)[:160])
+    market_rows = []
+    if cfg['scopes']['market_news']:
+        try:
+            loader = news_loader or (lambda: cached('news', 90, em_news))
+            market_rows = loader() or []
+        except Exception as exc:
+            errors.append('市场快讯: %s' % str(exc)[:160])
+    try:
+        catalog_loader = stock_loader or (lambda: cached('all_stocks', 2 * 3600, em_all_stocks))
+        catalog = catalog_loader() if cfg['watchlist_link'] else []
+    except Exception as exc:
+        catalog = []
+        errors.append('自选行业目录: %s' % str(exc)[:160])
+    observed = now.isoformat(timespec='seconds')
+    impact = build_event_impact(
+        macro.get('calendar') or [], macro.get('corroboration') or [], market_rows,
+        profile.get('watchlist') if cfg['watchlist_link'] else [], catalog,
+        data_date=now.strftime('%Y-%m-%d'), observed_at=observed)
+    sources = []
+    if macro.get('calendar'):
+        sources.append({'id': 'akshare:macro_info_ws', 'name': 'AKShare·华尔街见闻宏观日历',
+                        'tier': 'enrichment', 'observedAt': observed})
+    if macro.get('corroboration'):
+        sources.append({'id': 'akshare:news_economic_baidu', 'name': 'AKShare·百度全球宏观事件',
+                        'tier': 'enrichment', 'observedAt': observed})
+    if market_rows:
+        sources.append({'id': 'eastmoney:news', 'name': '东方财富快讯',
+                        'tier': 'market', 'observedAt': observed})
+    state = 'ok' if sources and not errors else ('degraded' if sources else 'unavailable')
+    return dict(base, state=state, impact=impact, sources=sources, errors=errors[:6])
+
+
+def commit_event_attention(snapshot, limit=3):
+    """Atomically publish new, relevant event paths and remember delivery receipts."""
+    if not isinstance(snapshot, dict) or not snapshot.get('enabled'):
+        return 0
+    impact = snapshot.get('impact') or {}
+    candidates = []
+    for row in impact.get('items') or []:
+        event = row.get('event') or {}
+        watches = row.get('watchlist') or []
+        if watches or (event.get('importance') or 0) >= 3:
+            candidates.append(row)
+    published = 0
+    timestamp = int(time.time() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        receipts = [row for row in (current['data'].get('event_receipts') or [])
+                    if isinstance(row, dict)]
+        receipt_ids = {str(row.get('id') or '') for row in receipts}
+        inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict)]
+        cfg = normalize_event_service_config(current['data'].get('event_service'))
+        for row in candidates:
+            if published >= max(1, min(int(limit or 3), 5)):
+                break
+            event = row.get('event') or {}
+            item_id = 'event:' + str(event.get('id') or '')[:40]
+            if item_id in receipt_ids:
+                continue
+            watches = row.get('watchlist') or []
+            names = [str(item.get('name') or item.get('code') or '') for item in watches[:3]]
+            sectors = [str(value) for value in (row.get('sectors') or [])[:3]]
+            link = ('命中自选：%s' % '、'.join(names)) if names else ('敏感行业：%s' % '、'.join(sectors))
+            quality = row.get('quality') or {}
+            sources = event.get('sources') or []
+            source_names = ' / '.join(str(source.get('name') or '') for source in sources[:2])
+            item = {
+                'id': item_id, 'fingerprint': item_id, 'kind': 'event',
+                'priority': 'high' if any(item.get('match') == 'direct' for item in watches) else 'medium',
+                'delivery': cfg['delivery'], 'title': str(event.get('title') or '新的市场事件')[:160],
+                'detail': ('%s；质量分 %s。规则只表示敏感性，相关性不等于因果。'
+                           % (link or '尚未命中自选', quality.get('score', '--'))),
+                'reason': '你已授权事件影响雷达；来源 %s，观测时间 %s' % (
+                    source_names or '待核对', event.get('observedAt') or '待确认'),
+                'page': 'overview', 'createdAt': timestamp,
+                'expiresAt': timestamp + (8 if event.get('type') == 'headline' else 24) * 60 * 60 * 1000,
+                'readAt': None,
+                'eventImpact': {
+                    'eventId': event.get('id'), 'scheduledAt': event.get('scheduledAt'),
+                    'sectors': sectors, 'watchlist': [item.get('code') for item in watches[:6]],
+                    'qualityScore': quality.get('score'), 'causal': False,
+                },
+            }
+            inbox = [old for old in inbox if old.get('id') != item_id]
+            inbox.append(item)
+            receipts.append({'id': item_id, 'eventId': event.get('id'),
+                             'createdAt': timestamp, 'dataDate': impact.get('dataDate')})
+            receipt_ids.add(item_id)
+            published += 1
+        if published:
+            current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+            current['data']['event_receipts'] = receipts[-PROFILE_LIST_LIMITS['event_receipts']:]
+            _write_profile_unlocked(current)
+    return published
+
+
+def process_event_service_once(current=None, collector=None):
+    snapshot = (collector or collect_event_impact)(current)
+    if not snapshot.get('enabled'):
+        return {'state': 'disabled', 'published': 0, 'snapshot': snapshot}
+    published = commit_event_attention(snapshot)
+    return {'state': snapshot.get('state') or 'unavailable', 'published': published,
+            'snapshot': snapshot}
+
+
+def event_service_status(include_impact=False):
+    cfg = load_event_service_config()
+    with _event_service_lock:
+        runtime = dict(_event_service_runtime)
+    state = runtime.get('state') or 'disabled'
+    if not cfg['enabled']:
+        state = 'disabled'
+    elif state in ('disabled', 'stopped'):
+        state = 'starting'
+    result = {
+        'config': cfg, 'runtime': dict(runtime, state=state),
+        'authorization': {
+            'required': True, 'granted': cfg['enabled'], 'grantedAt': cfg.get('enabled_at'),
+            'statement': '明确授权后才访问事件源；关闭后立即停止新检查。',
+        },
+        'service_continues_when_page_closed': True,
+        'service_stops_when_local_server_stops': True,
+    }
+    if include_impact:
+        snapshot = collect_event_impact()
+        result.update(snapshot)
+    return result
+
+
+def _event_service_loop():
+    with _event_service_lock:
+        _event_service_runtime['thread_running'] = True
+    while not _event_service_stop.is_set():
+        cfg = load_event_service_config()
+        wait_seconds = 30 if not cfg['enabled'] else cfg['interval_seconds']
+        checked_at = now_bj()
+        if not cfg['enabled']:
+            with _event_service_lock:
+                _event_service_runtime.update(state='disabled', next_check_at=None, last_error=None)
+        else:
+            try:
+                result = process_event_service_once(checked_at)
+                snapshot = result.get('snapshot') or {}
+                with _event_service_lock:
+                    _event_service_runtime.update(
+                        state=result['state'], last_check_at=checked_at.isoformat(timespec='seconds'),
+                        last_success_at=(checked_at.isoformat(timespec='seconds')
+                                         if snapshot.get('sources') else _event_service_runtime.get('last_success_at')),
+                        next_check_at=(checked_at + timedelta(seconds=wait_seconds)).isoformat(timespec='seconds'),
+                        last_error='; '.join(snapshot.get('errors') or []) or None,
+                        checks=int(_event_service_runtime.get('checks') or 0) + 1,
+                        published_count=int(_event_service_runtime.get('published_count') or 0)
+                        + int(result.get('published') or 0),
+                        latest_summary=(snapshot.get('impact') or {}).get('summary'),
+                    )
+            except Exception as exc:
+                with _event_service_lock:
+                    _event_service_runtime.update(
+                        state='error', last_check_at=checked_at.isoformat(timespec='seconds'),
+                        next_check_at=None, last_error=str(exc)[:240])
+        _event_service_wake.wait(wait_seconds)
+        _event_service_wake.clear()
+    with _event_service_lock:
+        _event_service_runtime.update(thread_running=False, state='stopped', next_check_at=None)
+
+
+def start_event_service():
+    global _event_service_thread
+    if _event_service_thread and _event_service_thread.is_alive():
+        return
+    _event_service_stop.clear()
+    _event_service_thread = threading.Thread(target=_event_service_loop,
+                                             name='deeppulse-event-impact', daemon=True)
+    _event_service_thread.start()
+
+
+def stop_event_service():
+    _event_service_stop.set()
+    _event_service_wake.set()
+    thread = _event_service_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=3)
+
+
 # ---------------------------------------------------------------- 墨水屏设备网关（ESP32 只读终端）
 
 EPAPER_WIDTH = 800
@@ -2243,7 +2570,7 @@ EPAPER_HEIGHT = 480
 EPAPER_FRAME_BYTES = EPAPER_WIDTH * EPAPER_HEIGHT // 8
 DEVICE_DEFAULT_PORT = 8988
 DEVICE_ALERT_TTL_SECONDS = 15 * 60
-DEVICE_MODES = ('focus', 'overview', 'emotion', 'watch', 'hotspot', 'alert')
+DEVICE_MODES = ('focus', 'overview', 'emotion', 'watch', 'hotspot', 'event', 'alert')
 DEVICE_REFRESH_POLICIES = ('stable', 'smart', 'fast')
 _device_config_lock = threading.Lock()
 _device_gateway_lock = threading.Lock()
@@ -2507,6 +2834,22 @@ def build_device_state(config=None, demo=''):
         except Exception:
             headlines = []
 
+    event_radar = {'enabled': False, 'state': 'disabled', 'summary': {}, 'item': None}
+    if (preview_mode or cfg.get('mode')) == 'event':
+        try:
+            snapshot = collect_event_impact(profile_data=profile)
+            items = ((snapshot.get('impact') or {}).get('items') or [])
+            event_radar = {
+                'enabled': bool(snapshot.get('enabled')),
+                'state': snapshot.get('state') or 'unavailable',
+                'summary': (snapshot.get('impact') or {}).get('summary') or {},
+                'item': items[0] if items else None,
+                'errors': (snapshot.get('errors') or [])[:2],
+            }
+        except Exception as exc:
+            event_radar = {'enabled': False, 'state': 'error', 'summary': {},
+                           'item': None, 'errors': [str(exc)[:120]]}
+
     raw = engine.get('raw') or {}
     state = {
         'schema': 1,
@@ -2553,6 +2896,7 @@ def build_device_state(config=None, demo=''):
         'watch': watch,
         'hotspots': hotspots,
         'headlines': headlines,
+        'event_radar': event_radar,
         'alert': alert,
         'quality': {
             'tdx_status': tdx.get('status') or 'unavailable',
@@ -2812,6 +3156,43 @@ def render_epaper_frame(state):
             _epd_text(frame, 574, y, label, 2)
             _epd_text(frame, 670, y, _epd_float(value, 0) + suffix, 2)
         _epd_text(frame, 574, 390, 'RESEARCH ONLY', 2)
+        return bytes(frame)
+
+    if mode == 'event':
+        radar = state.get('event_radar') or {}
+        item = radar.get('item') or {}
+        event = item.get('event') or {}
+        quality = item.get('quality') or {}
+        watches = item.get('watchlist') or []
+        sectors = item.get('sectors') or []
+        _epd_text(frame, 18, 68, 'EVENT IMPACT RADAR', 3)
+        _epd_rect(frame, 18, 106, 520, 316, fill=False)
+        if not radar.get('enabled'):
+            _epd_text(frame, 72, 188, 'EVENT SERVICE OFF', 4)
+            _epd_text(frame, 72, 260, 'ENABLE IN DESKTOP', 3)
+        elif not item:
+            _epd_text(frame, 92, 210, 'WAITING FOR EVENTS', 3)
+            _epd_text(frame, 92, 265, 'NO VERIFIED PATH', 2)
+        else:
+            _epd_text(frame, 36, 128, 'TYPE ' + str(event.get('type') or '--').upper()[:12], 2)
+            _epd_text(frame, 36, 166, 'TIME ' + str(event.get('scheduledAt') or '--')[11:16], 2)
+            _epd_text(frame, 36, 204, 'IMPORTANCE ' + str(event.get('importance') or '--'), 2)
+            _epd_text(frame, 36, 242, 'QUALITY ' + str(quality.get('score') or '--'), 2)
+            _epd_text(frame, 36, 280, 'SECTORS ' + str(len(sectors)), 2)
+            _epd_text(frame, 36, 318, 'WATCH MATCH ' + str(len(watches)), 2)
+            codes = ' '.join(str(row.get('code') or '') for row in watches[:3]) or 'NONE'
+            _epd_text(frame, 36, 365, codes[:26], 2)
+        _epd_rect(frame, 556, 70, 226, 352, fill=False)
+        summary = radar.get('summary') or {}
+        _epd_text(frame, 574, 88, 'TODAY', 3)
+        for index, (label, value) in enumerate((
+                ('EVENTS', summary.get('events')), ('LINKED', summary.get('linkedEvents')),
+                ('MATCH', summary.get('watchMatches')), ('HIGH', summary.get('highImportance')))):
+            y = 142 + index * 54
+            _epd_text(frame, 574, y, label, 2)
+            _epd_text(frame, 698, y, str(value if value is not None else '--'), 2)
+        _epd_text(frame, 574, 376, 'NOT CAUSAL', 2)
+        _epd_text(frame, 574, 402, 'RESEARCH ONLY', 2)
         return bytes(frame)
 
     if mode == 'overview':
@@ -3128,7 +3509,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.10.0'
+    server_version = 'DeepPulse/1.11.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -3251,6 +3632,8 @@ class Handler(BaseHTTPRequestHandler):
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,
+                          'event_impact': 1,
+                          'event_background_service': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -3298,6 +3681,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': background_monitor_status()})
         elif path == '/api/routine/status':
             self.send_json({'ok': True, 'data': market_routine_status()})
+        elif path == '/api/event-impact':
+            self.send_json({'ok': True, 'data': event_service_status(include_impact=True)})
+        elif path == '/api/event-service/status':
+            self.send_json({'ok': True, 'data': event_service_status(include_impact=False)})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -3478,6 +3865,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'data': {
                     'profile': saved,
                     'routine': market_routine_status(),
+                }})
+            elif u.path == '/api/event-service/config':
+                body = self.read_json_body()
+                saved = save_event_service_config(body.get('config') or {})
+                self.send_json({'ok': True, 'data': {
+                    'profile': saved,
+                    'eventService': event_service_status(include_impact=False),
                 }})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()
@@ -3678,6 +4072,7 @@ def main():
     sync_device_gateway(device_config)
     start_background_monitor()
     start_market_routine()
+    start_event_service()
 
     # 预热线程：启动 2s 后后台装配一次情绪全景，让首个页面请求命中热缓存
     def warmup():
@@ -3696,6 +4091,7 @@ def main():
         log('server stopped')
         print('\n已退出。')
     finally:
+        stop_event_service()
         stop_market_routine()
         stop_background_monitor()
         stop_device_gateway()

@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 微雪 7.5 英寸墨水屏开发模式 */
 
-import { api } from '../api.js?v=1.10.0';
-import { esc, debounce, toast } from '../util.js?v=1.10.0';
+import { api } from '../api.js?v=1.11.0';
+import { esc, debounce, toast } from '../util.js?v=1.11.0';
 
 let built = false;
 let snapshot = null;
@@ -17,6 +17,7 @@ const MODE_META = {
   emotion: { label: '情绪周期', help: '温度、阶段、六维结构与涨跌停等核心指标，适合复盘。' },
   watch: { label: '自选组合', help: '同屏查看最多 6 只自选股的价格和涨跌幅。' },
   hotspot: { label: '热点雷达', help: '展示领涨行业、强度与市场结构，捕捉当下热点。' },
+  event: { label: '事件雷达', help: '展示事件数量、质量、敏感行业和命中的自选代码；需先在总览明确开启事件服务。' },
   alert: { label: '提醒优先', help: '触发关注价提醒时占满画面，未触发时回到个股专注。' },
 };
 
@@ -266,6 +267,7 @@ export function init(container) {
           <option value="emotion">情绪周期</option>
           <option value="watch">自选组合</option>
           <option value="hotspot">热点雷达</option>
+          <option value="event">事件雷达</option>
           <option value="alert">提醒优先</option>
         </select><small class="ep-mode-help" id="ep-mode-help"></small></label>
         <label class="ep-field"><span>刷新方式</span><select id="ep-refresh-policy">

@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.10.0';
+const MIN_VERSION = '1.11.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -51,7 +51,9 @@ async function probeBase(base, signal) {
       && capabilities.attention_learning === 1
       && capabilities.background_monitor === 1
       && capabilities.market_routine === 1
-      && capabilities.akshare_enrichment === 1 ? base : '';
+      && capabilities.akshare_enrichment === 1
+      && capabilities.event_impact === 1
+      && capabilities.event_background_service === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -65,7 +67,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.10.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.11.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -138,6 +140,9 @@ export const api = {
   saveMonitorConfig: (config) => post('/api/monitor/config', { config }, 5000),
   routineStatus: () => request('/api/routine/status', 5000),
   saveRoutineConfig: (config) => post('/api/routine/config', { config }, 5000),
+  eventImpact: () => request('/api/event-impact', 90000),
+  eventServiceStatus: () => request('/api/event-service/status', 5000),
+  saveEventServiceConfig: (config) => post('/api/event-service/config', { config }, 10000),
   deviceConfig: () => request('/api/device/config', 10000),
   saveDeviceConfig: (config) => post('/api/device/config', { config }, 15000),
   rotateDeviceToken: () => post('/api/device/token/rotate', undefined, 15000),

@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.10.0';
+import { applyChartTheme } from './charts.js?v=1.11.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -39,6 +39,10 @@ export function boundedContext(value) {
     const emotion = plain.emotionAnalysis || {};
     const reduced = {
       ...plain,
+      eventImpact: plain.eventImpact ? {
+        ...plain.eventImpact,
+        items: (plain.eventImpact.items || []).slice(0, 4),
+      } : null,
       emotionAnalysis: {
         ...emotion,
         history: (emotion.history || []).slice(-8),
@@ -62,6 +66,14 @@ export function boundedContext(value) {
         facts: (reduced.proactiveBrief.facts || []).slice(0, 4),
         actions: (reduced.proactiveBrief.actions || []).slice(0, 3),
         evidence: (reduced.proactiveBrief.evidence || []).slice(0, 6),
+      } : null,
+      eventImpact: reduced.eventImpact ? {
+        enabled: reduced.eventImpact.enabled,
+        generatedAt: reduced.eventImpact.generatedAt,
+        summary: reduced.eventImpact.summary,
+        authorization: reduced.eventImpact.authorization,
+        method: reduced.eventImpact.method,
+        items: (reduced.eventImpact.items || []).slice(0, 2),
       } : null,
       selectedSecurity: reduced.selectedSecurity,
       market: {

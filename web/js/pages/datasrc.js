@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.10.0';
-import { esc, toast, downloadText } from '../util.js?v=1.10.0';
+import { api } from '../api.js?v=1.11.0';
+import { esc, toast, downloadText } from '../util.js?v=1.11.0';
 
 let built = false;
 
@@ -62,7 +62,7 @@ export function init(container) {
         <div class="card-head">
           <div>
             <div class="card-title">🧭 AKShare 补充层</div>
-            <div class="card-sub">交易日历优先接入 · 后续用于宏观、跨市场与行业数据补充</div>
+            <div class="card-sub">交易日历 · 宏观事件双源补充 · 事件雷达需单独授权</div>
           </div>
           <span class="source-tier enrichment">补充数据</span>
         </div>
@@ -73,7 +73,7 @@ export function init(container) {
             <a class="btn" href="https://akshare.akfamily.xyz/" target="_blank" rel="noopener noreferrer">官方文档</a>
           </div>
         </div>
-        <div class="tdx-safety">分层原则：AKShare 不替代交易所公告、通达信本地行情或实时行情主链路；接口异常时回退为工作日判断，并明确标注“未确认”。</div>
+        <div class="tdx-safety">分层原则：AKShare 不替代交易所公告、通达信本地行情或实时行情主链路；事件路径只表示透明规则识别的敏感性，不代表因果或方向预测。</div>
       </div>
 
       <div class="card span-12">
@@ -225,6 +225,8 @@ async function renderAkshareStatus(container, probe = false) {
       `版本：${esc(s.version || (s.installed ? '等待载入' : '--'))}`,
       calendar.date ? `日期：${esc(calendar.date)} · ${calendar.is_trade_date ? '交易日' : '非交易日'}` : '日历：等待主动服务调用',
       `定位：${esc(s.role || '补充数据层')}`,
+      s.interfaces ? `事件接口：宏观日历 ${s.interfaces.macro_calendar ? '可用' : '不可用'} · 互证 ${s.interfaces.macro_corroboration ? '可用' : '不可用'}` : '事件接口：等待载入',
+      s.event_service ? `事件雷达：${s.event_service.enabled ? '已授权' : '未授权'}` : '事件雷达：等待服务状态',
     ];
     el.innerHTML = `
       <div class="tdx-state ${tone}"><i class="dot ${tone}"></i>${esc(label)}</div>

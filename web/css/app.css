@@ -805,6 +805,41 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .routine-options b { color: var(--text); font-size: 11px; }
 .routine-options small { color: var(--text-3); font-size: 9.5px; white-space: nowrap; }
 .routine-boundary { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 9.5px; line-height: 1.5; }
+
+/* ---------------- 事件影响雷达 ---------------- */
+.event-radar-card { margin-top: 14px; padding: 16px 18px; overflow: hidden; }
+.event-radar-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.event-radar-kicker { color: var(--accent-2); font-size: 12px; font-weight: 750; letter-spacing: .04em; margin-bottom: 5px; }
+.event-radar-head h2 { margin: 0; font-size: 18px; }
+.event-radar-head p { margin: 5px 0 0; color: var(--text-3); font-size: 12px; }
+.event-radar-consent, .event-radar-boundary {
+  margin-top: 12px; padding: 10px 12px; border-radius: 9px; background: var(--panel-2);
+  color: var(--text-3); font-size: 11.5px; line-height: 1.65;
+}
+.event-radar-controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.event-radar-controls label { color: var(--text-2); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.event-radar-controls select { margin-left: auto; min-width: 172px; }
+.event-radar-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 13px; }
+.event-radar-summary > div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.event-radar-summary b { display: block; font-size: 20px; }
+.event-radar-summary span { color: var(--text-3); font-size: 11px; }
+.event-radar-list { display: grid; gap: 8px; margin-top: 12px; }
+.event-radar-empty { padding: 18px; border: 1px dashed var(--line); border-radius: 10px; text-align: center; color: var(--text-3); font-size: 12px; }
+.event-path-item { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: rgba(100, 113, 255, .035); }
+.event-path-main { flex: 1; min-width: 0; }
+.event-path-main > b { display: block; font-size: 13px; line-height: 1.55; }
+.event-path-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 5px; color: var(--text-3); font-size: 10.5px; }
+.event-path-meta span:first-child { color: var(--accent-2); font-weight: 700; }
+.event-path-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 8px; }
+.event-path-flow span, .event-path-flow em { padding: 2px 7px; border-radius: 999px; background: var(--panel-2); color: var(--text-2); font-size: 10.5px; font-style: normal; }
+.event-path-flow .fact { background: rgba(48, 201, 148, .12); color: var(--up); }
+.event-path-flow .rules { background: rgba(100, 113, 255, .13); color: var(--accent-2); }
+.event-path-flow .event-watch { background: rgba(244, 184, 64, .13); color: var(--amber); }
+.event-path-flow i { color: var(--text-3); font-style: normal; }
+.event-path-main p { margin: 7px 0 3px; color: var(--text-2); font-size: 11.5px; }
+.event-path-main small { color: var(--text-3); font-size: 10.5px; }
+.event-radar-boundary { border-left: 3px solid var(--amber); }
+.event-radar-card[data-state="degraded"], .event-radar-card[data-state="unavailable"], .event-radar-card[data-state="error"] { border-color: rgba(244, 184, 64, .38); }
 .ma-item { display: flex; gap: 11px; align-items: flex-start; }
 .ma-icon {
   width: 34px; height: 34px; border-radius: 9px; background: var(--panel-3);
@@ -1262,6 +1297,14 @@ body.light .newsline { background: #f6f8fc; }
 body.light .newsline::before {
   background: linear-gradient(90deg, #eef1f7, rgba(238, 241, 247, .4));
   color: #b45309;
+}
+
+@media (max-width: 760px) {
+  .event-radar-head { flex-direction: column; }
+  .event-radar-head .btn { width: 100%; }
+  .event-radar-summary { grid-template-columns: repeat(2, 1fr); }
+  .event-radar-controls select { width: 100%; margin-left: 0; }
+  .event-path-item { align-items: stretch; flex-direction: column; }
 }
 body.light .card {
   background: linear-gradient(180deg, #ffffff, #fbfcfe);

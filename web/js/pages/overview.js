@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.10.0';
-import { state, bus, syncProfile } from '../store.js?v=1.10.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.10.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.10.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.10.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.10.0';
+import { api } from '../api.js?v=1.11.0';
+import { state, bus, syncProfile } from '../store.js?v=1.11.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.11.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.11.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.11.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.11.0';
 
 let built = false;
 let sparksAt = 0;
@@ -65,6 +65,34 @@ export function init(container) {
         </div>
       </div>
       <p class="routine-boundary">逐项授权，关闭网页后仍由本机服务执行；关闭本机服务即停止。按北京时间工作日窗口运行，每条提醒都会注明数据日，不会把旧数据冒充实时行情。</p>
+    </section>
+
+    <section class="card event-radar-card" id="ov-event-radar" aria-labelledby="ov-event-title">
+      <div class="event-radar-head">
+        <div>
+          <div class="event-radar-kicker">事件影响雷达 <span class="tag" id="ov-event-state">未开启</span></div>
+          <h2 id="ov-event-title">让深脉理解“这件事为什么与你有关”</h2>
+          <p>宏观日历与市场事件 → 敏感行业 → 你的自选；每一步都展示来源、时间和规则依据。</p>
+        </div>
+        <button class="btn sm primary" id="ov-event-toggle">授权开启</button>
+      </div>
+      <div class="event-radar-consent" id="ov-event-consent">
+        默认关闭。开启后，本机后台会访问 AKShare 宏观日历与市场快讯；关闭网页后仍可生成提醒，关闭本机服务即停止。不会连接交易账户或自动下单。
+      </div>
+      <div class="event-radar-controls" id="ov-event-controls" hidden>
+        <label><input type="checkbox" data-event-scope="macro"> 宏观日历</label>
+        <label><input type="checkbox" data-event-scope="market_news"> 市场快讯</label>
+        <label><input type="checkbox" data-event-link="watchlist"> 关联我的自选</label>
+        <select id="ov-event-delivery" aria-label="事件提醒方式">
+          <option value="digest">重要事件进入摘要</option>
+          <option value="center_only">只收入提醒中心</option>
+        </select>
+      </div>
+      <div class="event-radar-summary" id="ov-event-summary" hidden></div>
+      <div class="event-radar-list" id="ov-event-list">
+        <div class="event-radar-empty">尚未授权，因此没有访问事件数据源。</div>
+      </div>
+      <div class="event-radar-boundary">事实层与规则层分开呈现 · 相关性不等于因果 · 质量分不代表预测准确率</div>
     </section>
 
     <div class="grid idx-grid" id="ov-indices" style="margin-top:14px"></div>
@@ -224,6 +252,7 @@ export function init(container) {
   bus.addEventListener('journal', rerenderBrief);
   bus.addEventListener('brief-receipts', rerenderBrief);
   bus.addEventListener('market-routine', e => renderRoutine(container, e.detail));
+  bus.addEventListener('event-impact', e => renderEventImpact(container, e.detail));
 
   container.querySelector('#ov-routine').addEventListener('change', async e => {
     const input = e.target.closest('[data-routine-task]');
@@ -249,6 +278,45 @@ export function init(container) {
   });
   refreshRoutine(container);
 
+  container.querySelector('#ov-event-toggle').addEventListener('click', async e => {
+    const button = e.currentTarget;
+    const current = state.eventImpact && state.eventImpact.config || {};
+    const enabled = current.enabled === true;
+    button.disabled = true;
+    try {
+      await api.saveEventServiceConfig({ ...current, enabled: !enabled });
+      state.eventImpact = await api.eventImpact();
+      renderEventImpact(container, state.eventImpact);
+      await syncProfile();
+      toast(enabled ? '事件影响雷达已关闭，不再进行新检查' : '事件影响雷达已开启，将从可核验事件开始学习', 'ok');
+    } catch {
+      toast('事件服务设置失败，请确认本机深脉服务正在运行', 'err');
+    } finally {
+      button.disabled = false;
+    }
+  });
+  container.querySelector('#ov-event-controls').addEventListener('change', async () => {
+    const current = state.eventImpact && state.eventImpact.config || {};
+    const scopes = Object.fromEntries([...container.querySelectorAll('[data-event-scope]')]
+      .map(input => [input.dataset.eventScope, input.checked]));
+    const watchlistLink = container.querySelector('[data-event-link="watchlist"]').checked;
+    const delivery = container.querySelector('#ov-event-delivery').value;
+    try {
+      await api.saveEventServiceConfig({ ...current, enabled: true, scopes, watchlist_link: watchlistLink, delivery });
+      state.eventImpact = await api.eventImpact();
+      renderEventImpact(container, state.eventImpact);
+      await syncProfile();
+    } catch { toast('事件雷达设置未保存，请稍后重试', 'err'); }
+  });
+  container.querySelector('#ov-event-list').addEventListener('click', e => {
+    const button = e.target.closest('[data-event-ask]');
+    if (!button) return;
+    const item = ((state.eventImpact && state.eventImpact.impact && state.eventImpact.impact.items) || [])
+      .find(row => row.event && row.event.id === button.dataset.eventAsk);
+    document.dispatchEvent(new CustomEvent('ask-event-impact', { detail: { item } }));
+  });
+  renderEventImpact(container, state.eventImpact);
+
   // 今日异动流（新涨停/炸板，app.js 差分后推送）
   const movesEl = container.querySelector('#ov-moves');
   const renderMoves = (list) => {
@@ -265,6 +333,76 @@ export function init(container) {
   };
   renderMoves([]);
   bus.addEventListener('moves', e => renderMoves(e.detail));
+}
+
+const EVENT_STATE_LABELS = {
+  disabled: '未开启', starting: '启动中', ok: '已连接', degraded: '部分降级',
+  unavailable: '暂无可用来源', error: '需要检查', stopped: '已停止',
+};
+
+function eventTime(value) {
+  if (!value) return '时点待确认';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function renderEventImpact(container, snapshot) {
+  const root = container.querySelector('#ov-event-radar');
+  if (!root) return;
+  const value = snapshot || {};
+  const config = value.config || {};
+  const enabled = config.enabled === true;
+  const runtimeState = value.state || value.runtime && value.runtime.state || (enabled ? 'starting' : 'disabled');
+  root.dataset.state = runtimeState;
+  root.querySelector('#ov-event-state').textContent = EVENT_STATE_LABELS[runtimeState] || runtimeState;
+  root.querySelector('#ov-event-toggle').textContent = enabled ? '关闭事件雷达' : '授权开启';
+  root.querySelector('#ov-event-toggle').classList.toggle('primary', !enabled);
+  root.querySelector('#ov-event-consent').hidden = enabled;
+  root.querySelector('#ov-event-controls').hidden = !enabled;
+  root.querySelectorAll('[data-event-scope]').forEach(input => {
+    input.checked = !config.scopes || config.scopes[input.dataset.eventScope] !== false;
+  });
+  const link = root.querySelector('[data-event-link="watchlist"]');
+  if (link) link.checked = config.watchlist_link !== false;
+  root.querySelector('#ov-event-delivery').value = config.delivery || 'digest';
+  const impact = value.impact || {};
+  const summary = impact.summary || {};
+  const summaryEl = root.querySelector('#ov-event-summary');
+  summaryEl.hidden = !enabled;
+  summaryEl.innerHTML = enabled ? `
+    <div><b class="num">${Number(summary.events || 0)}</b><span>今日事件</span></div>
+    <div><b class="num">${Number(summary.linkedEvents || 0)}</b><span>建立行业路径</span></div>
+    <div><b class="num">${Number(summary.watchMatches || 0)}</b><span>命中自选</span></div>
+    <div><b class="num">${Number(summary.highImportance || 0)}</b><span>高重要性</span></div>` : '';
+  const list = root.querySelector('#ov-event-list');
+  if (!enabled) {
+    list.innerHTML = '<div class="event-radar-empty">尚未授权，因此没有访问事件数据源。</div>';
+    return;
+  }
+  const items = (impact.items || []).filter(item => item.sectors?.length || item.watchlist?.length).slice(0, 5);
+  if (!items.length) {
+    const errors = (value.errors || []).join('；');
+    list.innerHTML = `<div class="event-radar-empty">${esc(errors || '正在等待能建立可核验影响路径的新事件。')}</div>`;
+    return;
+  }
+  list.innerHTML = items.map(item => {
+    const event = item.event || {};
+    const quality = item.quality || {};
+    const sources = (event.sources || []).map(source => source.name).filter(Boolean).join(' / ') || '来源待确认';
+    const watches = (item.watchlist || []).map(row => `<span class="event-watch">${esc(row.name || row.code)}</span>`).join('');
+    const sectors = (item.sectors || []).slice(0, 5).map(name => `<span>${esc(name)}</span>`).join('');
+    return `<article class="event-path-item">
+      <div class="event-path-main">
+        <div class="event-path-meta"><span>${event.type === 'macro' ? '宏观事件' : '市场快讯'}</span><time>${esc(eventTime(event.scheduledAt))}</time><span>质量 ${esc(quality.score ?? '--')}</span></div>
+        <b>${esc(event.title)}</b>
+        <div class="event-path-flow"><span class="fact">事实</span><i>→</i><span class="rules">敏感行业</span>${sectors}<i>→</i>${watches || '<em>未命中自选</em>'}</div>
+        <p>${esc(item.explanation || '')}</p>
+        <small>来源：${esc(sources)} · 观测：${esc(eventTime(event.observedAt))}</small>
+      </div>
+      <button class="btn sm" data-event-ask="${esc(event.id)}">让 DeepSeek 核对</button>
+    </article>`;
+  }).join('');
 }
 
 const ROUTINE_STATES = {
