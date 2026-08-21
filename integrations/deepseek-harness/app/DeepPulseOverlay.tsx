@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.18.0'
+const MIN_BACKEND_VERSION = '1.19.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -88,6 +88,9 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['service_plan_confirm'] === 1
       && capabilities['routine_timeline'] === 1
       && capabilities['routine_skip_pause'] === 1
+      && capabilities['routine_effectiveness'] === 1
+      && capabilities['routine_effect_suggestions'] === 1
+      && capabilities['routine_effect_undo'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -466,6 +469,29 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const marketRoutine = recordOf(attention['marketRoutine'])
   const marketRoutineTasks = recordOf(marketRoutine['tasks'])
   const marketRoutineNext = recordOf(marketRoutine['nextService'])
+  const marketRoutineEffectiveness = recordOf(marketRoutine['effectiveness'])
+  const marketRoutineEffectTotals = recordOf(marketRoutineEffectiveness['totals'])
+  const marketRoutineEffectPeriods = Array.isArray(marketRoutineEffectiveness['periods'])
+    ? marketRoutineEffectiveness['periods'].slice(0, 3).map(item => {
+      const row = recordOf(item)
+      return {
+        kind: short(row['kind'], 32), label: short(row['label'], 60), enabled: row['enabled'] === true,
+        generated: finite(row['generated']), feedbackCount: finite(row['feedbackCount']),
+        helpedCount: finite(row['helpedCount']), completedCount: finite(row['completedCount']),
+        negativeCount: finite(row['negativeCount']), outcome: short(row['outcome'], 80),
+      }
+    })
+    : []
+  const marketRoutineEffectRecommendations = Array.isArray(marketRoutineEffectiveness['recommendations'])
+    ? marketRoutineEffectiveness['recommendations'].slice(0, 3).map(item => {
+      const row = recordOf(item)
+      return {
+        id: short(row['id'], 160), kind: short(row['kind'], 32), title: short(row['title'], 100),
+        reason: short(row['reason'], 260), requiresConfirmation: row['requiresConfirmation'] === true,
+        reversible: row['reversible'] === true,
+      }
+    })
+    : []
   const attentionRecent = Array.isArray(attention['recent'])
     ? attention['recent'].slice(0, 8).map(item => {
       const row = recordOf(item)
@@ -563,6 +589,20 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           lastRunKind: short(marketRoutine['lastRunKind'], 40),
           lastError: short(marketRoutine['lastError'], 240),
           pageClosedCoverage: marketRoutine['pageClosedCoverage'] === true,
+          effectiveness: Object.keys(marketRoutineEffectiveness).length ? {
+            totals: {
+              generated: finite(marketRoutineEffectTotals['generated']),
+              feedbackCount: finite(marketRoutineEffectTotals['feedbackCount']),
+              helpedCount: finite(marketRoutineEffectTotals['helpedCount']),
+              completedCount: finite(marketRoutineEffectTotals['completedCount']),
+              negativeCount: finite(marketRoutineEffectTotals['negativeCount']),
+            },
+            periods: marketRoutineEffectPeriods,
+            recommendations: marketRoutineEffectRecommendations,
+            basis: short(marketRoutineEffectiveness['basis'], 60),
+            measurementBoundary: short(marketRoutineEffectiveness['measurementBoundary'], 300),
+            automaticChanges: marketRoutineEffectiveness['automaticChanges'] === true,
+          } : null,
         } : null,
       },
       eventImpact: Object.keys(eventImpact).length ? {
@@ -735,6 +775,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '8. proactiveBrief 是深脉规则层整理的优先级与研究任务，不是新的市场事实；展开时仍需用 market、emotionAnalysis 和来源字段复核。',
     '9. attention 是用户提醒中心状态；可用它解释最近提醒、未读事项、后台价格监控和主动服务日程，但不要替用户更改偏好或授权，也不要把提醒本身当成市场事实。',
     '10. attention.learning 只来自用户明确反馈，可解释当前降噪设置和完成情况；不得推断未记录的偏好，也不得据此触发交易。',
+    '10.1 attention.marketRoutine.effectiveness 也只来自用户明确反馈；未反馈不等于无效，不得据此推断偏好、自动应用节奏建议或触发交易。',
     '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',
     '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；evidenceCandidates 只是按可知时间排列的候选事实与相对大盘对照，不得把相对涨跌直接解释成事件因果，不得自动修改结论；复盘必须区分支持、混合、不支持与事件失效，最终结论由用户确认。',
   ].join('\n')

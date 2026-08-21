@@ -90,7 +90,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.18.0'
+VERSION = '1.19.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1455,6 +1455,7 @@ PROFILE_LIST_LIMITS = {
     'attention_feedback': 500,
     'routine_receipts': 180,
     'routine_skips': 180,
+    'routine_effect_actions': 100,
     'event_receipts': 500,
     'research_hypotheses': 300,
     'hypothesis_receipts': 500,
@@ -1667,6 +1668,7 @@ def update_attention_feedback(item_id, signal, surface='web'):
         feedback.append({
             'itemId': clean_id,
             'kind': kind,
+            'routineKind': str(target.get('routineKind') or '')[:32] or None,
             'signal': clean_signal,
             'at': timestamp,
             'surface': str(surface or 'web').strip()[:40],
@@ -2478,6 +2480,137 @@ def mutate_routine_action(action, current=None):
     return saved
 
 
+def routine_effectiveness_status(profile=None):
+    """Explain routine value from explicit feedback; silence and opens are never inferred."""
+    data = profile if isinstance(profile, dict) else (load_profile().get('data') or {})
+    cfg = normalize_routine_config(data.get('market_routine'))
+    inbox = {str(row.get('id')): row for row in (data.get('attention_inbox') or [])
+             if isinstance(row, dict) and row.get('id')}
+    receipts = [row for row in (data.get('routine_receipts') or []) if isinstance(row, dict)]
+    feedback = []
+    for row in (data.get('attention_feedback') or []):
+        if not isinstance(row, dict) or row.get('signal') not in ATTENTION_FEEDBACK_SIGNALS:
+            continue
+        target = inbox.get(str(row.get('itemId') or '')) or {}
+        routine_kind = row.get('routineKind') or target.get('routineKind')
+        if row.get('kind') != 'routine' and not routine_kind:
+            continue
+        if routine_kind in ROUTINE_LABELS:
+            feedback.append(dict(row, routineKind=routine_kind))
+
+    periods = []
+    recommendations = []
+    for kind, label in ROUTINE_LABELS.items():
+        rows = [row for row in feedback if row.get('routineKind') == kind]
+        counts = {signal: sum(1 for row in rows if row.get('signal') == signal)
+                  for signal in ATTENTION_FEEDBACK_SIGNALS}
+        generated = sum(1 for row in receipts if row.get('kind') == kind)
+        positive = counts['helpful'] + counts['done']
+        negative = counts['too_frequent'] + counts['irrelevant']
+        if not rows:
+            outcome = '等待明确反馈'
+        elif positive > negative:
+            outcome = '明确反馈偏正向'
+        elif negative > positive:
+            outcome = '可能需要调整节奏'
+        else:
+            outcome = '反馈暂时均衡'
+        periods.append({
+            'kind': kind, 'label': label, 'enabled': cfg['tasks'].get(kind) is True,
+            'generated': generated, 'feedbackCount': len(rows), 'counts': counts,
+            'helpedCount': positive, 'completedCount': counts['done'],
+            'negativeCount': negative, 'outcome': outcome,
+        })
+        if cfg['tasks'].get(kind) and len(rows) >= 3 and negative >= 2 and negative > positive:
+            suggestion_id = 'routine-effect:disable:%s:%d:%d' % (kind, len(rows), negative)
+            recommendations.append({
+                'id': suggestion_id, 'kind': kind, 'label': label,
+                'action': 'disable_task',
+                'title': '建议暂时关闭%s' % label,
+                'reason': '%d 次明确反馈中，%d 次选择“少一点”或“不相关”，正向反馈 %d 次。' % (
+                    len(rows), negative, positive),
+                'requiresConfirmation': True,
+                'reversible': True,
+            })
+
+    actions = [row for row in (data.get('routine_effect_actions') or []) if isinstance(row, dict)]
+    active_actions = [row for row in actions if not row.get('undoneAt')]
+    totals = {
+        'generated': len(receipts),
+        'feedbackCount': len(feedback),
+        'helpedCount': sum(1 for row in feedback if row.get('signal') in {'helpful', 'done'}),
+        'completedCount': sum(1 for row in feedback if row.get('signal') == 'done'),
+        'negativeCount': sum(1 for row in feedback if row.get('signal') in {'too_frequent', 'irrelevant'}),
+    }
+    return {
+        'schema': 1, 'totals': totals, 'periods': periods,
+        'recommendations': recommendations,
+        'activeActions': active_actions[-5:],
+        'basis': 'explicit-feedback-only',
+        'measurementBoundary': ('只统计用户明确选择的“有用、已完成、少一点、不相关”；'
+                                '未反馈、打开、停留时间和页面浏览均不计为负面或完成。'),
+        'automaticChanges': False,
+        'automaticTradingActions': False,
+    }
+
+
+def mutate_routine_effect(action, suggestion_id=None, action_id=None, confirmed=False):
+    clean_action = str(action or '').strip()
+    if clean_action == 'apply_suggestion' and confirmed is not True:
+        raise ValueError('必须由用户明确确认后才能调整主动服务节奏')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        cfg = normalize_routine_config(data.get('market_routine'))
+        history = [row for row in (data.get('routine_effect_actions') or [])
+                   if isinstance(row, dict)]
+        now = now_bj().isoformat(timespec='seconds')
+        if clean_action == 'apply_suggestion':
+            status = routine_effectiveness_status(data)
+            suggestion = next((row for row in status['recommendations']
+                               if row.get('id') == str(suggestion_id or '')), None)
+            if not suggestion or suggestion.get('action') != 'disable_task':
+                raise ValueError('该节奏建议已失效，请刷新后重试')
+            kind = suggestion['kind']
+            previous = cfg['tasks'].get(kind) is True
+            cfg['tasks'][kind] = False
+            cfg['enabled'] = any(cfg['tasks'].values())
+            if not cfg['enabled']:
+                cfg['enabled_at'] = None
+            record = {
+                'id': 'routine-effect-action:%d' % int(time.time() * 1000),
+                'suggestionId': suggestion['id'], 'kind': kind,
+                'label': suggestion['label'], 'action': 'disable_task',
+                'previousEnabled': previous, 'appliedAt': now,
+                'reason': suggestion['reason'], 'undoneAt': None,
+            }
+            history.append(record)
+        elif clean_action == 'undo':
+            requested = str(action_id or '').strip()
+            record = next((row for row in reversed(history)
+                          if row.get('id') == requested and not row.get('undoneAt')), None)
+            if not record:
+                raise ValueError('没有找到可撤销的节奏调整')
+            kind = record.get('kind')
+            later = next((row for row in history if row.get('kind') == kind
+                          and not row.get('undoneAt') and str(row.get('appliedAt') or '')
+                          > str(record.get('appliedAt') or '')), None)
+            if later:
+                raise ValueError('该时段已有更新的调整，请先处理最新记录')
+            cfg['tasks'][kind] = record.get('previousEnabled') is True
+            cfg['enabled'] = any(cfg['tasks'].values())
+            if cfg['enabled'] and not cfg.get('enabled_at'):
+                cfg['enabled_at'] = now
+            record['undoneAt'] = now
+        else:
+            raise ValueError('不支持的服务效果操作')
+        data['market_routine'] = cfg
+        data['routine_effect_actions'] = history[-PROFILE_LIST_LIMITS['routine_effect_actions']:]
+        saved = _write_profile_unlocked(current)
+    _routine_wake.set()
+    return saved, routine_effectiveness_status(saved['data'])
+
+
 def _journal_has_date(rows, data_date):
     compact = str(data_date or '').replace('-', '')
     for row in rows or []:
@@ -2652,6 +2785,7 @@ def market_routine_status(current=None):
         'skipped_today': skipped,
         'next_service': next_service,
         'timeline': routine_timeline(now, cfg, profile),
+        'effectiveness': routine_effectiveness_status(profile),
         'calendar': calendar,
         'service_continues_when_page_closed': True,
         'service_stops_when_local_server_stops': True,
@@ -4526,7 +4660,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.18.0'
+    server_version = 'DeepPulse/1.19.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -4670,6 +4804,9 @@ class Handler(BaseHTTPRequestHandler):
                           'service_plan_confirm': 1,
                           'routine_timeline': 1,
                           'routine_skip_pause': 1,
+                          'routine_effectiveness': 1,
+                          'routine_effect_suggestions': 1,
+                          'routine_effect_undo': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -4727,6 +4864,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': background_monitor_status()})
         elif path == '/api/routine/status':
             self.send_json({'ok': True, 'data': market_routine_status()})
+        elif path == '/api/routine/effectiveness':
+            self.send_json({'ok': True, 'data': routine_effectiveness_status()})
         elif path == '/api/event-impact':
             self.send_json({'ok': True, 'data': event_service_status(include_impact=True)})
         elif path == '/api/event-service/status':
@@ -4947,6 +5086,15 @@ class Handler(BaseHTTPRequestHandler):
                 saved = mutate_routine_action(body.get('action'))
                 self.send_json({'ok': True, 'data': {
                     'profile': saved, 'routine': market_routine_status(),
+                }})
+            elif u.path == '/api/routine/effectiveness':
+                body = self.read_json_body(8192)
+                saved, effectiveness = mutate_routine_effect(
+                    body.get('action'), body.get('suggestionId'), body.get('actionId'),
+                    confirmed=body.get('confirmed') is True)
+                self.send_json({'ok': True, 'data': {
+                    'profile': saved, 'routine': market_routine_status(),
+                    'effectiveness': effectiveness,
                 }})
             elif u.path == '/api/event-service/config':
                 body = self.read_json_body()

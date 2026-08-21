@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.18.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, epaper_gateway: 1 } },
+  data: { version: '1.19.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -198,6 +198,13 @@ describe('DeepPulse Harness bridge', () => {
             completedToday: ['pre_market'],
             nextService: { kind: 'intraday', label: '盘中检查', at: '2026-08-15T10:15+08:00', due_now: false, injected: 'drop next field' },
             lastRunAt: '2026-08-15T08:45:00+08:00', lastRunKind: 'pre_market', pageClosedCoverage: true,
+            effectiveness: {
+              totals: { generated: 6, feedbackCount: 3, helpedCount: 1, completedCount: 0, negativeCount: 2, injected: 'drop effect totals' },
+              periods: [{ kind: 'intraday', label: '盘中检查', enabled: true, generated: 3, feedbackCount: 3, helpedCount: 1, completedCount: 0, negativeCount: 2, outcome: '可考虑降低频率', injected: 'drop effect period' }],
+              recommendations: [{ id: 'routine-effect:intraday:disable', kind: 'intraday', title: '关闭盘中检查', reason: '3 次明确反馈中有 2 次负向反馈', requiresConfirmation: true, reversible: true, injected: 'drop effect recommendation' }],
+              basis: 'explicit-feedback-only', measurementBoundary: '只统计明确反馈；不采集打开次数、停留时长或浏览轨迹。', automaticChanges: false,
+              injected: 'drop effectiveness field',
+            },
             injected: 'drop routine field',
           },
         },
@@ -288,6 +295,12 @@ describe('DeepPulse Harness bridge', () => {
             completedToday: ['pre_market'],
             nextService: { kind: 'intraday', label: '盘中检查', dueNow: false },
             lastRunKind: 'pre_market', pageClosedCoverage: true,
+            effectiveness: {
+              totals: { generated: 6, feedbackCount: 3, helpedCount: 1, completedCount: 0, negativeCount: 2 },
+              periods: [{ kind: 'intraday', label: '盘中检查', enabled: true, generated: 3, feedbackCount: 3, helpedCount: 1, completedCount: 0, negativeCount: 2, outcome: '可考虑降低频率' }],
+              recommendations: [{ id: 'routine-effect:intraday:disable', kind: 'intraday', title: '关闭盘中检查', reason: '3 次明确反馈中有 2 次负向反馈', requiresConfirmation: true, reversible: true }],
+              basis: 'explicit-feedback-only', measurementBoundary: '只统计明确反馈；不采集打开次数、停留时长或浏览轨迹。', automaticChanges: false,
+            },
           },
         },
         eventImpact: {

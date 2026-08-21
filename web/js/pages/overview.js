@@ -1,17 +1,18 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.18.0';
-import { state, bus, syncProfile } from '../store.js?v=1.18.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.18.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.18.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.18.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.18.0';
+import { api } from '../api.js?v=1.19.0';
+import { state, bus, syncProfile } from '../store.js?v=1.19.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.19.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.19.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.19.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.19.0';
 
 let built = false;
 let sparksAt = 0;
 let sectorTab = 'up';
 let currentBrief = null;
 let servicePlanDraft = null;
+let routineEffectiveness = null;
 
 const INDEX_CODES = [
   { code: '000001', name: '上证指数' },
@@ -73,6 +74,12 @@ export function init(container) {
       <div class="routine-timeline-wrap">
         <div class="routine-timeline-head"><b>服务时间线</b><div><button class="btn sm ghost" id="ov-routine-skip">跳过下一次</button><button class="btn sm ghost" id="ov-routine-pause">暂停到明早</button></div></div>
         <div class="routine-timeline" id="ov-routine-timeline"><span class="muted">等待读取日程</span></div>
+      </div>
+      <div class="routine-effect" id="ov-routine-effect">
+        <div class="routine-effect-head"><div><b>这些主动服务真的有帮助吗？</b><span id="ov-effect-summary">等待明确反馈</span></div><span class="tag">只看你的明确反馈</span></div>
+        <div class="routine-effect-periods" id="ov-effect-periods"><span class="muted">正在读取效果记录</span></div>
+        <div class="routine-effect-suggestions" id="ov-effect-suggestions"></div>
+        <p id="ov-effect-boundary">未反馈、打开页面和停留时间都不会被当成负面或完成。</p>
       </div>
       <p class="routine-boundary">逐项授权，关闭网页后仍由本机服务执行；关闭本机服务即停止。按北京时间工作日窗口运行，每条提醒都会注明数据日，不会把旧数据冒充实时行情。</p>
     </section>
@@ -269,6 +276,7 @@ export function init(container) {
   bus.addEventListener('journal', rerenderBrief);
   bus.addEventListener('brief-receipts', rerenderBrief);
   bus.addEventListener('market-routine', e => renderRoutine(container, e.detail));
+  bus.addEventListener('attention-learning', () => refreshRoutineEffectiveness(container));
   bus.addEventListener('event-impact', e => renderEventImpact(container, e.detail));
   bus.addEventListener('research-hypotheses', e => {
     state.hypotheses = e.detail;
@@ -349,7 +357,29 @@ export function init(container) {
     catch (error) { toast(error.message || '调整日程失败', 'err'); }
     finally { e.currentTarget.disabled = false; }
   });
+  container.querySelector('#ov-effect-suggestions').addEventListener('click', async e => {
+    const apply = e.target.closest('[data-effect-apply]');
+    const undo = e.target.closest('[data-effect-undo]');
+    if (!apply && !undo) return;
+    const button = apply || undo;
+    button.disabled = true;
+    try {
+      const result = await api.mutateRoutineEffect(
+        apply ? 'apply_suggestion' : 'undo',
+        apply ? apply.dataset.effectApply : null,
+        undo ? undo.dataset.effectUndo : null);
+      routineEffectiveness = result.effectiveness;
+      state.routine = result.routine;
+      await syncProfile();
+      renderRoutine(container, result.routine);
+      renderRoutineEffectiveness(container, routineEffectiveness);
+      toast(apply ? '节奏调整已确认，需要时可随时撤销' : '已恢复调整前的服务时段', 'ok');
+    } catch (error) {
+      toast(error.message || '调整主动服务效果设置失败', 'err');
+    } finally { button.disabled = false; }
+  });
   refreshRoutine(container);
+  refreshRoutineEffectiveness(container);
 
   container.querySelector('#ov-event-toggle').addEventListener('click', async e => {
     const button = e.currentTarget;
@@ -576,6 +606,45 @@ async function refreshRoutine(container) {
       root.querySelector('#ov-routine-state').textContent = '连接失败';
       root.querySelector('#ov-routine-next').textContent = '请确认本机深脉服务正在运行';
     }
+  }
+}
+
+function renderRoutineEffectiveness(container, value) {
+  const root = container.querySelector('#ov-routine-effect');
+  if (!root) return;
+  const data = value || {};
+  const totals = data.totals || {};
+  root.querySelector('#ov-effect-summary').textContent = totals.feedbackCount
+    ? `已帮助 ${totals.helpedCount || 0} 次 · 其中完成研究 ${totals.completedCount || 0} 次 · ${totals.feedbackCount} 次明确反馈`
+    : `已生成 ${totals.generated || 0} 次服务，等待你告诉深脉是否有用`;
+  root.querySelector('#ov-effect-periods').innerHTML = (data.periods || []).map(period => `
+    <article class="routine-effect-period ${period.feedbackCount ? '' : 'empty'}">
+      <div><b>${esc(period.label)}</b><span>${esc(period.outcome)}</span></div>
+      <strong>${period.helpedCount || 0}<small> 次有帮助</small></strong>
+      <p>生成 ${period.generated || 0} · 完成 ${period.completedCount || 0} · 少一点/不相关 ${period.negativeCount || 0}</p>
+    </article>`).join('') || '<span class="muted">还没有主动服务效果记录</span>';
+  const suggestions = (data.recommendations || []).map(row => `
+    <article class="routine-effect-suggestion">
+      <div><b>${esc(row.title)}</b><p>${esc(row.reason)}</p></div>
+      <button class="btn sm" data-effect-apply="${esc(row.id)}">确认关闭${esc(row.label)}</button>
+    </article>`);
+  const actions = (data.activeActions || []).map(row => `
+    <article class="routine-effect-action">
+      <div><b>已按你的确认关闭${esc(row.label)}</b><p>${esc(row.reason || '')}</p></div>
+      <button class="btn sm ghost" data-effect-undo="${esc(row.id)}">撤销并恢复</button>
+    </article>`);
+  root.querySelector('#ov-effect-suggestions').innerHTML = [...suggestions, ...actions].join('');
+  root.querySelector('#ov-effect-boundary').textContent = data.measurementBoundary
+    || '未反馈、打开页面和停留时间都不会被当成负面或完成。';
+}
+
+async function refreshRoutineEffectiveness(container) {
+  try {
+    routineEffectiveness = await api.routineEffectiveness();
+    renderRoutineEffectiveness(container, routineEffectiveness);
+  } catch {
+    const root = container.querySelector('#ov-routine-effect');
+    if (root) root.querySelector('#ov-effect-summary').textContent = '效果记录暂时无法读取';
   }
 }
 

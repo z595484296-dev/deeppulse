@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.18.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.18.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.18.0';
+import { api } from './api.js?v=1.19.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.19.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.19.0';
 
-import * as pageOverview from './pages/overview.js?v=1.18.0';
-import * as pageEmotion from './pages/emotion.js?v=1.18.0';
-import * as pageMarket from './pages/market.js?v=1.18.0';
-import * as pageLadder from './pages/ladder.js?v=1.18.0';
-import * as pageWatch from './pages/watch.js?v=1.18.0';
-import * as pageStrategy from './pages/strategy.js?v=1.18.0';
-import * as pageEpaper from './pages/epaper.js?v=1.18.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.18.0';
-import * as pageAbout from './pages/about.js?v=1.18.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.18.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.18.0';
-import { initOnboarding } from './onboarding.js?v=1.18.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.18.0';
+import * as pageOverview from './pages/overview.js?v=1.19.0';
+import * as pageEmotion from './pages/emotion.js?v=1.19.0';
+import * as pageMarket from './pages/market.js?v=1.19.0';
+import * as pageLadder from './pages/ladder.js?v=1.19.0';
+import * as pageWatch from './pages/watch.js?v=1.19.0';
+import * as pageStrategy from './pages/strategy.js?v=1.19.0';
+import * as pageEpaper from './pages/epaper.js?v=1.19.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.19.0';
+import * as pageAbout from './pages/about.js?v=1.19.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.19.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.19.0';
+import { initOnboarding } from './onboarding.js?v=1.19.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.19.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -176,6 +176,16 @@ function currentHarnessContext() {
         lastRunKind: state.routine.runtime?.last_run_kind || null,
         lastError: state.routine.runtime?.last_error || null,
         pageClosedCoverage: state.routine.service_continues_when_page_closed === true,
+        effectiveness: state.routine.effectiveness ? {
+          totals: state.routine.effectiveness.totals || {},
+          periods: (state.routine.effectiveness.periods || []).slice(0, 3),
+          recommendations: (state.routine.effectiveness.recommendations || []).slice(0, 3)
+            .map(row => ({ id: row.id, kind: row.kind, title: row.title, reason: row.reason,
+              requiresConfirmation: row.requiresConfirmation === true, reversible: row.reversible === true })),
+          basis: state.routine.effectiveness.basis || null,
+          measurementBoundary: state.routine.effectiveness.measurementBoundary || null,
+          automaticChanges: state.routine.effectiveness.automaticChanges === true,
+        } : null,
       } : null,
     },
     eventImpact: state.eventImpact && state.eventImpact.impact ? {

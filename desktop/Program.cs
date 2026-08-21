@@ -31,7 +31,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 18, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 19, 0);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -600,7 +600,19 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("routine_skip_pause", out var routineSkipPause)
                 || routineSkipPause.ValueKind != JsonValueKind.Number
                 || !routineSkipPause.TryGetInt32(out var routineSkipPauseVersion)
-                || routineSkipPauseVersion != 1)
+                || routineSkipPauseVersion != 1
+                || !capabilities.TryGetProperty("routine_effectiveness", out var routineEffectiveness)
+                || routineEffectiveness.ValueKind != JsonValueKind.Number
+                || !routineEffectiveness.TryGetInt32(out var routineEffectivenessVersion)
+                || routineEffectivenessVersion != 1
+                || !capabilities.TryGetProperty("routine_effect_suggestions", out var routineEffectSuggestions)
+                || routineEffectSuggestions.ValueKind != JsonValueKind.Number
+                || !routineEffectSuggestions.TryGetInt32(out var routineEffectSuggestionsVersion)
+                || routineEffectSuggestionsVersion != 1
+                || !capabilities.TryGetProperty("routine_effect_undo", out var routineEffectUndo)
+                || routineEffectUndo.ValueKind != JsonValueKind.Number
+                || !routineEffectUndo.TryGetInt32(out var routineEffectUndoVersion)
+                || routineEffectUndoVersion != 1)
             {
                 return null;
             }
@@ -661,7 +673,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.18.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.19.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

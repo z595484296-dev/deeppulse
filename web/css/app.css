@@ -840,6 +840,26 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .routine-time-item b { overflow: hidden; color: var(--text); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .routine-time-item small, .routine-time-item em { color: var(--text-3); font-size: 9px; font-style: normal; white-space: nowrap; }
 .routine-card[data-state="paused"] .routine-dot { background: var(--amber); }
+.routine-effect { margin-top: 11px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
+.routine-effect-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.routine-effect-head > div { display: flex; align-items: baseline; gap: 9px; }
+.routine-effect-head b { color: var(--text); font-size: 11.5px; }
+.routine-effect-head span { color: var(--text-3); font-size: 9.5px; }
+.routine-effect-periods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 9px; }
+.routine-effect-period { padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.routine-effect-period > div { display: flex; justify-content: space-between; gap: 7px; }
+.routine-effect-period b { color: var(--text); font-size: 10.5px; }
+.routine-effect-period span, .routine-effect-period p { color: var(--text-3); font-size: 9px; }
+.routine-effect-period strong { display: block; margin-top: 7px; color: var(--green); font-size: 18px; }
+.routine-effect-period strong small { color: var(--text-3); font-size: 9px; font-weight: 500; }
+.routine-effect-period p { margin: 4px 0 0; }
+.routine-effect-period.empty strong { color: var(--text-3); }
+.routine-effect-suggestions { display: grid; gap: 7px; margin-top: 8px; }
+.routine-effect-suggestion, .routine-effect-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid rgba(245,158,11,.35); border-radius: 9px; background: rgba(245,158,11,.06); }
+.routine-effect-action { border-color: rgba(79,140,255,.32); background: rgba(79,140,255,.06); }
+.routine-effect-suggestion b, .routine-effect-action b { color: var(--text); font-size: 10.5px; }
+.routine-effect-suggestion p, .routine-effect-action p, .routine-effect > p { margin: 3px 0 0; color: var(--text-3); font-size: 9px; line-height: 1.55; }
+.routine-effect > p { margin-top: 8px; }
 .routine-boundary { margin: 8px 0 0; padding-top: 7px; border-top: 1px solid var(--line); color: var(--text-3); font-size: 9.5px; line-height: 1.5; }
 
 /* ---------------- 事件影响雷达 ---------------- */
@@ -1605,6 +1625,9 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .routine-options label { min-height: 48px; }
   .service-plan-input { flex-direction: column; }
   .routine-timeline { grid-template-columns: 1fr; }
+  .routine-effect-head, .routine-effect-head > div { align-items: flex-start; flex-direction: column; }
+  .routine-effect-periods { grid-template-columns: 1fr; }
+  .routine-effect-suggestion, .routine-effect-action { align-items: flex-start; flex-direction: column; }
   .monitor-control { align-items: stretch; flex-direction: column; gap: 10px; }
   .monitor-control .btn { min-height: 44px; }
 }
