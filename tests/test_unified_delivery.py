@@ -51,6 +51,8 @@ class UnifiedDeliveryTests(unittest.TestCase):
         epaper = server.claim_attention_delivery('epaper', 'waveshare-esp32')
         self.assertEqual(desktop['item']['id'], 'event:601138:earnings')
         self.assertEqual(epaper['item']['id'], 'event:601138:earnings')
+        self.assertEqual(desktop['receipt']['title'], '工业富联重要事件')
+        self.assertEqual(desktop['receipt']['page'], 'watch')
         server.acknowledge_attention_delivery(
             'desktop', desktop['item']['id'], 'delivered', 'windows-app')
         server.acknowledge_attention_delivery(
@@ -60,6 +62,30 @@ class UnifiedDeliveryTests(unittest.TestCase):
         status = server.attention_delivery_status()['channels']
         self.assertEqual(status['desktop']['delivered'], 1)
         self.assertEqual(status['epaper']['delivered'], 1)
+
+    def test_failed_delivery_can_be_explicitly_requeued(self):
+        self.seed(desktopSystemEnabled=True, desktopSystemEnabledAt=self.now - 1)
+        claimed = server.claim_attention_delivery('desktop', 'windows-app')
+        server.acknowledge_attention_delivery(
+            'desktop', claimed['item']['id'], 'failed', 'windows-app', 'toast unavailable')
+        status = server.attention_delivery_status()
+        failed = status['recent'][0]
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['title'], '工业富联重要事件')
+        self.assertEqual(failed['error'], 'toast unavailable')
+        queued = server.retry_attention_delivery('desktop', claimed['item']['id'])
+        self.assertEqual(queued['state'], 'queued')
+        retried = server.claim_attention_delivery('desktop', 'windows-app')
+        self.assertEqual(retried['item']['id'], claimed['item']['id'])
+        self.assertEqual(retried['receipt']['attempts'], 2)
+
+    def test_successful_delivery_cannot_be_requeued_as_failure(self):
+        self.seed(desktopSystemEnabled=True, desktopSystemEnabledAt=self.now - 1)
+        claimed = server.claim_attention_delivery('desktop', 'windows-app')
+        server.acknowledge_attention_delivery(
+            'desktop', claimed['item']['id'], 'delivered', 'windows-app')
+        with self.assertRaisesRegex(ValueError, 'only failed deliveries'):
+            server.retry_attention_delivery('desktop', claimed['item']['id'])
 
     def test_enabling_does_not_replay_older_items(self):
         self.seed(desktopSystemEnabled=True, desktopSystemEnabledAt=self.now + 1)

@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.14.0'
+const MIN_BACKEND_VERSION = '1.15.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -76,6 +76,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['unified_delivery'] === 1
       && capabilities['desktop_system_notifications'] === 1
       && capabilities['epaper_delivery_receipts'] === 1
+      && capabilities['notification_deep_links'] === 1
+      && capabilities['delivery_timeline'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -844,10 +846,21 @@ function deeppulseTargetOf(href: string): { url: string; hash: string } | undefi
 /** 深链 hash → 工作台导航指令（免刷新导航） */
 const PAGE_KEYS = ['overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'epaper', 'datasrc', 'about'];
 
-function navOfHash(hash: string): { page?: string; code?: string } | undefined {
+type DeepPulseNavTarget = { page?: string; code?: string; attentionId?: string }
+
+export function navOfHash(hash: string): DeepPulseNavTarget | undefined {
   const h = hash.replace(/^#\/?/, '').trim();
   if (PAGE_KEYS.includes(h)) return { page: h };
   if (/^\d{6}$/.test(h)) return { code: h };
+  const attention = h.match(/^attention\/([^?]+)(?:\?page=([^?&]+))?$/i);
+  if (attention) {
+    let attentionId = '';
+    try { attentionId = decodeURIComponent(attention[1] ?? '').slice(0, 160); }
+    catch { return undefined }
+    if (!attentionId) return undefined;
+    const page = PAGE_KEYS.includes(attention[2] ?? '') ? attention[2] : undefined;
+    return page ? { attentionId, page } : { attentionId };
+  }
   return undefined;
 }
 
@@ -862,7 +875,7 @@ export function DeepPulseView({ ctx }: DeepPulseViewProps): ReactNode {
   const [ready, setReady] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const frameRef = useRef<HTMLIFrameElement>(null)
-  const pendingNav = useRef<{ page?: string; code?: string } | null>(null)
+  const pendingNav = useRef<DeepPulseNavTarget | null>(null)
 
   // Probe the exact workbench entry once; a generic HTTP 200 may be the shell SPA fallback.
   useEffect(() => {
@@ -973,7 +986,7 @@ export function DeepPulseView({ ctx }: DeepPulseViewProps): ReactNode {
 
   // 会话 → 工作台：拦截深脉深链点击，转入工作台对应页面（免刷新导航）
   useEffect(() => {
-    const navFrame = (target: { page?: string; code?: string }): void => {
+    const navFrame = (target: DeepPulseNavTarget): void => {
       const win = frameRef.current?.contentWindow
       if (win && ready) {
         win.postMessage({ type: 'dp-nav', ...target }, '*')

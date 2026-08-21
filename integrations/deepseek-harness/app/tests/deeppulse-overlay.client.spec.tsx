@@ -4,7 +4,7 @@ import { cleanup, render, waitFor } from '@testing-library/react'
 import { Context } from '@deepseek-ai/cordis'
 import {
   completedHarnessReply, DeepPulseView, formatDeepPulseGeneratePrompt, formatDeepPulsePrompt, harnessSnapshotCursor,
-  normalizeDeepPulseAsk,
+  navOfHash, normalizeDeepPulseAsk,
 } from '../src/DeepPulseOverlay.tsx'
 
 const ENTRY_PATH = '/deeppulse/index.html'
@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.14.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, epaper_gateway: 1 } },
+  data: { version: '1.15.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -61,6 +61,13 @@ describe('DeepPulseView', () => {
 })
 
 describe('DeepPulse Harness bridge', () => {
+  it('parses a notification deep link into its exact reminder and destination page', () => {
+    expect(navOfHash('attention/event%3A601138%3Aearnings?page=watch')).toEqual({
+      attentionId: 'event:601138:earnings', page: 'watch',
+    })
+    expect(navOfHash('attention/event%3A1?page=not-a-page')).toEqual({ attentionId: 'event:1' })
+  })
+
   it('accepts generation requests through the same owned-context allowlist', () => {
     const ask = normalizeDeepPulseAsk({
       type: 'dp-generate', version: 3, requestId: 'fill-1', question: '生成复盘',

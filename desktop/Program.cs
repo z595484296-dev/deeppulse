@@ -31,7 +31,7 @@ internal static class Program
 internal sealed class HarnessForm : Form
 {
     private static readonly Uri HarnessUri = new("http://127.0.0.1:3080/");
-    private static readonly Version MinimumDeepPulseVersion = new(1, 14, 0);
+    private static readonly Version MinimumDeepPulseVersion = new(1, 15, 0);
     private static readonly int[] DeepPulsePorts = Enumerable.Range(8971, 10).ToArray();
     private static readonly Color Background = Color.FromArgb(11, 15, 25);
     private static readonly Color PanelBackground = Color.FromArgb(18, 24, 38);
@@ -81,6 +81,8 @@ internal sealed class HarnessForm : Form
     private readonly object logLock = new();
     private bool startupInProgress;
     private bool deliveryPollInProgress;
+    private string? lastNotificationItemId;
+    private string lastNotificationPage = "overview";
 
     internal HarnessForm()
     {
@@ -114,10 +116,11 @@ internal sealed class HarnessForm : Form
 
         Shown += async (_, _) => await StartOrAttachAsync();
         systemNotification.Text = "深脉 DeepPulse";
-        systemNotification.BalloonTipClicked += (_, _) => {
+        systemNotification.BalloonTipClicked += async (_, _) => {
             Show();
             WindowState = FormWindowState.Normal;
             Activate();
+            await OpenNotificationTargetAsync();
         };
         deliveryTimer.Tick += async (_, _) => await PollDesktopDeliveryAsync();
         FormClosing += OnFormClosing;
@@ -549,7 +552,15 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("epaper_delivery_receipts", out var epaperReceipts)
                 || epaperReceipts.ValueKind != JsonValueKind.Number
                 || !epaperReceipts.TryGetInt32(out var epaperReceiptsVersion)
-                || epaperReceiptsVersion != 1)
+                || epaperReceiptsVersion != 1
+                || !capabilities.TryGetProperty("notification_deep_links", out var notificationDeepLinks)
+                || notificationDeepLinks.ValueKind != JsonValueKind.Number
+                || !notificationDeepLinks.TryGetInt32(out var notificationDeepLinksVersion)
+                || notificationDeepLinksVersion != 1
+                || !capabilities.TryGetProperty("delivery_timeline", out var deliveryTimeline)
+                || deliveryTimeline.ValueKind != JsonValueKind.Number
+                || !deliveryTimeline.TryGetInt32(out var deliveryTimelineVersion)
+                || deliveryTimelineVersion != 1)
             {
                 return null;
             }
@@ -610,7 +621,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.14.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.15.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
@@ -670,6 +681,9 @@ internal sealed class HarnessForm : Form
                 ? rawTitle.GetString() : "深脉提醒";
             var detail = item.TryGetProperty("detail", out var rawDetail)
                 ? rawDetail.GetString() : "请打开深脉查看详情";
+            lastNotificationItemId = itemId;
+            lastNotificationPage = item.TryGetProperty("page", out var rawPage)
+                ? SanitizePage(rawPage.GetString()) : "overview";
             systemNotification.BalloonTipTitle = Truncate(title ?? "深脉提醒", 63);
             systemNotification.BalloonTipText = Truncate(detail ?? "请打开深脉查看详情", 240);
             systemNotification.BalloonTipIcon = item.TryGetProperty("priority", out var priority)
@@ -711,6 +725,36 @@ internal sealed class HarnessForm : Form
         {
             AppendLog($"Desktop notification acknowledgement failed: {ex.Message}");
         }
+    }
+
+    private async Task OpenNotificationTargetAsync()
+    {
+        if (webView.CoreWebView2 is null || string.IsNullOrWhiteSpace(lastNotificationItemId))
+        {
+            return;
+        }
+        var target = $"deeppulse://attention/{Uri.EscapeDataString(lastNotificationItemId)}"
+            + $"?page={Uri.EscapeDataString(lastNotificationPage)}";
+        var script = "(() => { const link = document.createElement('a');"
+            + $"link.setAttribute('href', {JsonSerializer.Serialize(target)});"
+            + "link.style.display='none';document.body.appendChild(link);link.click();link.remove(); })();";
+        try
+        {
+            await webView.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Notification deep link failed: {ex.Message}");
+        }
+    }
+
+    private static string SanitizePage(string? value)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "overview", "emotion", "market", "ladder", "watch",
+            "strategy", "epaper", "datasrc", "about"
+        };
+        return value is not null && allowed.Contains(value) ? value.ToLowerInvariant() : "overview";
     }
 
     private static string Truncate(string value, int maximum) =>

@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.14.0';
+import { applyChartTheme } from './charts.js?v=1.15.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -209,6 +209,11 @@ export function initBridge() {
         setTimeout(() => document.dispatchEvent(new CustomEvent('open-quote', {
           detail: { code: d.code, name: d.name || d.code },
         })), 60);
+      }
+      if (d.attentionId) {
+        setTimeout(() => document.dispatchEvent(new CustomEvent('attention-open', {
+          detail: { id: String(d.attentionId).slice(0, 160) },
+        })), 80);
       }
     } catch { /* 忽略 */ }
   });

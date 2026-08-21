@@ -195,12 +195,23 @@ a { color: var(--accent); text-decoration: none; }
 .attention-item { margin-top: 8px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
 .attention-item.unread { border-color: rgba(79, 140, 255, .42); box-shadow: inset 3px 0 0 var(--blue); }
 .attention-item.expired { opacity: .68; }
+.attention-item.attention-target { animation: attentionTarget 2.4s ease; }
+@keyframes attentionTarget {
+  0%, 28% { border-color: var(--amber); box-shadow: 0 0 0 3px rgba(240, 185, 11, .18); }
+  100% { border-color: var(--line); box-shadow: none; }
+}
 .attention-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .attention-item-head b { font-size: 12px; }
 .attention-item-head time { flex: 0 0 auto; color: var(--text-3); font-size: 9.5px; }
 .attention-item p { margin: 5px 0; color: var(--text-2); font-size: 11px; line-height: 1.5; }
 .attention-item small { display: block; color: var(--text-3); line-height: 1.45; }
 .attention-item-actions { display: flex; gap: 6px; margin-top: 8px; }
+.attention-delivery-trace { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.attention-delivery-chip { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 25px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 7px; background: rgba(148, 163, 184, .05); color: var(--text-3); font-size: 9.5px; }
+.attention-delivery-chip.delivered { border-color: rgba(46, 189, 133, .28); color: var(--down); }
+.attention-delivery-chip.failed { border-color: rgba(246, 70, 93, .32); color: var(--up); }
+.attention-delivery-chip small { flex-basis: 100%; color: var(--up); overflow-wrap: anywhere; }
+.attention-retry { margin-left: auto; padding: 1px 6px; border: 1px solid currentColor; border-radius: 9px; background: transparent; color: inherit; font: 600 9px var(--font); cursor: pointer; }
 .attention-item-feedback { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
 .attention-feedback-btn { min-height: 25px; padding: 0 8px; border: 1px solid var(--line); border-radius: 13px; background: transparent; color: var(--text-3); font: 500 10px var(--font); cursor: pointer; }
 .attention-feedback-btn:hover { color: var(--text); border-color: var(--line-strong); }

@@ -87,7 +87,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.14.0'
+VERSION = '1.15.0'
 
 try:
     from emotion import (compute_emotion, DEFAULT_WEIGHTS, load_weights,  # 情绪引擎
@@ -1819,6 +1819,9 @@ def claim_attention_delivery(channel, consumer='local'):
             'consumer': consumer, 'status': 'claimed', 'claimedAt': now_ms,
             'leaseUntil': now_ms + 2 * 60 * 1000,
             'attempts': int(previous.get('attempts') or 0) + 1,
+            'title': str(item.get('title') or '')[:80],
+            'page': str(item.get('page') or 'overview')[:24],
+            'kind': str(item.get('kind') or 'system')[:32],
         }
         receipts = [row for row in receipts if not (
             row.get('channel') == channel and str(row.get('itemId') or '') == item_id)]
@@ -1866,6 +1869,33 @@ def acknowledge_attention_delivery(channel, item_id, status='delivered', consume
         return receipt
 
 
+def retry_attention_delivery(channel, item_id):
+    """Clear one failed receipt so the normal delivery policy can claim it again."""
+    channel = str(channel or '').strip().lower()
+    item_id = str(item_id or '').strip()[:160]
+    if channel not in DELIVERY_CHANNELS or not item_id:
+        raise ValueError('invalid delivery retry')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        receipts = [row for row in (current['data'].get('delivery_receipts') or [])
+                    if isinstance(row, dict)]
+        target = next((row for row in receipts if row.get('channel') == channel
+                       and str(row.get('itemId') or '') == item_id), None)
+        if not target:
+            raise ValueError('delivery receipt was not found')
+        if target.get('status') != 'failed':
+            raise ValueError('only failed deliveries can be retried')
+        target['status'] = 'queued'
+        target['retryRequestedAt'] = int(time.time() * 1000)
+        if target.get('error'):
+            target['lastError'] = target.get('error')
+        target.pop('error', None)
+        target.pop('retryAfter', None)
+        current['data']['delivery_receipts'] = receipts[-PROFILE_LIST_LIMITS['delivery_receipts']:]
+        _write_profile_unlocked(current)
+        return {'channel': channel, 'itemId': item_id, 'state': 'queued'}
+
+
 def attention_delivery_status():
     data = load_profile().get('data') or {}
     prefs = _delivery_preferences(data)
@@ -1884,7 +1914,17 @@ def attention_delivery_status():
             'failed': sum(1 for row in rows if row.get('status') == 'failed'),
             'last': rows[-1] if rows else None,
         }
-    return {'channels': summary, 'recent': receipts[-20:][::-1],
+    items = {str(row.get('id') or ''): row for row in (data.get('attention_inbox') or [])
+             if isinstance(row, dict) and row.get('id')}
+    recent = []
+    for receipt in receipts[-40:][::-1]:
+        row = dict(receipt)
+        item = items.get(str(row.get('itemId') or '')) or {}
+        row['title'] = row.get('title') or str(item.get('title') or '')[:80]
+        row['page'] = row.get('page') or str(item.get('page') or 'overview')[:24]
+        row['kind'] = row.get('kind') or str(item.get('kind') or 'system')[:32]
+        recent.append(row)
+    return {'channels': summary, 'recent': recent,
             'policy': 'explicit-opt-in-per-channel-once'}
 
 
@@ -3949,7 +3989,7 @@ def assemble_emotion(force_record=False):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.14.0'
+    server_version = 'DeepPulse/1.15.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -4081,6 +4121,8 @@ class Handler(BaseHTTPRequestHandler):
                           'unified_delivery': 1,
                           'desktop_system_notifications': 1,
                           'epaper_delivery_receipts': 1,
+                          'notification_deep_links': 1,
+                          'delivery_timeline': 1,
                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
@@ -4312,6 +4354,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'data': acknowledge_attention_delivery(
                     body.get('channel'), body.get('itemId'), body.get('status') or 'delivered',
                     body.get('consumer') or 'local', body.get('error') or '')})
+            elif u.path == '/api/delivery/retry':
+                body = self.read_json_body()
+                self.send_json({'ok': True, 'data': retry_attention_delivery(
+                    body.get('channel'), body.get('itemId'))})
             elif u.path == '/api/monitor/config':
                 body = self.read_json_body()
                 saved = save_monitor_config(body.get('config') or {})

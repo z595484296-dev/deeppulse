@@ -1,17 +1,18 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.14.0';
-import { api } from './api.js?v=1.14.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.15.0';
+import { api } from './api.js?v=1.15.0';
 import {
   attentionLearningContext, bus, feedbackAttentionItem, loadAttentionInbox, loadAttentionPreferences, markAttentionRead,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences,
-} from './store.js?v=1.14.0';
-import { esc, toast } from './util.js?v=1.14.0';
+} from './store.js?v=1.15.0';
+import { esc, toast } from './util.js?v=1.15.0';
 
 let navigate = () => {};
 let digestTimer = null;
 let initialized = false;
 let knownIds = new Set();
+let deliverySnapshot = { channels: {}, recent: [] };
 const $ = selector => document.querySelector(selector);
 const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', event: '事件影响', hypothesis_review: '假设复盘', system: '系统更新' };
 const FEEDBACK_LABELS = { helpful: '有用', done: '已完成', too_frequent: '少一点', irrelevant: '不相关' };
@@ -23,6 +24,25 @@ function isExpired(item, now = Date.now()) {
 function timeLabel(timestamp) {
   const date = new Date(Number(timestamp) || Date.now());
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function deliveryTrace(itemId) {
+  const labels = { desktop: 'Windows', epaper: '墨水屏' };
+  const statusLabels = { queued: '等待重试', claimed: '发送中', delivered: '已送达', failed: '失败', dismissed: '已忽略' };
+  const latest = new Map();
+  (deliverySnapshot.recent || []).forEach(row => {
+    if (row?.itemId === itemId && !latest.has(row.channel)) latest.set(row.channel, row);
+  });
+  if (!latest.size) return '';
+  return `<div class="attention-delivery-trace" aria-label="终端送达记录">${[...latest.values()].map(row => {
+    const when = row.deliveredAt || row.acknowledgedAt || row.claimedAt;
+    const failed = row.status === 'failed';
+    return `<div class="attention-delivery-chip ${esc(row.status || '')}">
+      <span>${esc(labels[row.channel] || row.channel)} · ${esc(statusLabels[row.status] || row.status || '未知')}${when ? ` · ${timeLabel(when)}` : ''}${Number(row.attempts) > 1 ? ` · 第 ${Number(row.attempts)} 次` : ''}</span>
+      ${failed ? `<button class="attention-retry" data-delivery-retry="${esc(row.channel)}" title="重新排队投递">重试</button>` : ''}
+      ${failed && row.error ? `<small>${esc(row.error)}</small>` : ''}
+    </div>`;
+  }).join('')}</div>`;
 }
 
 function render() {
@@ -39,6 +59,7 @@ function render() {
       <div class="attention-item-head"><b>${esc(item.title)}</b><time>${isExpired(item) ? '已过期 · ' : ''}${timeLabel(item.createdAt)}</time></div>
       <p>${esc(item.detail)}</p>
       <small>为什么提醒我：${esc(item.reason)}</small>
+      ${deliveryTrace(item.id)}
       <div class="attention-item-actions">
         ${item.page ? `<button class="btn sm" data-attention-page="${esc(item.page)}">查看</button>` : ''}
         ${item.readAt || isExpired(item) ? '' : '<button class="btn sm ghost" data-attention-read>已读</button>'}
@@ -82,9 +103,11 @@ async function renderDeliveryStatus() {
   const target = $('#attention-delivery-status');
   try {
     const status = await api.deliveryStatus();
+    deliverySnapshot = status || { channels: {}, recent: [] };
     const desktop = status.channels?.desktop || {};
     const epaper = status.channels?.epaper || {};
     target.textContent = `Windows：${desktop.enabled ? `已开启 · 已送达 ${desktop.delivered || 0}` : '关闭'}；墨水屏：${epaper.enabled ? `已开启 · 已显示 ${epaper.delivered || 0}` : '关闭'}。每条提醒在每个已选终端最多一次。`;
+    if (initialized) render();
   } catch {
     target.textContent = '投递状态暂时不可用；设置仍会保存在本机。';
   }
@@ -161,7 +184,7 @@ export function initAttentionCenter(options = {}) {
     panel.classList.toggle('open', open);
     panel.setAttribute('aria-hidden', String(!open));
     $('#btn-attention').setAttribute('aria-expanded', String(open));
-    if (open) render();
+    if (open) { render(); renderDeliveryStatus(); }
   };
   $('#btn-attention').addEventListener('click', () => toggle(!panel.classList.contains('open')));
   $('#attention-close').addEventListener('click', () => toggle(false));
@@ -169,6 +192,18 @@ export function initAttentionCenter(options = {}) {
   $('#attention-list').addEventListener('click', event => {
     const card = event.target.closest('.attention-item');
     if (!card) return;
+    const retryChannel = event.target.closest('[data-delivery-retry]')?.dataset.deliveryRetry;
+    if (retryChannel) {
+      const button = event.target.closest('[data-delivery-retry]');
+      button.disabled = true;
+      api.retryDelivery(retryChannel, card.dataset.id)
+        .then(() => {
+          toast(`${retryChannel === 'desktop' ? 'Windows' : '墨水屏'}提醒已重新排队`, 'ok');
+          return renderDeliveryStatus();
+        })
+        .catch(error => { button.disabled = false; toast(`重试失败：${error.message}`, 'err'); });
+      return;
+    }
     if (event.target.closest('[data-attention-read]')) markAttentionRead(card.dataset.id);
     const signal = event.target.closest('[data-attention-feedback]')?.dataset.attentionFeedback;
     if (signal) {
@@ -216,6 +251,19 @@ export function initAttentionCenter(options = {}) {
   });
   bus.addEventListener('attention-preferences', () => { renderPreferences(); renderDeliveryStatus(); });
   bus.addEventListener('attention-learning', renderLearning);
+  document.addEventListener('attention-open', event => {
+    const id = String(event.detail?.id || '');
+    if (!id) return;
+    toggle(true);
+    window.setTimeout(() => {
+      const card = [...document.querySelectorAll('.attention-item')]
+        .find(row => row.dataset.id === id);
+      if (!card) { toast('这条提醒已不在最近记录中', 'err'); return; }
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.add('attention-target');
+      window.setTimeout(() => card.classList.remove('attention-target'), 2600);
+    }, 120);
+  });
   document.addEventListener('click', event => {
     if (panel.classList.contains('open') && !panel.contains(event.target) && !event.target.closest('#btn-attention')) toggle(false);
   });
