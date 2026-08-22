@@ -1,11 +1,12 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.33.0';
-import { state, bus, syncProfile } from '../store.js?v=1.33.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.33.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.33.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.33.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.33.0';
+import { api } from '../api.js?v=1.34.0';
+import { state, bus, syncProfile } from '../store.js?v=1.34.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.34.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.34.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.34.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.34.0';
+import { buildServiceCenterStatus } from '../service-center.js?v=1.34.0';
 
 let built = false;
 let sparksAt = 0;
@@ -67,6 +68,31 @@ export function init(container) {
       <p class="research-cockpit-boundary" id="ov-cockpit-boundary">只整理明确记录，不推断未记录目标，不执行交易。</p>
     </section>
 
+    <section class="card service-status-strip" id="ov-service-status" aria-labelledby="ov-service-status-title" data-state="loading">
+      <div class="service-status-main">
+        <span class="service-status-dot" aria-hidden="true"></span>
+        <div class="service-status-copy">
+          <div><b id="ov-service-status-title">主动服务</b><span class="routine-state" id="ov-service-status-state">正在读取</span></div>
+          <p><span id="ov-service-status-summary">正在汇总已授权服务</span><span aria-hidden="true"> · </span><span id="ov-service-status-next">下一次服务时间待确认</span></p>
+        </div>
+      </div>
+      <div class="service-status-actions">
+        <span class="service-status-alert" id="ov-service-status-alert" hidden></span>
+        <button class="btn sm" id="ov-service-manage" aria-haspopup="dialog" aria-controls="ov-service-dialog">管理主动服务</button>
+      </div>
+    </section>
+
+    <dialog class="service-center-dialog" id="ov-service-dialog" aria-labelledby="ov-service-dialog-title">
+      <div class="service-center-shell">
+        <header class="service-center-head">
+          <div>
+            <span class="proactive-kicker">主动服务管理中心</span>
+            <h2 id="ov-service-dialog-title">决定深脉何时主动、关注什么、如何提醒</h2>
+            <p>所有持续访问均逐项授权；打开此页面不会自动开启任何服务。</p>
+          </div>
+          <button class="btn sm ghost" id="ov-service-close" aria-label="关闭主动服务管理中心">关闭</button>
+        </header>
+        <div class="service-center-content">
     <section class="card routine-card" id="ov-routine" aria-labelledby="ov-routine-title">
       <div class="routine-main">
         <div class="routine-heading">
@@ -132,6 +158,9 @@ export function init(container) {
       </div>
       <div class="event-radar-boundary">事实层与规则层分开呈现 · 相关性不等于因果 · 质量分不代表预测准确率</div>
     </section>
+        </div>
+      </div>
+    </dialog>
 
     <div class="grid idx-grid" id="ov-indices" style="margin-top:14px"></div>
 
@@ -302,6 +331,23 @@ export function init(container) {
     renderResearchCockpit(container, e.detail);
   });
   bus.addEventListener('attention', () => refreshResearchCockpit(container));
+
+  const serviceDialog = container.querySelector('#ov-service-dialog');
+  const openServiceCenter = () => {
+    if (typeof serviceDialog.showModal === 'function') serviceDialog.showModal();
+    else serviceDialog.setAttribute('open', '');
+    container.querySelector('#ov-service-close')?.focus();
+  };
+  const closeServiceCenter = () => {
+    if (typeof serviceDialog.close === 'function') serviceDialog.close();
+    else serviceDialog.removeAttribute('open');
+    container.querySelector('#ov-service-manage')?.focus();
+  };
+  container.querySelector('#ov-service-manage').addEventListener('click', openServiceCenter);
+  container.querySelector('#ov-service-close').addEventListener('click', closeServiceCenter);
+  serviceDialog.addEventListener('click', e => {
+    if (e.target === serviceDialog) closeServiceCenter();
+  });
 
   container.querySelector('#ov-routine').addEventListener('change', async e => {
     const input = e.target.closest('[data-routine-task]');
@@ -623,6 +669,21 @@ function eventTime(value) {
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
+function renderServiceCenterStatus(container, routine = state.routine, eventImpact = state.eventImpact) {
+  const root = container.querySelector('#ov-service-status');
+  if (!root) return;
+  const status = buildServiceCenterStatus(routine, eventImpact);
+  root.dataset.state = status.state;
+  root.querySelector('#ov-service-status-state').textContent = status.stateLabel;
+  root.querySelector('#ov-service-status-summary').textContent = status.summary;
+  root.querySelector('#ov-service-status-next').textContent = status.next;
+  const alert = root.querySelector('#ov-service-status-alert');
+  alert.hidden = !status.alert;
+  alert.textContent = status.alert;
+  root.querySelector('#ov-service-manage').textContent = status.state === 'error'
+    ? '检查主动服务' : '管理主动服务';
+}
+
 function renderEventImpact(container, snapshot) {
   const root = container.querySelector('#ov-event-radar');
   if (!root) return;
@@ -630,6 +691,7 @@ function renderEventImpact(container, snapshot) {
   const config = value.config || {};
   const enabled = config.enabled === true;
   const runtimeState = value.state || value.runtime && value.runtime.state || (enabled ? 'starting' : 'disabled');
+  renderServiceCenterStatus(container, state.routine, value);
   root.dataset.state = runtimeState;
   root.querySelector('#ov-event-state').textContent = EVENT_STATE_LABELS[runtimeState] || runtimeState;
   root.querySelector('#ov-event-toggle').textContent = enabled ? '关闭事件雷达' : '授权开启';
@@ -748,6 +810,7 @@ function renderRoutine(container, routine) {
   root.querySelector('#ov-routine-skip').disabled = !value.next_service;
   root.querySelector('#ov-routine-pause').disabled = !(value.config && value.config.enabled);
   root.querySelector('#ov-routine-pause').textContent = stateName === 'paused' ? '恢复服务' : '暂停到明早';
+  renderServiceCenterStatus(container, value, state.eventImpact);
 }
 
 async function refreshRoutine(container) {
@@ -762,6 +825,9 @@ async function refreshRoutine(container) {
       root.querySelector('#ov-routine-state').textContent = '连接失败';
       root.querySelector('#ov-routine-next').textContent = '请确认本机深脉服务正在运行';
     }
+    renderServiceCenterStatus(container, {
+      ...(state.routine || {}), runtime: { state: 'error' },
+    }, state.eventImpact);
   }
 }
 

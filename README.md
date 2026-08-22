@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.33.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.34.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 主动服务管理中心（v1.34）
+
+- 总览不再铺开低频的日程配置、自然语言安排、效果学习和事件雷达授权；它们集中进入独立管理中心，指数与情绪信息更早进入主信息流。
+- 总览保留一条紧凑状态条，明确显示已开启项目、下一次服务、暂停或异常状态；异常时入口自动改为“检查主动服务”。
+- 管理中心完整保留逐项授权、预览后应用、跳过、暂停、效果建议撤销和事件研究能力；打开管理中心本身不会开启服务或访问新来源。
+- 手机端使用全屏管理界面，桌面端使用可滚动对话框；关闭后焦点返回管理入口，键盘和触屏均可操作。
 
 ### 研究值守（v1.33）
 

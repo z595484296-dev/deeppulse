@@ -818,6 +818,28 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .proactive-evidence span::before { content: "·"; margin-right: 5px; color: var(--accent); }
 .proactive-foot-actions { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
 .proactive-more { display: none; }
+.service-status-strip { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 68px; margin-top: 10px; padding: 11px 15px; }
+.service-status-main, .service-status-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.service-status-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--text-3); box-shadow: 0 0 0 4px color-mix(in srgb, var(--text-3) 12%, transparent); }
+.service-status-copy { min-width: 0; }
+.service-status-copy > div { display: flex; align-items: center; gap: 8px; }
+.service-status-copy b { color: var(--text); font-size: 12.5px; }
+.service-status-copy p { overflow: hidden; margin: 4px 0 0; color: var(--text-3); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.service-status-strip[data-state="active"] .service-status-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(46, 189, 133, .11); }
+.service-status-strip[data-state="paused"] .service-status-dot,
+.service-status-strip[data-state="warning"] .service-status-dot { background: var(--amber); box-shadow: 0 0 0 4px rgba(240, 185, 11, .11); }
+.service-status-strip[data-state="error"] { border-color: rgba(246, 70, 93, .34); }
+.service-status-strip[data-state="error"] .service-status-dot { background: var(--up); box-shadow: 0 0 0 4px rgba(246, 70, 93, .11); }
+.service-status-alert { color: var(--amber); font-size: 10.5px; font-weight: 700; }
+.service-center-dialog { width: min(1120px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: transparent; color: var(--text); box-shadow: 0 30px 90px rgba(0, 0, 0, .46); }
+.service-center-dialog::backdrop { background: rgba(3, 8, 18, .72); backdrop-filter: blur(4px); }
+.service-center-shell { display: flex; max-height: calc(100vh - 32px); flex-direction: column; background: var(--bg); }
+.service-center-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.service-center-head h2 { margin: 5px 0 0; color: var(--text); font-size: 20px; }
+.service-center-head p { margin: 6px 0 0; color: var(--text-3); font-size: 11px; }
+.service-center-content { flex: 1; min-height: 0; padding: 16px; overflow: auto; overscroll-behavior: contain; }
+.service-center-content .routine-card { margin-top: 0; }
+.service-center-content .event-radar-card { margin-bottom: 2px; }
 .routine-card { margin-top: 10px; padding: 12px 15px; }
 .routine-main { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .routine-heading { display: flex; align-items: center; gap: 8px; min-width: 285px; flex-wrap: wrap; }
@@ -1925,6 +1947,17 @@ body.light .gauge-wrap .temp-big { text-shadow: none; }
   .proactive-action:nth-child(n+2) { display: none; }
   .proactive-card.mobile-expanded .proactive-action:nth-child(n+2) { display: grid; }
   .proactive-more:not([hidden]) { display: inline-flex; width: 100%; justify-content: center; margin-top: 9px; }
+  .service-status-strip { align-items: stretch; flex-direction: column; gap: 10px; }
+  .service-status-copy p { display: flex; flex-direction: column; gap: 2px; white-space: normal; }
+  .service-status-copy p > span[aria-hidden="true"] { display: none; }
+  .service-status-actions { justify-content: space-between; }
+  .service-status-actions .btn { min-height: 44px; margin-left: auto; }
+  .service-center-dialog { width: 100vw; height: 100dvh; max-height: 100dvh; border: 0; border-radius: 0; }
+  .service-center-shell { height: 100dvh; max-height: 100dvh; }
+  .service-center-head { padding: 15px 14px; }
+  .service-center-head h2 { font-size: 17px; line-height: 1.4; }
+  .service-center-head p { display: none; }
+  .service-center-content { padding: 10px; }
   .routine-heading { min-width: 0; }
   .routine-options { grid-template-columns: 1fr; }
   .routine-options label { min-height: 48px; }
