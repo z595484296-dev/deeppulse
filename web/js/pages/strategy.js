@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.23.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.23.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.23.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.23.0';
+import { api } from '../api.js?v=1.24.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.24.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.24.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.24.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -464,6 +464,17 @@ export function init(container) {
       toast(workflow.kind === 'template' ? '模板已复制为一次性草稿；请预览后创建' : '已复制为新草稿；原流程不变');
       return;
     }
+    if (action === 'review-draft') {
+      const card = workflow.latestRun?.resultCard || (workflow.runs || []).slice(-1)[0]?.resultCard;
+      if (!card?.reviewDraft) return;
+      const calendarText = container.querySelector('#st-cal-text');
+      const journalText = container.querySelector('#st-jtext');
+      if (calendarText) calendarText.value = card.reviewDraft;
+      if (journalText) journalText.value = card.reviewDraft;
+      container.querySelector('#st-cal-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      toast('研究结果已填入复盘草稿；检查并点击保存后才会写入');
+      return;
+    }
     button.disabled = true;
     const oldText = button.textContent;
     if (action === 'run') button.textContent = '正在读取来源…';
@@ -800,9 +811,23 @@ function renderResearchWorkflows(container) {
     const status = WORKFLOW_STATUS[item.effectiveStatus] || WORKFLOW_STATUS.invalid;
     const target = item.target || {};
     const latest = (item.runs || []).slice(-1)[0];
+    const card = item.latestRun?.resultCard || latest?.resultCard;
     const results = latest?.results || [];
     const sourceTags = (item.sources || []).map(id => `<span>${esc(sources[id]?.label || id)}</span>`).join('');
     const runRows = results.map(row => `<li data-status="${esc(row.status)}"><b>${esc(sources[row.sourceId]?.label || row.sourceId)}</b><span>${esc(row.summary || row.error || '无摘要')}</span><em>${esc(row.upstream || row.status)}</em></li>`).join('');
+    const cardSummary = card?.summary || {};
+    const resultCard = card ? `<section class="workflow-result-card" aria-label="研究结果卡">
+      <div class="workflow-result-head"><b>研究结果卡</b><span>${Number(cardSummary.usableSources || 0)}/${Number(cardSummary.selectedSources || 0)} 来源可用 · ${Number(cardSummary.evidenceItems || 0)} 条候选证据</span></div>
+      <div class="workflow-result-metrics">
+        <span><b>${Number(cardSummary.gapCount || 0)}</b>缺口</span>
+        <span><b>${Number(cardSummary.staleItems || 0)}</b>陈旧项</span>
+        <span><b>${Number(cardSummary.sameUpstreamGroups || 0)}</b>同源组</span>
+        <span><b>${Number(cardSummary.degradedSources || 0)}</b>降级源</span>
+      </div>
+      ${(card.sameUpstream || []).length ? `<div class="workflow-lineage-warn"><b>同源提示</b>${card.sameUpstream.map(row => `<span>${esc(row.group)}：${(row.sourceIds || []).map(id => esc(sources[id]?.label || id)).join(' / ')}</span>`).join('')}</div>` : ''}
+      ${(card.gaps || []).length ? `<details class="workflow-gaps"><summary>查看 ${Number(cardSummary.gapCount || 0)} 项待核对缺口</summary><ul>${card.gaps.map(row => `<li><b>${esc(sources[row.sourceId]?.label || row.sourceId)}</b><span>${esc(row.message)}</span></li>`).join('')}</ul></details>` : '<div class="workflow-result-ok">本次所选来源均返回了可展示证据；仍不代表研究问题已经成立。</div>'}
+      <small>${esc(card.boundary || '本卡片不自动生成结论。')}</small>
+    </section>` : '';
     const canRun = item.status === 'active';
     return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}">
       <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b>${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
@@ -810,12 +835,14 @@ function renderResearchWorkflows(container) {
       <p>${esc(item.question || '')}</p>
       <div class="workflow-source-tags">${sourceTags}</div>
       <details class="workflow-run" ${item.effectiveStatus === 'review_due' && latest ? 'open' : ''}><summary>${latest ? `最近执行 ${esc(formatHypothesisTime(latest.ranAt))} · 成功 ${Number(latest.summary?.ok || 0)} / ${Number(latest.summary?.selected || 0)}` : '尚未执行来源读取'}</summary>${runRows ? `<ul>${runRows}</ul>` : '<div class="empty compact">执行后会记录各来源的事实摘要、最终上游和失败原因，但不会自动下结论。</div>'}</details>
+      ${resultCard}
       <div class="workflow-item-actions">
         ${canRun ? `<button class="btn sm primary" data-wf-action="run" data-wf-id="${esc(item.id)}">执行一次</button>` : ''}
         ${item.status === 'active' ? `<button class="btn sm" data-wf-action="pause" data-wf-id="${esc(item.id)}">暂停</button>` : ''}
         ${item.status === 'paused' ? `<button class="btn sm" data-wf-action="resume" data-wf-id="${esc(item.id)}">继续</button>` : ''}
         <button class="btn sm" data-wf-action="copy" data-wf-id="${esc(item.id)}">${item.kind === 'template' ? '从模板创建' : '复制为草稿'}</button>
         <button class="btn sm" data-wf-action="ask" data-wf-id="${esc(item.id)}">让 DeepSeek 解读</button>
+        ${card && (item.outputs || []).includes('review_note') ? `<button class="btn sm" data-wf-action="review-draft" data-wf-id="${esc(item.id)}">填入复盘草稿</button>` : ''}
         ${['active', 'paused'].includes(item.status) ? `<button class="btn sm ghost" data-wf-action="complete" data-wf-id="${esc(item.id)}">标记完成</button>` : ''}
       </div>
     </article>`;

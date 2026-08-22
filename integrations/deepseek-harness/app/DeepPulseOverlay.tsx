@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.23.0'
+const MIN_BACKEND_VERSION = '1.24.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -99,6 +99,11 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['research_memory'] === 1
       && capabilities['research_memory_controls'] === 1
       && capabilities['research_memory_context'] === 1
+      && capabilities['research_workflows'] === 1
+      && capabilities['research_workflow_preview'] === 1
+      && capabilities['research_workflow_permissions'] === 1
+      && capabilities['research_result_cards'] === 1
+      && capabilities['epaper_research_workflow'] === 1
       ? baseUrl
       : undefined
   } catch {
@@ -357,6 +362,49 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       evidence: Array.isArray(item['evidence']) ? item['evidence'].slice(0, 8).map(sanitizeWorkflowEvidence) : [],
     }
   }
+  const sanitizeWorkflowResultCard = (value: unknown) => {
+    const card = recordOf(value)
+    const target = recordOf(card['target'])
+    const summary = recordOf(card['summary'])
+    const sources = Array.isArray(card['sources']) ? card['sources'].slice(0, 5).map(value => {
+      const source = recordOf(value)
+      const freshness = recordOf(source['freshness'])
+      return {
+        sourceId: short(source['sourceId'], 60), status: short(source['status'], 30),
+        summary: short(source['summary'], 600), upstream: short(source['upstream'], 120),
+        fetchedAt: short(source['fetchedAt'], 80), evidenceCount: finite(source['evidenceCount']),
+        lineageGroups: uniqueStrings(source['lineageGroups'], 8, 80),
+        evidenceDates: uniqueStrings(source['evidenceDates'], 5, 80),
+        freshness: {
+          current: finite(freshness['current']), stale: finite(freshness['stale']),
+          unavailable: finite(freshness['unavailable']),
+        },
+      }
+    }) : []
+    const gaps = Array.isArray(card['gaps']) ? card['gaps'].slice(0, 12).map(value => {
+      const gap = recordOf(value)
+      return { sourceId: short(gap['sourceId'], 60), kind: short(gap['kind'], 60), message: short(gap['message'], 240) }
+    }) : []
+    const sameUpstream = Array.isArray(card['sameUpstream']) ? card['sameUpstream'].slice(0, 8).map(value => {
+      const group = recordOf(value)
+      return { group: short(group['group'], 80), sourceIds: uniqueStrings(group['sourceIds'], 5, 60), message: short(group['message'], 240) }
+    }) : []
+    return Object.keys(card).length ? {
+      modelVersion: short(card['modelVersion'], 60), workflowId: short(card['workflowId'], 180),
+      runId: short(card['runId'], 180), generatedAt: short(card['generatedAt'], 80),
+      title: short(card['title'], 240), question: short(card['question'], 1000),
+      target: { type: short(target['type'], 30), code: short(target['code'], 20), name: short(target['name'], 100) },
+      summary: {
+        selectedSources: finite(summary['selectedSources']), returnedSources: finite(summary['returnedSources']),
+        usableSources: finite(summary['usableSources']), degradedSources: finite(summary['degradedSources']),
+        evidenceItems: finite(summary['evidenceItems']), staleItems: finite(summary['staleItems']),
+        gapCount: finite(summary['gapCount']), sameUpstreamGroups: finite(summary['sameUpstreamGroups']),
+      },
+      sources, gaps, sameUpstream, reviewState: short(card['reviewState'], 40),
+      automaticConclusion: false, automaticTradingAction: false,
+      boundary: short(card['boundary'], 400),
+    } : null
+  }
   const sanitizeResearchWorkflow = (value: unknown) => {
     const item = recordOf(value)
     const target = recordOf(item['target'])
@@ -378,6 +426,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           selected: finite(latestSummary['selected']), ok: finite(latestSummary['ok']),
           degraded: finite(latestSummary['degraded']),
         },
+        resultCard: sanitizeWorkflowResultCard(latest['resultCard']),
         results: Array.isArray(latest['results']) ? latest['results'].slice(0, 5).map(sanitizeWorkflowResult) : [],
         automaticConclusion: latest['automaticConclusion'] === true,
         automaticTradingAction: latest['automaticTradingAction'] === true,
@@ -1069,7 +1118,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
     '15. akshareResearch 是按需生成的研究增强背景；必须检查每项 asOf 和 status，陈旧或缺失数据不得描述为当前事实。source.independentGroup 相同表示最终上游相同，不能算独立互证；这些指标不参与情绪温度、仓位区间或交易触发。',
-    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据，仍需核对时点、来源层级与缺口。',
+    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论，仍需用户核对并填写最终复盘。',
   ].join('\n')
 }
 

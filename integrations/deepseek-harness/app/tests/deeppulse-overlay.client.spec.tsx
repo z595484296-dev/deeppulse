@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.23.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, epaper_gateway: 1 } },
+  data: { version: '1.24.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -471,6 +471,27 @@ describe('DeepPulse Harness bridge', () => {
       dueAt: '2026-08-28T15:30:00+08:00', lastRunAt: '2026-08-22T09:00:00+08:00',
       runs: [{ id: 'workflow-run:1', ranAt: '2026-08-22T09:00:00+08:00',
         summary: { selected: 3, ok: 2, degraded: 1, injected: 'drop run summary' },
+        resultCard: {
+          modelVersion: 'research-result-card-v1', workflowId: 'workflow:1', runId: 'workflow-run:1',
+          generatedAt: '2026-08-22T09:00:00+08:00', title: 'Industrial AI follow-up',
+          question: 'Does official demand evidence support the thesis?',
+          target: { type: 'stock', code: '601138', name: 'FII', secret: 'drop card target' },
+          summary: { selectedSources: 3, returnedSources: 3, usableSources: 2,
+            degradedSources: 1, evidenceItems: 7, staleItems: 1, gapCount: 1,
+            sameUpstreamGroups: 1, secret: 'drop card summary' },
+          sources: [{ sourceId: 'akshare_macro', status: 'ok', summary: 'macro background',
+            upstream: 'Eastmoney', fetchedAt: '2026-08-22T09:00:00+08:00', evidenceCount: 4,
+            lineageGroups: ['eastmoney'], evidenceDates: ['2026-08-21'],
+            freshness: { current: 3, stale: 1, unavailable: 0, secret: 'drop freshness' },
+            secret: 'drop card source' }],
+          gaps: [{ sourceId: 'official_disclosures', kind: 'source_unavailable',
+            message: 'not returned', secret: 'drop gap' }],
+          sameUpstream: [{ group: 'eastmoney', sourceIds: ['market_quote', 'akshare_macro'],
+            message: 'same final upstream', secret: 'drop lineage' }],
+          reviewState: 'waiting_for_user', automaticConclusion: false,
+          automaticTradingAction: false, boundary: 'no automatic conclusion',
+          reviewDraft: 'must not cross bridge', secret: 'drop result card',
+        },
         results: [{ sourceId: 'market_quote', status: 'ok', fetchedAt: '2026-08-22T09:00:00+08:00',
           summary: 'quote captured', upstream: 'public quote',
           evidence: [{ code: '601138', name: 'FII', price: 62.13, pct: 0.49, secret: 'drop evidence' }],
@@ -496,12 +517,18 @@ describe('DeepPulse Harness bridge', () => {
         permissions: { previewRequired: true, explicitConfirmationRequired: true,
           automaticExternalAuthorization: false },
         items: [{ id: 'workflow:1', target: { code: '601138' },
-          latestRun: { summary: { ok: 2 }, results: [{ evidence: [{ price: 62.13 }] }] },
+          latestRun: { summary: { ok: 2 },
+            resultCard: { summary: { gapCount: 1, sameUpstreamGroups: 1 },
+              sources: [{ lineageGroups: ['eastmoney'], freshness: { stale: 1 } }],
+              gaps: [{ kind: 'source_unavailable' }],
+              sameUpstream: [{ group: 'eastmoney' }], automaticConclusion: false },
+            results: [{ evidence: [{ price: 62.13 }] }] },
           contract: { userConfirmed: true, deepSeekMaySuggestOnly: true } }],
       },
       researchWorkflow: { id: 'workflow:1', effectiveStatus: 'review_due' },
     } })
     expect(JSON.stringify(ask)).not.toContain('drop ')
+    expect(JSON.stringify(ask)).not.toContain('reviewDraft')
     const prompt = formatDeepPulsePrompt(ask!)
     expect(prompt).toContain('researchWorkflows')
     expect(prompt).toContain('不得改变来源范围、权限、提醒和状态')

@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.23.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.24.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 可追溯研究结果卡与墨水屏研究模式（v1.24）
+
+- 每次手动运行研究流程后生成一张事实卡：分别列出可用来源、候选证据、陈旧指标、数据缺口和相同最终上游，避免把 AKShare 包装的东方财富误算成独立互证。
+- 结果卡可以一键填入复盘草稿，但不会自动保存结论；交给 DeepSeek 的也是严格白名单后的事实与缺口，不包含可执行交易动作。
+- 墨水屏新增“研究结果”模式，显示最近一次流程的可用来源、证据、缺口、陈旧项与同源组；只读取本机已保存结果，不在硬件刷新时额外访问外部数据源。
+- AKShare 继续作为宏观、利率与跨市场补充层；实时行情、涨跌停和市场宽度仍由行情主链及通达信只读复核负责。
 
 ### 用户可控研究流程（v1.23）
 

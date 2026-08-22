@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 微雪 7.5 英寸墨水屏开发模式 */
 
-import { api } from '../api.js?v=1.23.0';
-import { esc, debounce, toast } from '../util.js?v=1.23.0';
+import { api } from '../api.js?v=1.24.0';
+import { esc, debounce, toast } from '../util.js?v=1.24.0';
 
 let built = false;
 let snapshot = null;
@@ -18,6 +18,7 @@ const MODE_META = {
   watch: { label: '自选组合', help: '同屏查看最多 6 只自选股的价格和涨跌幅。' },
   hotspot: { label: '热点雷达', help: '展示领涨行业、强度与市场结构，捕捉当下热点。' },
   event: { label: '事件雷达', help: '展示事件数量、质量、敏感行业和命中的自选代码；需先在总览明确开启事件服务。' },
+  research: { label: '研究结果', help: '展示最近一次研究流程的证据数量、数据缺口、陈旧项与同源提醒，不自动给出结论。' },
   alert: { label: '提醒优先', help: '触发关注价提醒时占满画面，未触发时回到个股专注。' },
 };
 
@@ -132,7 +133,9 @@ async function renderPreview(container) {
     const modeDetail = mode === 'watch'
       ? ` · ${state.watch?.length || 0} 只`
       : mode === 'hotspot' && state.hotspots?.[0]
-        ? ` · ${state.hotspots[0].name || state.hotspots[0].code}` : '';
+        ? ` · ${state.hotspots[0].name || state.hotspots[0].code}`
+        : mode === 'research'
+          ? ` · ${state.research_workflow?.state === 'ready' ? '最近研究已就绪' : '等待首次运行'}` : '';
     meta.innerHTML = `
       <span><b>${esc(modeMeta.label)}</b>${esc(modeDetail)}</span>
       <span><b>${esc(focus.code || '--')}</b> ${esc(focus.name || '')}</span>
@@ -268,6 +271,7 @@ export function init(container) {
           <option value="watch">自选组合</option>
           <option value="hotspot">热点雷达</option>
           <option value="event">事件雷达</option>
+          <option value="research">研究结果</option>
           <option value="alert">提醒优先</option>
         </select><small class="ep-mode-help" id="ep-mode-help"></small></label>
         <label class="ep-field"><span>刷新方式</span><select id="ep-refresh-policy">

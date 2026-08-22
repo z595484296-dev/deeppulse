@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.23.0';
+import { applyChartTheme } from './charts.js?v=1.24.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -35,10 +35,42 @@ function trimHypothesisEvidence(item, limit = 8) {
   return item ? { ...item, evidenceCandidates: (item.evidenceCandidates || []).slice(0, limit) } : item;
 }
 
+function trimResultCard(card) {
+  if (!card || typeof card !== 'object') return null;
+  return {
+    modelVersion: card.modelVersion,
+    workflowId: card.workflowId,
+    runId: card.runId,
+    generatedAt: card.generatedAt,
+    title: card.title,
+    question: card.question,
+    target: card.target,
+    summary: card.summary,
+    sources: (card.sources || []).slice(0, 5).map(source => ({
+      sourceId: source.sourceId,
+      status: source.status,
+      summary: source.summary,
+      upstream: source.upstream,
+      fetchedAt: source.fetchedAt,
+      evidenceCount: source.evidenceCount,
+      lineageGroups: (source.lineageGroups || []).slice(0, 8),
+      evidenceDates: (source.evidenceDates || []).slice(0, 5),
+      freshness: source.freshness,
+    })),
+    gaps: (card.gaps || []).slice(0, 12),
+    sameUpstream: (card.sameUpstream || []).slice(0, 8),
+    reviewState: card.reviewState,
+    automaticConclusion: false,
+    automaticTradingAction: false,
+    boundary: card.boundary,
+  };
+}
+
 function trimWorkflowEvidence(item, resultLimit = 5, evidenceLimit = 5) {
   if (!item) return item;
   const runs = (item.runs || (item.latestRun ? [item.latestRun] : [])).slice(-1).map(run => ({
     ...run,
+    resultCard: trimResultCard(run.resultCard),
     results: (run.results || []).slice(0, resultLimit).map(result => ({
       ...result, evidence: (result.evidence || []).slice(0, evidenceLimit),
     })),

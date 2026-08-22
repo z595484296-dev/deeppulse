@@ -49,6 +49,18 @@ def sample_state(alert=None):
             {'code': 'BK1452', 'name': '卫浴电器', 'pct': 7.19},
             {'code': 'BK1492', 'name': '焦炭Ⅲ', 'pct': 6.53},
         ],
+        'research_workflow': {
+            'state': 'ready',
+            'target': {'code': '601138', 'name': '工业富联'},
+            'effective_status': 'review_due',
+            'summary': {
+                'selectedSources': 4, 'usableSources': 3,
+                'degradedSources': 1, 'evidenceItems': 12,
+                'gapCount': 2, 'staleItems': 1, 'sameUpstreamGroups': 1,
+            },
+            'review_state': 'waiting_for_user',
+            'boundary': 'NO AUTO CONCLUSION',
+        },
         'quality': {'tdx_status': 'connected', 'stale': False},
         'alert': alert,
     }
@@ -137,7 +149,7 @@ class FrameTests(unittest.TestCase):
 
     def test_new_decision_modes_render_distinct_full_frames(self):
         frames = {}
-        for mode in ('focus', 'emotion', 'watch', 'hotspot'):
+        for mode in ('focus', 'emotion', 'watch', 'hotspot', 'research'):
             state = sample_state()
             state['device']['mode'] = mode
             frames[mode] = server.render_epaper_frame(state)
@@ -203,6 +215,26 @@ class DeviceStateTests(unittest.TestCase):
         self.assertEqual(config['mode'], 'focus')
         self.assertEqual(state['device']['mode'], 'emotion')
         self.assertEqual(state['emotion']['dimensions'][0]['value'], 70)
+
+    def test_research_mode_uses_only_persisted_workflow_results(self):
+        config = server.normalize_device_config({'mode': 'research', 'focus_code': '000001'})
+        profile = {'data': {'research_workflows': [{
+            'id': 'workflow:test', 'title': '工业富联研究', 'status': 'active',
+            'outputs': ['dashboard_card'], 'sources': ['market_quote'],
+            'target': {'type': 'stock', 'code': '601138', 'name': '工业富联'},
+            'runs': [{
+                'id': 'workflow-run:test', 'ranAt': '2026-08-21T15:30:00+08:00',
+                'results': [{'sourceId': 'market_quote', 'status': 'ok',
+                             'summary': '公开行情', 'evidence': [{'price': 61.82}]}],
+            }],
+        }]}}
+        with patch.object(server, 'assemble_emotion', return_value={'engine': {}}), \
+                patch.object(server, 'cached', side_effect=RuntimeError('offline')), \
+                patch.object(server, 'load_profile', return_value=profile):
+            state = server.build_device_state(config)
+        self.assertEqual(state['research_workflow']['state'], 'ready')
+        self.assertEqual(state['research_workflow']['target']['code'], '601138')
+        self.assertEqual(state['research_workflow']['summary']['usableSources'], 1)
 
     def test_only_recent_triggered_alert_is_sent_to_hardware(self):
         config = server.normalize_device_config({'mode': 'alert', 'focus_code': '000001'})

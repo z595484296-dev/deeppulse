@@ -13,7 +13,7 @@ import json
 import re
 
 
-MODEL_VERSION = 'research-workflow-v1'
+MODEL_VERSION = 'research-workflow-v2'
 BJC = timezone(timedelta(hours=8))
 KINDS = {'one_off', 'template'}
 TARGET_TYPES = {'stock', 'market', 'theme', 'custom'}
@@ -46,6 +46,158 @@ OUTPUT_DEFINITIONS = {
     'deepseek_brief': 'DeepSeek 研究简报上下文',
 }
 MAX_RUNS = 20
+
+
+def _lineage_key(value):
+    text = _text(value, 120).lower()
+    if not text:
+        return ''
+    aliases = (
+        ('eastmoney', ('eastmoney', '东方财富')),
+        ('cninfo', ('cninfo', '巨潮')),
+        ('tencent', ('tencent', '腾讯')),
+        ('tdx-local', ('tdx', '通达信')),
+        ('akshare', ('akshare',)),
+        ('wallstreetcn', ('wallstreetcn', '华尔街见闻')),
+    )
+    for key, needles in aliases:
+        if any(needle in text for needle in needles):
+            return key
+    return re.sub(r'[^a-z0-9_-]+', '-', text).strip('-')[:60]
+
+
+def _walk_lineage(value, groups, dates, freshness, depth=0):
+    """Collect bounded provenance hints from provider payloads without trusting prose."""
+    if depth > 5:
+        return
+    if isinstance(value, dict):
+        source = value.get('source') if isinstance(value.get('source'), dict) else {}
+        for candidate in (
+                value.get('independentGroup'), value.get('upstream'),
+                source.get('independentGroup'), source.get('upstream')):
+            key = _lineage_key(candidate)
+            if key:
+                groups.add(key)
+        for key in ('asOf', 'date', 'publishedAt', 'observedAt', 'fetchedAt'):
+            text = _text(value.get(key), 80)
+            if text:
+                dates.add(text)
+        status = _text(value.get('status'), 30).lower()
+        if status in {'current', 'stale', 'unavailable', 'degraded'}:
+            freshness[status] = freshness.get(status, 0) + 1
+        for nested in value.values():
+            if isinstance(nested, (dict, list)):
+                _walk_lineage(nested, groups, dates, freshness, depth + 1)
+    elif isinstance(value, list):
+        for nested in value[:40]:
+            _walk_lineage(nested, groups, dates, freshness, depth + 1)
+
+
+def build_result_card(item, run):
+    """Build a factual, traceable card; never decide whether the thesis is true."""
+    workflow = item if isinstance(item, dict) else {}
+    value = run if isinstance(run, dict) else {}
+    selected = list(workflow.get('sources') or [])[:5]
+    rows = []
+    group_sources = {}
+    gaps = []
+    evidence_total = 0
+    stale_total = 0
+    for result in value.get('results') if isinstance(value.get('results'), list) else []:
+        if not isinstance(result, dict):
+            continue
+        source_id = _text(result.get('sourceId'), 60)
+        if source_id not in selected:
+            continue
+        evidence = (result.get('evidence') if isinstance(result.get('evidence'), list) else [])[:20]
+        groups, dates, freshness = set(), set(), {}
+        upstream_key = _lineage_key(result.get('upstream'))
+        if upstream_key:
+            groups.add(upstream_key)
+        _walk_lineage(evidence, groups, dates, freshness)
+        # AKShare is an adapter. Prefer disclosed final upstream groups when present.
+        if source_id == 'akshare_macro' and len(groups) > 1:
+            groups.discard('akshare')
+        for group in groups:
+            group_sources.setdefault(group, set()).add(source_id)
+        status = _text(result.get('status'), 30) or 'unavailable'
+        evidence_count = len(evidence)
+        evidence_total += evidence_count
+        stale_total += int(freshness.get('stale') or 0)
+        if status != 'ok':
+            gaps.append({
+                'sourceId': source_id, 'kind': 'source_' + status,
+                'message': _text(result.get('error'), 240) or '该来源本次未形成可用结果。',
+            })
+        elif not evidence_count:
+            gaps.append({
+                'sourceId': source_id, 'kind': 'no_evidence',
+                'message': '来源读取成功，但没有返回可展示证据。',
+            })
+        rows.append({
+            'sourceId': source_id, 'status': status,
+            'summary': _text(result.get('summary'), 600),
+            'upstream': _text(result.get('upstream'), 120),
+            'fetchedAt': _text(result.get('fetchedAt'), 80),
+            'evidenceCount': evidence_count,
+            'lineageGroups': sorted(groups)[:8],
+            'evidenceDates': sorted(dates, reverse=True)[:5],
+            'freshness': {
+                'current': int(freshness.get('current') or 0),
+                'stale': int(freshness.get('stale') or 0),
+                'unavailable': int(freshness.get('unavailable') or 0),
+            },
+        })
+    observed = {row['sourceId'] for row in rows}
+    for source_id in selected:
+        if source_id not in observed:
+            gaps.append({
+                'sourceId': source_id, 'kind': 'missing_result',
+                'message': '已选择该来源，但本次没有返回执行结果。',
+            })
+    duplicates = [
+        {'group': group, 'sourceIds': sorted(source_ids),
+         'message': '这些结果披露了相同最终上游，不能计作独立互证。'}
+        for group, source_ids in sorted(group_sources.items()) if len(source_ids) > 1
+    ]
+    usable = sum(row['status'] == 'ok' for row in rows)
+    target = workflow.get('target') if isinstance(workflow.get('target'), dict) else {}
+    card = {
+        'modelVersion': 'research-result-card-v1',
+        'workflowId': _text(workflow.get('id'), 180),
+        'runId': _text(value.get('id'), 180),
+        'generatedAt': _text(value.get('ranAt'), 80) or _iso(),
+        'title': _text(workflow.get('title'), 240),
+        'question': _text(workflow.get('question'), 1200),
+        'target': {
+            'type': _text(target.get('type'), 30),
+            'code': _text(target.get('code'), 20),
+            'name': _text(target.get('name'), 100),
+        },
+        'summary': {
+            'selectedSources': len(selected), 'returnedSources': len(rows),
+            'usableSources': usable, 'degradedSources': len(rows) - usable,
+            'evidenceItems': evidence_total, 'staleItems': stale_total,
+            'gapCount': len(gaps), 'sameUpstreamGroups': len(duplicates),
+        },
+        'sources': rows,
+        'gaps': gaps[:12],
+        'sameUpstream': duplicates[:8],
+        'reviewState': 'waiting_for_user',
+        'automaticConclusion': False,
+        'automaticTradingAction': False,
+        'boundary': '本卡片只整理本次可见事实、来源血缘与缺口，不判断研究问题是否成立。',
+    }
+    card['reviewDraft'] = '\n'.join([
+        '【研究流程复盘草稿】',
+        '研究问题：' + (card['question'] or '待补充'),
+        '本次结果：%d/%d 个来源可用，共 %d 条候选证据。' % (
+            usable, len(selected), evidence_total),
+        '需核对：%d 项缺口，%d 组相同最终上游，%d 条陈旧指标。' % (
+            len(gaps), len(duplicates), stale_total),
+        '我的结论：待填写（请区分事实、推断与反证条件）',
+    ])
+    return card
 
 
 def _text(value, limit=300):
@@ -321,6 +473,8 @@ def record_run(item, source_results, now=None):
         'automaticConclusion': False,
         'automaticTradingAction': False,
     }
+    if 'dashboard_card' in (item.get('outputs') or []) or 'review_note' in (item.get('outputs') or []):
+        run['resultCard'] = build_result_card(item, run)
     result = deepcopy(item)
     result['runs'] = (list(result.get('runs') or []) + [run])[-MAX_RUNS:]
     result['lastRunAt'] = ran_at
@@ -335,6 +489,15 @@ def workflow_snapshot(items, now=None):
             continue
         item = deepcopy(row)
         item['effectiveStatus'] = effective_status(item, now)
+        runs = item.get('runs') if isinstance(item.get('runs'), list) else []
+        if runs:
+            latest = runs[-1]
+            card_output = ('dashboard_card' in (item.get('outputs') or []) or
+                           'review_note' in (item.get('outputs') or []))
+            if (card_output and isinstance(latest, dict) and
+                    not isinstance(latest.get('resultCard'), dict)):
+                latest['resultCard'] = build_result_card(item, latest)
+            item['latestRun'] = latest
         clean.append(item)
     clean.sort(key=lambda row: row.get('updatedAt') or row.get('createdAt') or '', reverse=True)
     states = ('active', 'review_due', 'paused', 'template', 'completed', 'invalid')

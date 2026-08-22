@@ -5,8 +5,8 @@ import tempfile
 from unittest.mock import patch
 
 import server
-from research_workflow import (create_workflow, mutate_workflow, preview_workflow,
-                               record_run, workflow_snapshot)
+from research_workflow import (build_result_card, create_workflow, mutate_workflow,
+                               preview_workflow, record_run, workflow_snapshot)
 
 
 BJC = timezone(timedelta(hours=8))
@@ -89,7 +89,54 @@ class ResearchWorkflowTests(unittest.TestCase):
         ], NOW)
         self.assertEqual(len(run['results']), 1)
         self.assertFalse(run['automaticConclusion'])
+        self.assertEqual(run['resultCard']['reviewState'], 'waiting_for_user')
+        self.assertFalse(run['resultCard']['automaticConclusion'])
         self.assertEqual(updated['lastRunAt'], '2026-08-21T10:00:00+08:00')
+
+    def test_result_card_exposes_gaps_staleness_and_same_upstream(self):
+        item = {
+            'id': 'workflow:test', 'title': '同源核验', 'question': '是否获得独立证据？',
+            'target': {'type': 'stock', 'code': '601138', 'name': '工业富联'},
+            'sources': ['market_quote', 'akshare_macro', 'official_disclosures'],
+        }
+        run = {
+            'id': 'workflow-run:test', 'ranAt': NOW.isoformat(),
+            'results': [
+                {'sourceId': 'market_quote', 'status': 'ok', 'upstream': '东方财富',
+                 'summary': '行情已读取', 'evidence': [{'price': 50}]},
+                {'sourceId': 'akshare_macro', 'status': 'ok', 'upstream': 'AKShare',
+                 'summary': '宏观已读取', 'evidence': [{
+                     'metrics': [{'id': 'lpr', 'status': 'stale', 'asOf': '2026-07-20',
+                                  'source': {'upstream': '东方财富',
+                                             'independentGroup': 'eastmoney'}}],
+                 }]},
+                {'sourceId': 'official_disclosures', 'status': 'unavailable',
+                 'error': 'official source offline', 'evidence': []},
+            ],
+        }
+        card = build_result_card(item, run)
+        self.assertEqual(card['summary']['evidenceItems'], 2)
+        self.assertEqual(card['summary']['staleItems'], 1)
+        self.assertEqual(card['summary']['sameUpstreamGroups'], 1)
+        self.assertEqual(card['sameUpstream'][0]['group'], 'eastmoney')
+        self.assertEqual(card['gaps'][0]['sourceId'], 'official_disclosures')
+        self.assertIn('我的结论：待填写', card['reviewDraft'])
+        self.assertFalse(card['automaticTradingAction'])
+
+    def test_snapshot_backfills_result_card_for_legacy_run_without_mutating_source(self):
+        item = {
+            'id': 'workflow:legacy', 'modelVersion': 'research-workflow-v1',
+            'title': '旧流程', 'question': '旧问题', 'status': 'active',
+            'target': {'type': 'stock', 'code': '601138', 'name': '工业富联'},
+            'sources': ['market_quote'], 'outputs': ['dashboard_card'],
+            'runs': [{'id': 'run:legacy', 'ranAt': NOW.isoformat(), 'results': [{
+                'sourceId': 'market_quote', 'status': 'ok', 'upstream': '腾讯',
+                'summary': '行情已读取', 'evidence': [{'price': 50}],
+            }]}],
+        }
+        snapshot = workflow_snapshot([item], NOW)
+        self.assertIn('resultCard', snapshot['items'][0]['latestRun'])
+        self.assertNotIn('resultCard', item['runs'][0])
 
     def test_snapshot_derives_review_due_without_mutating_status(self):
         preview = preview_workflow(draft(reviewDays=1, reminderEnabled=False), now=NOW)

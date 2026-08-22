@@ -1017,6 +1017,22 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .workflow-run li span { color: var(--text-3); line-height: 1.4; }
 .workflow-run li em { color: var(--up); font-style: normal; }
 .workflow-run li[data-status="unavailable"] em, .workflow-run li[data-status="degraded"] em { color: var(--amber); }
+.workflow-result-card { margin: 10px 0; padding: 10px; border: 1px solid rgba(34,211,238,.2); border-radius: 9px; background: linear-gradient(135deg, rgba(34,211,238,.045), rgba(79,140,255,.035)); }
+.workflow-result-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.workflow-result-head b { color: var(--cyan); font-size: 11px; }
+.workflow-result-head span { color: var(--text-3); font-size: 9px; text-align: right; }
+.workflow-result-metrics { margin-top: 8px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.workflow-result-metrics span { display: grid; place-items: center; gap: 2px; min-height: 44px; border: 1px solid var(--line); border-radius: 7px; color: var(--text-3); font-size: 8.5px; background: rgba(11,18,32,.24); }
+.workflow-result-metrics b { color: var(--text); font-size: 15px; }
+.workflow-lineage-warn { margin-top: 8px; display: grid; gap: 3px; padding: 7px 8px; border-radius: 7px; background: rgba(244,184,64,.07); color: var(--text-3); font-size: 9px; line-height: 1.45; }
+.workflow-lineage-warn b { color: var(--amber); }
+.workflow-gaps { margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--line); }
+.workflow-gaps summary { cursor: pointer; color: var(--amber); font-size: 9px; }
+.workflow-gaps ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 5px; }
+.workflow-gaps li { display: grid; grid-template-columns: 92px 1fr; gap: 7px; color: var(--text-3); font-size: 9px; line-height: 1.45; }
+.workflow-gaps li b { color: var(--text-2); }
+.workflow-result-ok { margin-top: 8px; color: var(--up); font-size: 9px; line-height: 1.5; }
+.workflow-result-card > small { display: block; margin-top: 8px; color: var(--text-3); font-size: 8.5px; line-height: 1.5; }
 
 /* ---------------- 研究假设：创建时事实 + 预设反证 + 到期复盘 ---------------- */
 .hypothesis-lab { position: relative; overflow: hidden; }

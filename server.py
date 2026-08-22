@@ -115,7 +115,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.23.0'
+VERSION = '1.24.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -4129,7 +4129,7 @@ EPAPER_HEIGHT = 480
 EPAPER_FRAME_BYTES = EPAPER_WIDTH * EPAPER_HEIGHT // 8
 DEVICE_DEFAULT_PORT = 8988
 DEVICE_ALERT_TTL_SECONDS = 15 * 60
-DEVICE_MODES = ('focus', 'overview', 'emotion', 'watch', 'hotspot', 'event', 'alert')
+DEVICE_MODES = ('focus', 'overview', 'emotion', 'watch', 'hotspot', 'event', 'research', 'alert')
 DEVICE_REFRESH_POLICIES = ('stable', 'smart', 'fast')
 _device_config_lock = threading.Lock()
 _device_gateway_lock = threading.Lock()
@@ -4421,6 +4421,37 @@ def build_device_state(config=None, demo='', delivery_item=None):
             event_radar = {'enabled': False, 'state': 'error', 'summary': {},
                            'item': None, 'errors': [str(exc)[:120]]}
 
+    research_workflow = {'state': 'empty', 'summary': {}, 'boundary': 'RESEARCH ONLY'}
+    if (preview_mode or cfg.get('mode')) == 'research':
+        try:
+            workflows = workflow_snapshot(profile.get('research_workflows') or [], now_bj())
+            selected = next((row for row in (workflows.get('items') or [])
+                             if isinstance((row.get('latestRun') or {}).get('resultCard'), dict)), None)
+            if selected:
+                latest = selected.get('latestRun') or {}
+                card = latest.get('resultCard') or {}
+                target = card.get('target') or {}
+                research_workflow = {
+                    'state': 'ready',
+                    'workflow_id': str(selected.get('id') or '')[:180],
+                    'run_id': str(latest.get('id') or '')[:180],
+                    'title': str(card.get('title') or selected.get('title') or '')[:120],
+                    'target': {
+                        'code': str(target.get('code') or '')[:20],
+                        'name': str(target.get('name') or '')[:80],
+                    },
+                    'ran_at': str(latest.get('ranAt') or '')[:50],
+                    'effective_status': str(selected.get('effectiveStatus') or '')[:30],
+                    'summary': dict(card.get('summary') or {}),
+                    'review_state': str(card.get('reviewState') or 'waiting_for_user')[:30],
+                    'boundary': 'NO AUTO CONCLUSION',
+                }
+        except Exception as exc:
+            research_workflow = {
+                'state': 'error', 'summary': {}, 'boundary': 'RESEARCH ONLY',
+                'error': str(exc)[:120],
+            }
+
     raw = engine.get('raw') or {}
     state = {
         'schema': 1,
@@ -4468,6 +4499,7 @@ def build_device_state(config=None, demo='', delivery_item=None):
         'hotspots': hotspots,
         'headlines': headlines,
         'event_radar': event_radar,
+        'research_workflow': research_workflow,
         'alert': alert,
         'quality': {
             'tdx_status': tdx.get('status') or 'unavailable',
@@ -4769,6 +4801,51 @@ def render_epaper_frame(state):
             _epd_text(frame, 698, y, str(value if value is not None else '--'), 2)
         _epd_text(frame, 574, 376, 'NOT CAUSAL', 2)
         _epd_text(frame, 574, 402, 'RESEARCH ONLY', 2)
+        return bytes(frame)
+
+    if mode == 'research':
+        workflow = state.get('research_workflow') or {}
+        summary = workflow.get('summary') or {}
+        target = workflow.get('target') or {}
+        _epd_text(frame, 18, 68, 'RESEARCH RESULT', 3)
+        _epd_rect(frame, 18, 106, 520, 316, fill=False)
+        if workflow.get('state') != 'ready':
+            _epd_text(frame, 72, 190, 'WAITING FOR FIRST RUN', 3)
+            _epd_text(frame, 72, 252, 'CREATE IN STRATEGY', 3)
+            _epd_text(frame, 72, 312, 'THEN RUN MANUALLY', 2)
+        else:
+            _epd_text(frame, 36, 128,
+                      'TARGET ' + (target.get('code') or 'CUSTOM'), 3)
+            _epd_text(frame, 36, 174,
+                      'STATUS ' + str(workflow.get('effective_status') or '--').upper()[:14], 2)
+            _epd_text(frame, 36, 214,
+                      'SOURCES ' + str(summary.get('usableSources', 0)) + '/' +
+                      str(summary.get('selectedSources', 0)), 2)
+            _epd_text(frame, 36, 254,
+                      'EVIDENCE ' + str(summary.get('evidenceItems', 0)), 2)
+            _epd_text(frame, 36, 294,
+                      'GAPS ' + str(summary.get('gapCount', 0)), 2)
+            _epd_text(frame, 36, 334,
+                      'STALE ' + str(summary.get('staleItems', 0)), 2)
+            _epd_text(frame, 36, 374,
+                      'SAME UPSTREAM ' + str(summary.get('sameUpstreamGroups', 0)), 2)
+
+        _epd_rect(frame, 556, 70, 226, 352, fill=False)
+        _epd_text(frame, 574, 88, 'REVIEW', 3)
+        metrics = (
+            ('USABLE', summary.get('usableSources')),
+            ('DEGRADED', summary.get('degradedSources')),
+            ('GAPS', summary.get('gapCount')),
+            ('STALE', summary.get('staleItems')),
+            ('SAME SRC', summary.get('sameUpstreamGroups')),
+        )
+        for index, (label, value) in enumerate(metrics):
+            y = 138 + index * 46
+            _epd_text(frame, 574, y, label, 2)
+            _epd_text(frame, 718, y, str(value if value is not None else '--'), 2)
+        _epd_text(frame, 574, 382, 'NO AUTO', 2)
+        _epd_text(frame, 574, 405, 'CONCLUSION', 2)
+        _epd_text(frame, 18, 442, 'RESEARCH ONLY - VERIFY EVIDENCE AND GAPS', 2)
         return bytes(frame)
 
     if mode == 'overview':
@@ -5417,7 +5494,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.23.0'
+    server_version = 'DeepPulse/1.24.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5575,7 +5652,9 @@ class Handler(BaseHTTPRequestHandler):
                            'research_workflows': 1,
                            'research_workflow_preview': 1,
                            'research_workflow_permissions': 1,
+                           'research_result_cards': 1,
                            'epaper_gateway': 1,
+                           'epaper_research_workflow': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
             # 顶层字段兼容桌面宿主，data 字段供统一 Web API 客户端使用。
