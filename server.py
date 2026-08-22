@@ -145,6 +145,18 @@ except Exception:
     AI_PROVIDER_SCHEMA_VERSION = 'research-draft-schema-unavailable'
 
 try:
+    from ai_service_management import (
+        build_status as build_ai_service_status,
+        normalize_preferences as normalize_ai_service_preferences,
+        preview_preferences as preview_ai_service_preferences,
+        validate_plan as validate_ai_service_plan,
+        MODEL_VERSION as AI_SERVICE_MANAGEMENT_MODEL_VERSION)
+except Exception:
+    build_ai_service_status = normalize_ai_service_preferences = None
+    preview_ai_service_preferences = validate_ai_service_plan = None
+    AI_SERVICE_MANAGEMENT_MODEL_VERSION = 'ai-service-management-unavailable'
+
+try:
     from research_suggestions import (build_snapshot as build_research_suggestion_snapshot,
                                       draft_fingerprint as research_suggestion_draft_fingerprint,
                                       mutate_item as mutate_research_suggestion_item,
@@ -200,7 +212,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.41.0'
+VERSION = '1.42.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1524,6 +1536,8 @@ CONFIG_FILE = os.path.join(DATA, 'config.json')
 _ai_provider_config_lock = threading.Lock()
 _ai_provider_test_lock = threading.Lock()
 _ai_provider_tests = {}
+_ai_service_plan_lock = threading.Lock()
+_ai_service_plans = {}
 
 
 def load_config():
@@ -1902,6 +1916,7 @@ PROFILE_OBJECT_LIMITS = {
     'research_cockpit_preferences': 64 * 1024,
     'research_memory_preferences': 128 * 1024,
     'akshare_research_preferences': 16 * 1024,
+    'ai_research_preferences': 16 * 1024,
 }
 
 
@@ -4963,8 +4978,11 @@ def research_workflows_status(current=None):
                    if isinstance(row, dict) and row.get('workflowId')]
     jobs = [dict(row) for row in (data.get('ai_research_jobs') or [])
             if isinstance(row, dict) and row.get('workflowId')]
+    ai_preferences = _ai_service_preferences(data)
     duty_counts = {'active': 0, 'drafts': 0, 'failed': 0, 'queued': 0,
-                   'usedToday': 0, 'tokensToday': 0, 'globalDailyLimit': 3,
+                   'usedToday': 0, 'tokensToday': 0,
+                   'globalDailyLimit': ai_preferences.get('dailyLimit', 3),
+                   'hardDailyLimit': 3, 'paused': ai_preferences.get('paused') is True,
                    'date': now_bj().date().isoformat()}
     for item in result.get('items') or []:
         watch = item.get('watch') if isinstance(item.get('watch'), dict) else {}
@@ -4998,7 +5016,10 @@ def research_workflows_status(current=None):
             'id', 'status', 'createdAt', 'startedAt', 'finishedAt', 'errorCode',
             'trigger', 'triggerKinds', 'evidenceAsOf', 'model', 'usage', 'attempts', 'reviewStatus')}
             for row in workflow_jobs[-6:]]
-        duty_counts['drafts'] += sum(row.get('status') == 'completed_draft' for row in workflow_jobs)
+        duty_counts['drafts'] += sum(
+            row.get('status') == 'completed_draft'
+            and row.get('reviewStatus') not in {'verified', 'staged'}
+            for row in workflow_jobs)
         duty_counts['failed'] += sum(row.get('status') in {'failed_provider', 'interrupted'} for row in workflow_jobs)
         duty_counts['queued'] += sum(row.get('status') in {'queued', 'running'} for row in workflow_jobs)
     counted_states = {'queued', 'running', 'completed_draft', 'failed_provider',
@@ -5024,6 +5045,86 @@ def research_workflows_status(current=None):
         'aiDutyHarnessSessionAllowed': False,
     }
     return result
+
+
+def _ai_service_preferences(data):
+    raw = (data or {}).get('ai_research_preferences') if isinstance(data, dict) else {}
+    if normalize_ai_service_preferences:
+        return normalize_ai_service_preferences(raw)
+    return {'schema': 1, 'paused': False, 'dailyLimit': 3, 'updatedAt': None}
+
+
+def ai_service_management_status(current=None):
+    profile = current if isinstance(current, dict) else load_profile()
+    data = profile.get('data') if isinstance(profile.get('data'), dict) else {}
+    workflows = research_workflows_status(profile)
+    provider = workflows.get('aiDutyProvider') or ai_provider_status()
+    if not build_ai_service_status:
+        return {'modelVersion': AI_SERVICE_MANAGEMENT_MODEL_VERSION,
+                'provider': provider, 'summary': workflows.get('aiDutySummary') or {},
+                'preferences': _ai_service_preferences(data),
+                'profileRevision': int(profile.get('revision') or 0),
+                'error': 'AI 主动服务管理模块不可用'}
+    return build_ai_service_status(provider, workflows, _ai_service_preferences(data),
+                                   int(profile.get('revision') or 0))
+
+
+def preview_ai_service_settings(body):
+    if not preview_ai_service_preferences:
+        raise ValueError('AI 主动服务管理模块不可用')
+    profile = load_profile()
+    data = profile.get('data') if isinstance(profile.get('data'), dict) else {}
+    plan = preview_ai_service_preferences(
+        _ai_service_preferences(data), body if isinstance(body, dict) else {},
+        int(profile.get('revision') or 0), now_bj())
+    if plan.get('ready'):
+        with _ai_service_plan_lock:
+            _ai_service_plans.clear()
+            _ai_service_plans[plan['planId']] = dict(plan)
+    return {'preview': plan, 'status': ai_service_management_status(profile)}
+
+
+def confirm_ai_service_settings(plan_id, expected_revision, confirmations=None):
+    if not validate_ai_service_plan:
+        raise ValueError('AI 主动服务管理模块不可用')
+    with _ai_service_plan_lock:
+        plan = _ai_service_plans.get(str(plan_id or ''))
+    if not plan:
+        raise ValueError('AI 服务调整预览不存在或已经失效，请重新预览')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        revision = int(current.get('revision') or 0)
+        if revision != int(expected_revision or 0):
+            raise ValueError('用户档案已变化，请重新预览 AI 服务设置')
+        preferences = validate_ai_service_plan(
+            plan, plan_id, revision, confirmations, now_bj())
+        preferences['updatedAt'] = now_bj().isoformat(timespec='seconds')
+        data = current['data']
+        data['ai_research_preferences'] = preferences
+
+        # Lowering the limit cancels only not-yet-started work. Pausing also
+        # makes the worker discard any in-flight response at commit time.
+        jobs = [dict(row) for row in (data.get('ai_research_jobs') or [])
+                if isinstance(row, dict)]
+        day = now_bj().date().isoformat()
+        counted = {'running', 'completed_draft', 'failed_provider', 'interrupted',
+                   'discarded_after_revocation', 'dismissed'}
+        used = sum(1 for row in jobs if str(row.get('createdAt') or '')[:10] == day
+                   and row.get('status') in counted)
+        remaining = max(0, int(preferences.get('dailyLimit') or 0) - used)
+        for row in sorted((job for job in jobs if job.get('status') == 'queued'),
+                          key=lambda job: str(job.get('createdAt') or '')):
+            if not preferences.get('paused') and remaining > 0:
+                remaining -= 1
+                continue
+            row.update(status='cancelled', errorCode='global_ai_paused',
+                       finishedAt=now_bj().isoformat(timespec='seconds'))
+        data['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
+        saved = _write_profile_unlocked(current)
+    with _ai_service_plan_lock:
+        _ai_service_plans.pop(str(plan_id or ''), None)
+    _ai_research_wake.set()
+    return {'status': ai_service_management_status(saved), 'profile': saved}
 
 
 def research_suggestions_status(current=None):
@@ -5259,7 +5360,15 @@ def _queue_ai_research_job_unlocked(current, workflow, run, change, current_time
         return None, 'delegation_inactive'
     jobs = [dict(row) for row in (data.get('ai_research_jobs') or [])
             if isinstance(row, dict) and row.get('id')]
-    job, reason = create_ai_research_job(delegations[index], workflow, run, change, jobs, current_time)
+    preferences = _ai_service_preferences(data)
+    if preferences.get('paused'):
+        delegations[index]['lastBlockedReason'] = 'global_ai_paused'
+        delegations[index]['lastBlockedAt'] = current_time.isoformat(timespec='seconds')
+        data['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
+        return None, 'global_ai_paused'
+    job, reason = create_ai_research_job(
+        delegations[index], workflow, run, change, jobs, current_time,
+        preferences.get('dailyLimit', 3))
     if job:
         jobs.append(job)
         delegations[index]['lastJobId'] = job['id']
@@ -5293,9 +5402,11 @@ def process_ai_research_jobs_once(now=None, provider=None):
     caller = provider or ai_research_llm
     lease = secrets.token_hex(12)
     claimed = None
+    jobs_changed = False
     with _profile_lock:
         current = _read_profile_unlocked()
         data = current['data']
+        service_preferences = _ai_service_preferences(data)
         workflows = [row for row in (data.get('research_workflows') or []) if isinstance(row, dict)]
         delegations = [dict(row) for row in (data.get('ai_research_delegations') or []) if isinstance(row, dict)]
         jobs = [dict(row) for row in (data.get('ai_research_jobs') or []) if isinstance(row, dict)]
@@ -5305,18 +5416,26 @@ def process_ai_research_jobs_once(now=None, provider=None):
             workflow = next((row for row in workflows if str(row.get('id') or '') == str(job.get('workflowId') or '')), None)
             delegation = next((row for row in delegations if str(row.get('id') or '') == str(job.get('delegationId') or '')), None)
             provider_state = ai_research_provider_status(load_config()) if ai_research_provider_status else {'ready': False}
+            if service_preferences.get('paused') or int(service_preferences.get('dailyLimit') or 0) <= 0:
+                job.update(status='cancelled', finishedAt=current_time.isoformat(timespec='seconds'),
+                           errorCode='global_ai_paused')
+                jobs[index] = job
+                jobs_changed = True
+                continue
             if (not workflow or not delegation or not provider_state.get('ready') or
                     ai_research_delegation_state(delegation, workflow, current_time, provider_state) != 'active'):
                 job.update(status='cancelled', finishedAt=current_time.isoformat(timespec='seconds'),
                            errorCode='authorization_inactive')
                 jobs[index] = job
+                jobs_changed = True
                 continue
             job.update(status='running', startedAt=current_time.isoformat(timespec='seconds'),
                        attempts=1, leaseToken=lease, delegationRevision=delegation.get('revision'))
             jobs[index] = job
             claimed = dict(job)
+            jobs_changed = True
             break
-        if claimed or any(row.get('status') == 'cancelled' and not row.get('_saved') for row in jobs):
+        if jobs_changed:
             data['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
             _write_profile_unlocked(current)
     if not claimed:
@@ -5336,6 +5455,7 @@ def process_ai_research_jobs_once(now=None, provider=None):
     with _profile_lock:
         current = _read_profile_unlocked()
         data = current['data']
+        service_preferences = _ai_service_preferences(data)
         jobs = [dict(row) for row in (data.get('ai_research_jobs') or []) if isinstance(row, dict)]
         index = next((i for i, row in enumerate(jobs)
                       if row.get('id') == claimed.get('id') and row.get('leaseToken') == lease), -1)
@@ -5346,14 +5466,16 @@ def process_ai_research_jobs_once(now=None, provider=None):
         workflow = next((row for row in workflows if str(row.get('id') or '') == str(claimed.get('workflowId') or '')), None)
         delegation = next((row for row in delegations if str(row.get('id') or '') == str(claimed.get('delegationId') or '')), None)
         provider_state = ai_research_provider_status(load_config()) if ai_research_provider_status else {'ready': False}
-        active = (workflow and delegation and provider_state.get('ready')
+        active = (not service_preferences.get('paused') and workflow and delegation and provider_state.get('ready')
                   and delegation.get('revision') == claimed.get('delegationRevision')
                   and ai_research_delegation_state(delegation, workflow, current_time, provider_state) == 'active')
         job = jobs[index]
         job.pop('leaseToken', None)
         job['finishedAt'] = current_time.isoformat(timespec='seconds')
         if not active:
-            job.update(status='discarded_after_revocation', errorCode='authorization_changed')
+            job.update(status='discarded_after_revocation',
+                       errorCode=('global_ai_paused' if service_preferences.get('paused')
+                                  else 'authorization_changed'))
         elif error_code:
             job.update(status='failed_provider', errorCode=error_code)
         else:
@@ -8007,7 +8129,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.41.0'
+    server_version = 'DeepPulse/1.42.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -8192,6 +8314,9 @@ class Handler(BaseHTTPRequestHandler):
                                       'ai_provider_secret_isolation': 1,
                                       'ai_provider_service_authorization': 1,
                                       'ai_draft_review_receipts': 1,
+                                      'ai_service_management': 1,
+                                      'ai_global_budget_gate': 1,
+                                      'ai_onboarding_journey': 1,
                             'service_management_center': 1,
                             'proactive_target': 1,
                             'disposition_receipts': 1,
@@ -8300,6 +8425,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': research_memory_status()})
         elif path == '/api/research-workflows':
             self.send_json({'ok': True, 'data': research_workflows_status()})
+        elif path == '/api/ai-duty/status':
+            self.send_json({'ok': True, 'data': ai_service_management_status()})
         elif path == '/api/research-suggestions':
             self.send_json({'ok': True, 'data': research_suggestions_status()})
         elif path == '/api/device/config':
@@ -8473,6 +8600,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'data': set_ai_chat_service(
                     body.get('enabled') is True, body.get('expectedRevision'),
                     body.get('confirmed') is True)})
+            elif u.path == '/api/ai-duty/settings/preview':
+                body = self.read_json_body(4096)
+                self.send_json({'ok': True, 'data': preview_ai_service_settings(body)})
+            elif u.path == '/api/ai-duty/settings/confirm':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': confirm_ai_service_settings(
+                    body.get('planId'), body.get('expectedRevision'),
+                    body.get('confirmations') or [])})
             elif u.path == '/api/weights':
                 body = self.read_json_body()
                 saved = save_weights(body.get('weights') or {}) if compute_emotion else {}

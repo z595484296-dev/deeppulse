@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.41.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.41.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.41.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.41.0';
+import { api } from '../api.js?v=1.42.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.42.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.42.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.42.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -1447,7 +1447,7 @@ function renderResearchWorkflows(container) {
       ? `<div><b>后台 AI：${esc(provider.model || 'DeepSeek')} 已验证</b><p>${esc(provider.host || '--')} · ${provider.verifiedAt ? `验证于 ${esc(formatHypothesisTime(provider.verifiedAt))}` : '已通过合成结构验证'} · 每条流程仍需单独授权</p></div><button class="btn sm" data-open-ai-provider>管理连接</button>`
       : `<div><b>后台 AI：${provider.configured ? '已保存但尚未验证' : '未连接独立 DeepSeek API'}</b><p>${esc(provider.reason || '当前 Harness 会话不会用于关闭页面后的 AI 值班。')}</p></div><button class="btn sm primary" data-open-ai-provider>${provider.configured ? '完成验证' : '连接并验证'}</button>`;
   }
-  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · AI 值班 <b>${dutySummary.active || 0}</b> · 今日调用 <b>${dutySummary.usedToday || 0}/${dutySummary.globalDailyLimit || 3}</b>${dutySummary.tokensToday ? ` · ${Number(dutySummary.tokensToday)} tokens` : ''} · 待核验草稿 <b>${dutySummary.drafts || 0}</b>`;
+  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · AI 值班 <b>${dutySummary.active || 0}</b> · 今日调用 <b>${dutySummary.usedToday || 0}/${dutySummary.globalDailyLimit ?? 3}</b>${dutySummary.paused ? ' · <span class="badge amber">全局已暂停</span>' : ''}${dutySummary.tokensToday ? ` · ${Number(dutySummary.tokensToday)} tokens` : ''} · 待核验草稿 <b>${dutySummary.drafts || 0}</b>`;
   const items = researchWorkflowData.items || [];
   if (!items.length) {
     root.innerHTML = '<div class="empty">还没有研究流程。可以从一个具体问题开始，先预览再创建。</div>';
@@ -1533,7 +1533,7 @@ function renderResearchWorkflows(container) {
     const dutyLabel = dutyLabels[dutyState] || dutyLabels.invalid;
     const providerReady = researchWorkflowData.aiDutyProvider?.ready === true;
     const jobLabels = { queued: '已排队', running: '正在整理', completed_draft: '草稿待核验', failed_provider: '调用失败', interrupted: '服务重启，未自动重试', discarded_after_revocation: '授权变化，结果已丢弃', cancelled: '授权已失效', dismissed: '草稿已不采用' };
-    const jobReceipts = (item.aiDutyJobs || []).length ? `<div class="workflow-ai-job-receipts"><b>最近调用回执</b>${(item.aiDutyJobs || []).slice().reverse().map(row => `<div data-status="${esc(row.status || '')}"><span>${esc(jobLabels[row.status] || row.status || '未知')}</span><time>${esc(formatHypothesisTime(row.finishedAt || row.startedAt || row.createdAt))}</time><em>${row.usage?.total_tokens ? `${Number(row.usage.total_tokens)} tokens` : row.status === 'completed_draft' ? '用量未知' : ''}</em>${row.errorCode ? `<small>${esc({ provider_failed: '提供方调用失败，可检查连接后再次明确试跑', invalid_output: '返回结构不兼容，请重新验证提供方', service_restarted: '服务重启后未自动重试，避免重复计费', authorization_changed: '授权变化后正文未保存', authorization_inactive: '授权当前不可用' }[row.errorCode] || '本次未生成草稿')}</small>` : ''}</div>`).join('')}</div>` : '';
+    const jobReceipts = (item.aiDutyJobs || []).length ? `<div class="workflow-ai-job-receipts"><b>最近调用回执</b>${(item.aiDutyJobs || []).slice().reverse().map(row => `<div data-status="${esc(row.status || '')}"><span>${esc(jobLabels[row.status] || row.status || '未知')}</span><time>${esc(formatHypothesisTime(row.finishedAt || row.startedAt || row.createdAt))}</time><em>${row.usage?.total_tokens ? `${Number(row.usage.total_tokens)} tokens` : row.status === 'completed_draft' ? '用量未知' : ''}</em>${row.errorCode ? `<small>${esc({ provider_failed: '提供方调用失败，可检查连接后再次明确试跑', invalid_output: '返回结构不兼容，请重新验证提供方', service_restarted: '服务重启后未自动重试，避免重复计费', authorization_changed: '授权变化后正文未保存', authorization_inactive: '授权当前不可用', global_ai_paused: '全局 AI 调用已暂停，未发送或未保存本次正文' }[row.errorCode] || '本次未生成草稿')}</small>` : ''}</div>`).join('')}</div>` : '';
     const dutyActions = dutyState === 'active'
       ? `<button class="btn sm" data-wf-action="ai_duty_test" data-wf-id="${esc(item.id)}">用最近公告试跑一次（占今日 1 次）</button><button class="btn sm" data-wf-action="ai_duty_pause" data-wf-id="${esc(item.id)}">暂停 AI 值班</button><button class="btn sm ghost" data-wf-action="ai_duty_revoke" data-wf-id="${esc(item.id)}">撤销 AI 值班</button>`
       : dutyState === 'paused'
@@ -1542,7 +1542,7 @@ function renderResearchWorkflows(container) {
     const dutyCard = item.kind !== 'template' && watchState !== 'off' ? `<section class="workflow-ai-duty" data-state="${esc(dutyState)}" aria-live="polite">
       <div class="workflow-watch-head"><span class="badge ${dutyLabel[1]}">${dutyLabel[0]}</span><span>${duty.expiresAt ? `至 ${esc(formatHypothesisTime(duty.expiresAt))}` : (providerReady ? '默认关闭，需独立授权' : '独立版 DeepSeek API 未配置')}</span></div>
       <p>${esc(duty.boundary || '只在新增官方披露后生成未核验草稿；首轮基线、无变化和来源故障均不调用。')}</p>
-      <div class="workflow-ai-budget">今日这条流程最多 1 次 · 全局 ${Number(dutySummary.usedToday || 0)}/${Number(dutySummary.globalDailyLimit || 3)} · 北京时间 00:00 重置</div>
+      <div class="workflow-ai-budget">今日这条流程最多 1 次 · 全局 ${Number(dutySummary.usedToday || 0)}/${Number(dutySummary.globalDailyLimit ?? 3)}${dutySummary.paused ? ' · 新调用已暂停' : ''} · 北京时间 00:00 重置</div>
       ${duty.lastBlockedReason ? `<small>最近未运行：${esc(duty.lastBlockedReason)}</small>` : ''}
       ${jobReceipts}
       <div class="workflow-watch-actions">${dutyActions}</div>

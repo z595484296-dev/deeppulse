@@ -47,6 +47,7 @@ $runtimeFiles = @(
     'research_watch.py',
     'ai_research_duty.py',
     'ai_provider.py',
+    'ai_service_management.py',
     'research_suggestions.py',
     'akshare_research.py',
     'hypothesis_evidence.py',

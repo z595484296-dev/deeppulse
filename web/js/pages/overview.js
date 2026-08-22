@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.41.0';
-import { state, bus, syncProfile } from '../store.js?v=1.41.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.41.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.41.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.41.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.41.0';
-import { buildServiceCenterStatus } from '../service-center.js?v=1.41.0';
+import { api } from '../api.js?v=1.42.0';
+import { state, bus, syncProfile } from '../store.js?v=1.42.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.42.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.42.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.42.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.42.0';
+import { buildServiceCenterStatus } from '../service-center.js?v=1.42.0';
 
 let built = false;
 let sparksAt = 0;
@@ -18,6 +18,8 @@ let routineEffectiveness = null;
 let observationStatus = null;
 let observationDraft = null;
 let observationPreview = null;
+let aiServiceStatus = null;
+let aiServicePlan = null;
 
 const INDEX_CODES = [
   { code: '000001', name: '上证指数' },
@@ -97,6 +99,31 @@ export function init(container) {
           <button class="btn sm ghost" id="ov-service-close" aria-label="关闭主动服务管理中心">关闭</button>
         </header>
         <div class="service-center-content">
+    <section class="card ai-service-card" id="ov-ai-service" aria-labelledby="ov-ai-service-title" data-state="loading">
+      <div class="ai-service-head">
+        <div>
+          <div class="proactive-kicker">AI 主动服务 <span class="tag">独立授权 · 限额 · 可暂停</span></div>
+          <h2 id="ov-ai-service-title">让 DeepSeek 在实质变化后先整理一份待核验草稿</h2>
+          <p id="ov-ai-service-state">正在读取独立 API、研究流程和今日调用状态…</p>
+        </div>
+        <button class="btn sm" id="ov-ai-provider-manage">管理独立 API</button>
+      </div>
+      <div class="ai-service-metrics" id="ov-ai-service-metrics"></div>
+      <section class="ai-onboarding" aria-labelledby="ov-ai-onboarding-title">
+        <div><b id="ov-ai-onboarding-title">第一次获得 AI 值班草稿</b><span id="ov-ai-onboarding-progress">正在检查步骤</span></div>
+        <ol id="ov-ai-onboarding-steps"></ol>
+        <button class="btn sm primary" id="ov-ai-onboarding-next">查看下一步</button>
+      </section>
+      <div class="ai-service-controls">
+        <label><span>每日全局调用上限</span><select id="ov-ai-daily-limit"><option value="0">0（停止新调用）</option><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次（硬上限）</option></select></label>
+        <label class="ai-global-pause"><input type="checkbox" id="ov-ai-paused"><span><b>暂停所有新的 AI 调用</b><small>研究值守和原始变化提醒仍继续</small></span></label>
+        <button class="btn sm" id="ov-ai-settings-preview">预览调整</button>
+      </div>
+      <div class="ai-service-plan" id="ov-ai-service-plan" hidden></div>
+      <div class="ai-service-jobs" id="ov-ai-service-jobs"></div>
+      <p class="ai-service-boundary" id="ov-ai-service-boundary">AI 草稿不会自动保存为研究结论、写入记忆或触发交易。</p>
+    </section>
+
     <section class="card routine-card" id="ov-routine" aria-labelledby="ov-routine-title">
       <div class="routine-main">
         <div class="routine-heading">
@@ -401,6 +428,57 @@ export function init(container) {
   serviceDialog.addEventListener('click', e => {
     if (e.target === serviceDialog) closeServiceCenter();
   });
+  container.querySelector('#ov-ai-provider-manage').addEventListener('click', e => {
+    document.dispatchEvent(new CustomEvent('ai-provider-open', { detail: { trigger: e.currentTarget } }));
+  });
+  document.addEventListener('ai-provider-status', () => refreshAiService(container));
+  container.querySelector('#ov-ai-onboarding-next').addEventListener('click', () => {
+    const next = aiServiceStatus?.onboarding?.next || {};
+    if (next.action === 'open_provider') {
+      document.dispatchEvent(new CustomEvent('ai-provider-open', {
+        detail: { trigger: container.querySelector('#ov-ai-onboarding-next') },
+      }));
+      return;
+    }
+    closeServiceCenter();
+    document.dispatchEvent(new CustomEvent('nav', {
+      detail: { page: next.page || 'strategy', target: { view: next.action || 'open_workflow' } },
+    }));
+  });
+  container.querySelector('#ov-ai-settings-preview').addEventListener('click', async e => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.previewAiDutySettings({
+        dailyLimit: Number(container.querySelector('#ov-ai-daily-limit').value),
+        paused: container.querySelector('#ov-ai-paused').checked,
+      });
+      aiServicePlan = result.preview;
+      renderAiServicePlan(container);
+      if (!aiServicePlan?.ready) toast('AI 主动服务设置没有变化');
+    } catch (error) { toast(error.message || '无法预览 AI 主动服务调整', 'err'); }
+    finally { button.disabled = false; }
+  });
+  container.querySelector('#ov-ai-service-plan').addEventListener('click', async e => {
+    if (e.target.closest('[data-ai-service-cancel]')) {
+      aiServicePlan = null; renderAiServicePlan(container); return;
+    }
+    const confirm = e.target.closest('[data-ai-service-confirm]');
+    if (!confirm || !aiServicePlan?.ready) return;
+    const checks = [...container.querySelectorAll('[data-ai-service-confirmation]:checked')].map(row => row.value);
+    if (checks.length !== (aiServicePlan.confirmations || []).length) {
+      toast('请先确认 AI 调用预算与暂停边界'); return;
+    }
+    confirm.disabled = true;
+    try {
+      const result = await api.confirmAiDutySettings(
+        aiServicePlan.planId, aiServicePlan.profileRevision, [...checks, 'confirm:ai-service']);
+      aiServiceStatus = result.status; aiServicePlan = null;
+      renderAiService(container); renderAiServicePlan(container);
+      await syncProfile();
+      toast('AI 主动服务全局设置已更新，可随时再次调整', 'ok');
+    } catch (error) { confirm.disabled = false; toast(error.message || 'AI 主动服务调整未生效', 'err'); }
+  });
 
   const runRoutineTrial = async (kind, trigger) => {
     if (!kind) return;
@@ -637,6 +715,7 @@ export function init(container) {
   refreshRoutine(container);
   refreshRoutineEffectiveness(container);
   refreshObservationRules(container);
+  refreshAiService(container);
 
   container.querySelector('#ov-cockpit-refresh').addEventListener('click', async e => {
     e.currentTarget.disabled = true;
@@ -866,10 +945,73 @@ function eventTime(value) {
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
+function renderAiServicePlan(container) {
+  const root = container.querySelector('#ov-ai-service-plan');
+  if (!root) return;
+  const plan = aiServicePlan;
+  root.hidden = !plan;
+  if (!plan) { root.innerHTML = ''; return; }
+  if (!plan.ready) {
+    root.innerHTML = '<p>当前设置没有变化，不会写入用户档案或影响后台任务。</p>';
+    return;
+  }
+  root.innerHTML = `<div class="ai-service-plan-head"><b>确认前预览</b><span>${esc(eventTime(plan.expiresAt))} 前有效</span></div>
+    <ul>${(plan.changes || []).map(row => `<li>${esc(row.label)}</li>`).join('')}</ul>
+    <div class="ai-service-confirmations">${(plan.confirmations || []).map(row => `<label><input type="checkbox" value="${esc(row.id)}" data-ai-service-confirmation><span>${esc(row.label)}</span></label>`).join('')}</div>
+    <div class="ai-service-plan-actions"><button class="btn sm primary" data-ai-service-confirm>确认调整</button><button class="btn sm ghost" data-ai-service-cancel>放弃</button></div>`;
+}
+
+function renderAiService(container) {
+  const root = container.querySelector('#ov-ai-service');
+  if (!root || !aiServiceStatus) return;
+  const value = aiServiceStatus;
+  const provider = value.provider || {};
+  const summary = value.summary || {};
+  const preferences = value.preferences || {};
+  const onboarding = value.onboarding || {};
+  root.dataset.state = preferences.paused ? 'paused' : provider.ready ? 'ready' : 'setup';
+  root.querySelector('#ov-ai-service-state').textContent = provider.ready
+    ? `${provider.model || 'DeepSeek'} 已验证 · ${preferences.paused ? '新的 AI 调用已暂停' : '每条流程仍需单独授权'}`
+    : `${provider.configured ? '独立 API 已保存但尚未验证' : '尚未连接独立 DeepSeek API'} · 本地智脑与 Harness 会话不会被后台冒用`;
+  root.querySelector('#ov-ai-provider-manage').textContent = provider.ready ? '管理独立 API' : '连接并验证';
+  root.querySelector('#ov-ai-service-metrics').innerHTML = `
+    <div><b>${Number(summary.active || 0)}</b><span>AI 值班流程</span></div>
+    <div><b>${Number(summary.usedToday || 0)} / ${Number(summary.userDailyLimit ?? preferences.dailyLimit ?? 3)}</b><span>今日调用</span></div>
+    <div><b>${Number(summary.tokensToday || 0)}</b><span>今日 tokens</span></div>
+    <div><b>${Number(summary.drafts || 0)}</b><span>待核验草稿</span></div>`;
+  root.querySelector('#ov-ai-onboarding-progress').textContent = `${Number(onboarding.completed || 0)} / ${Number(onboarding.total || 6)} 已完成`;
+  root.querySelector('#ov-ai-onboarding-steps').innerHTML = (onboarding.steps || []).map(row => `
+    <li data-done="${row.done ? 'true' : 'false'}"><span>${row.done ? '✓' : '○'}</span>${esc(row.label)}</li>`).join('');
+  root.querySelector('#ov-ai-onboarding-next').textContent = onboarding.next?.label || '查看下一步';
+  root.querySelector('#ov-ai-daily-limit').value = String(preferences.dailyLimit ?? 3);
+  root.querySelector('#ov-ai-paused').checked = preferences.paused === true;
+  const labels = { queued: '等待调用', running: '正在整理', completed_draft: '草稿待核验',
+    failed_provider: '调用失败', interrupted: '服务重启后中断', cancelled: '调用前已取消',
+    discarded_after_revocation: '授权变化后已丢弃', dismissed: '已不采用' };
+  const jobs = value.recentJobs || [];
+  root.querySelector('#ov-ai-service-jobs').innerHTML = jobs.length ? `<b>最近调用回执</b>${jobs.slice(0, 4).map(job => `
+    <div data-status="${esc(job.status || '')}"><span>${esc(job.workflowTitle || '研究流程')}</span><em>${esc(labels[job.status] || job.status || '未知')}</em><time>${esc(eventTime(job.finishedAt || job.startedAt || job.createdAt))}</time>${job.usage?.total_tokens ? `<small>${Number(job.usage.total_tokens)} tokens</small>` : ''}</div>`).join('')}` : '<span class="muted">还没有 AI 值班调用；完成上方步骤后，回执会出现在这里。</span>';
+  root.querySelector('#ov-ai-service-boundary').textContent = value.boundary || 'AI 草稿不会自动保存为研究结论或触发交易。';
+  renderServiceCenterStatus(container, state.routine, state.eventImpact);
+}
+
+async function refreshAiService(container) {
+  try {
+    aiServiceStatus = await api.aiDutyStatus();
+    renderAiService(container);
+  } catch (error) {
+    const root = container.querySelector('#ov-ai-service');
+    if (root) {
+      root.dataset.state = 'error';
+      root.querySelector('#ov-ai-service-state').textContent = 'AI 主动服务状态暂时无法读取，请确认本机 DeepPulse 服务正在运行。';
+    }
+  }
+}
+
 function renderServiceCenterStatus(container, routine = state.routine, eventImpact = state.eventImpact) {
   const root = container.querySelector('#ov-service-status');
   if (!root) return;
-  const status = buildServiceCenterStatus(routine, eventImpact, observationStatus);
+  const status = buildServiceCenterStatus(routine, eventImpact, observationStatus, aiServiceStatus);
   root.dataset.state = status.state;
   root.querySelector('#ov-service-status-state').textContent = status.stateLabel;
   root.querySelector('#ov-service-status-summary').textContent = status.summary;

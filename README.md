@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.41.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.42.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### AI 主动服务控制台（v1.42）
+
+- AI provider、研究值班、每日额度、全局暂停和最近调用回执统一进入现有“主动服务管理中心”，总览状态条会把真正运行中的 AI 值班计入主动服务，不再让关键设置散落在流程深处。
+- 首次使用按“连接 provider → 创建研究流程 → 手动建立基线 → 开启研究值守 → 单独授权 AI → 核对首份草稿”逐步推进；每一步都需要用户点击，不会一键连开来源、值守或云端调用。
+- 用户可把全局日额度设为 0–3 次，并用“预览调整 → 明确确认”暂停全部新调用。暂停会取消尚未发出的任务并丢弃暂停后返回的在途正文，但普通研究值守和原始变化提醒继续工作。
+- 管理中心展示今日已用/可用次数、待核验草稿、成功与失败状态、token 用量和最近回执；模型输出仍是“未核验、不计入证据”的草稿，不自动保存复盘、改结论或执行交易。
 
 ### AI 可信接入与首用闭环（v1.41）
 

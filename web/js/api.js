@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.41.0';
+const MIN_VERSION = '1.42.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -127,7 +127,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.41.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.42.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -256,6 +256,10 @@ export const api = {
   mutateResearchMemory: (action, payload = {}) => post('/api/research-memory', { action, ...payload }, 10000),
   researchWorkflows: () => request('/api/research-workflows', 10000),
   mutateResearchWorkflow: (action, payload = {}) => post('/api/research-workflows', { action, ...payload }, 90000),
+  aiDutyStatus: () => request('/api/ai-duty/status', 10000),
+  previewAiDutySettings: (preferences) => post('/api/ai-duty/settings/preview', preferences, 10000),
+  confirmAiDutySettings: (planId, expectedRevision, confirmations) => post(
+    '/api/ai-duty/settings/confirm', { planId, expectedRevision, confirmations }, 10000),
   researchSuggestions: () => request('/api/research-suggestions', 10000),
   mutateResearchSuggestion: (action, payload = {}) => post('/api/research-suggestions', { action, ...payload }, 10000),
   deviceConfig: () => request('/api/device/config', 10000),

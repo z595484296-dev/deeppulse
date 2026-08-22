@@ -758,6 +758,18 @@ internal sealed class HarnessForm : Form
                 || aiDraftReviewReceipts.ValueKind != JsonValueKind.Number
                 || !aiDraftReviewReceipts.TryGetInt32(out var aiDraftReviewReceiptsVersion)
                 || aiDraftReviewReceiptsVersion != 1
+                || !capabilities.TryGetProperty("ai_service_management", out var aiServiceManagement)
+                || aiServiceManagement.ValueKind != JsonValueKind.Number
+                || !aiServiceManagement.TryGetInt32(out var aiServiceManagementVersion)
+                || aiServiceManagementVersion != 1
+                || !capabilities.TryGetProperty("ai_global_budget_gate", out var aiGlobalBudgetGate)
+                || aiGlobalBudgetGate.ValueKind != JsonValueKind.Number
+                || !aiGlobalBudgetGate.TryGetInt32(out var aiGlobalBudgetGateVersion)
+                || aiGlobalBudgetGateVersion != 1
+                || !capabilities.TryGetProperty("ai_onboarding_journey", out var aiOnboardingJourney)
+                || aiOnboardingJourney.ValueKind != JsonValueKind.Number
+                || !aiOnboardingJourney.TryGetInt32(out var aiOnboardingJourneyVersion)
+                || aiOnboardingJourneyVersion != 1
                 || !capabilities.TryGetProperty("research_suggestion_inbox", out var researchSuggestionInbox)
                 || researchSuggestionInbox.ValueKind != JsonValueKind.Number
                 || !researchSuggestionInbox.TryGetInt32(out var researchSuggestionInboxVersion)
@@ -846,7 +858,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.41.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.42.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

@@ -22,7 +22,7 @@ function nextLabel(next) {
   return `下一次：${day} ${time}${text(next.label) ? ` · ${text(next.label)}` : ''}`;
 }
 
-export function buildServiceCenterStatus(routineValue, eventValue, observationValue) {
+export function buildServiceCenterStatus(routineValue, eventValue, observationValue, aiValue) {
   const routine = routineValue || {};
   const routineConfig = routine.config || {};
   const tasks = routineConfig.tasks || {};
@@ -33,8 +33,13 @@ export function buildServiceCenterStatus(routineValue, eventValue, observationVa
   const eventConfig = event.config || {};
   const eventEnabled = eventConfig.enabled === true;
   const observationCount = Number(observationValue?.activeCount || 0);
+  const aiSummary = aiValue?.summary || {};
+  const aiProvider = aiValue?.provider || {};
+  const aiPreferences = aiValue?.preferences || {};
+  const aiActive = Number(aiSummary.active || 0);
   const enabledItems = [...activeTasks, ...(eventEnabled ? ['事件影响雷达'] : []),
-    ...(observationCount ? [`${observationCount} 条观察规则`] : [])];
+    ...(observationCount ? [`${observationCount} 条观察规则`] : []),
+    ...(aiActive ? [`${aiActive} 条 AI 值班`] : [])];
   const routineState = text(routine.runtime && routine.runtime.state) || 'disabled';
   const eventState = text(event.state || event.runtime && event.runtime.state)
     || (eventEnabled ? 'starting' : 'disabled');
@@ -44,14 +49,16 @@ export function buildServiceCenterStatus(routineValue, eventValue, observationVa
   const warning = (routineAuthorized && WARNING_STATES.has(routineState))
     || (eventEnabled && WARNING_STATES.has(eventState));
   const paused = routineAuthorized && routineState === 'paused';
+  const aiPaused = aiActive > 0 && aiPreferences.paused === true;
+  const aiIssue = aiActive > 0 && aiProvider.ready !== true;
 
   let state = enabledItems.length ? 'active' : 'idle';
   let stateLabel = enabledItems.length ? '运行中' : '未开启';
   let alert = '';
-  if (paused && enabledItems.length) {
+  if ((paused || aiPaused) && enabledItems.length) {
     state = 'paused';
     stateLabel = '已暂停';
-    alert = '日程已暂停到明早';
+    alert = aiPaused ? '新的 AI 调用已全局暂停' : '日程已暂停到明早';
   }
   if (warning) {
     state = 'warning';
@@ -62,6 +69,11 @@ export function buildServiceCenterStatus(routineValue, eventValue, observationVa
     state = 'error';
     stateLabel = '需要处理';
     alert = '主动服务连接或来源异常';
+  }
+  if (aiIssue) {
+    state = 'error';
+    stateLabel = '需要处理';
+    alert = 'AI 值班已授权，但独立 API 尚未就绪';
   }
 
   const routineDelivery = routineConfig.delivery === 'center_only' ? ' · 日程仅进中心' : '';

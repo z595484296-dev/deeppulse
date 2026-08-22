@@ -225,7 +225,8 @@ def daily_usage(jobs, workflow_id, now=None):
     return {'date': day, 'workflow': per_workflow, 'global': global_count}
 
 
-def create_job(delegation, workflow, run, change, existing_jobs=None, now=None):
+def create_job(delegation, workflow, run, change, existing_jobs=None, now=None,
+               global_limit=GLOBAL_RUNS_PER_DAY):
     trigger = eligible_trigger(change)
     if not trigger:
         return None, 'ineligible_change'
@@ -242,7 +243,11 @@ def create_job(delegation, workflow, run, change, existing_jobs=None, now=None):
     usage = daily_usage(rows, str(workflow.get('id') or ''), now)
     if usage['workflow'] >= int(delegation.get('maxRunsPerDay') or 1):
         return None, 'workflow_budget'
-    if usage['global'] >= GLOBAL_RUNS_PER_DAY:
+    try:
+        effective_global_limit = max(0, min(GLOBAL_RUNS_PER_DAY, int(global_limit)))
+    except (TypeError, ValueError):
+        effective_global_limit = GLOBAL_RUNS_PER_DAY
+    if usage['global'] >= effective_global_limit:
         return None, 'global_budget'
     source_ids = set(trigger['sourceIds'])
     frozen = []
