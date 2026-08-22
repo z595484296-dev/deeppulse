@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.38.0';
+const MIN_VERSION = '1.39.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -54,8 +54,11 @@ async function probeBase(base, signal) {
       && capabilities.chat_answer_freshness === 1
       && capabilities.chat_action_plan === 1
       && capabilities.chat_action_receipts === 1
-      && capabilities.background_monitor === 1
-      && capabilities.market_routine === 1
+        && capabilities.background_monitor === 1
+        && capabilities.market_routine === 1
+        && capabilities.routine_trial === 1
+        && capabilities.routine_trial_confirm === 1
+        && capabilities.routine_authorization_receipts === 1
       && capabilities.akshare_enrichment === 1
       && capabilities.akshare_research_snapshot === 1
       && capabilities.akshare_research_packs === 1
@@ -121,7 +124,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.38.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.39.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -222,6 +225,9 @@ export const api = {
     '/api/observation-rules/action', { ruleId, action, fingerprint }, action === 'check_now' ? 90000 : 10000),
   routineStatus: () => request('/api/routine/status', 5000),
   saveRoutineConfig: (config) => post('/api/routine/config', { config }, 5000),
+  previewRoutineTrial: (kind) => post('/api/routine/trial', { kind }, 90000),
+  confirmRoutineTrial: (trialId, expectedRevision) => post(
+    '/api/routine/trial/confirm', { trialId, expectedRevision, confirmed: true }, 10000),
   previewServicePlan: (text) => post('/api/service-plan/preview', { text }, 5000),
   applyServicePlan: (draft) => post('/api/service-plan/apply', { draft, confirmed: true }, 5000),
   mutateRoutine: (action) => post('/api/routine/action', { action }, 5000),

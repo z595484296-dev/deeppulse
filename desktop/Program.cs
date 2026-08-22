@@ -658,6 +658,18 @@ internal sealed class HarnessForm : Form
                 || routineEffectUndo.ValueKind != JsonValueKind.Number
                 || !routineEffectUndo.TryGetInt32(out var routineEffectUndoVersion)
                 || routineEffectUndoVersion != 1
+                || !capabilities.TryGetProperty("routine_trial", out var routineTrial)
+                || routineTrial.ValueKind != JsonValueKind.Number
+                || !routineTrial.TryGetInt32(out var routineTrialVersion)
+                || routineTrialVersion != 1
+                || !capabilities.TryGetProperty("routine_trial_confirm", out var routineTrialConfirm)
+                || routineTrialConfirm.ValueKind != JsonValueKind.Number
+                || !routineTrialConfirm.TryGetInt32(out var routineTrialConfirmVersion)
+                || routineTrialConfirmVersion != 1
+                || !capabilities.TryGetProperty("routine_authorization_receipts", out var routineAuthorizationReceipts)
+                || routineAuthorizationReceipts.ValueKind != JsonValueKind.Number
+                || !routineAuthorizationReceipts.TryGetInt32(out var routineAuthorizationReceiptsVersion)
+                || routineAuthorizationReceiptsVersion != 1
                 || !capabilities.TryGetProperty("research_cockpit", out var researchCockpit)
                 || researchCockpit.ValueKind != JsonValueKind.Number
                 || !researchCockpit.TryGetInt32(out var researchCockpitVersion)
@@ -802,7 +814,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.38.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.39.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

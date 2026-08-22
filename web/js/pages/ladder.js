@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 涨停梯队页 */
 
-import { api } from '../api.js?v=1.38.0';
-import { hbarChart } from '../charts.js?v=1.38.0';
-import { esc, fmtSeal, fmtPrice, fmtBig, fmtPct, pctClass } from '../util.js?v=1.38.0';
+import { api } from '../api.js?v=1.39.0';
+import { hbarChart } from '../charts.js?v=1.39.0';
+import { esc, fmtSeal, fmtPrice, fmtBig, fmtPct, pctClass } from '../util.js?v=1.39.0';
 
 let built = false;
 let mode = 'ZT';

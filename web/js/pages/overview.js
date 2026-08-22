@@ -1,18 +1,19 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.38.0';
-import { state, bus, syncProfile } from '../store.js?v=1.38.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.38.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.38.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.38.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.38.0';
-import { buildServiceCenterStatus } from '../service-center.js?v=1.38.0';
+import { api } from '../api.js?v=1.39.0';
+import { state, bus, syncProfile } from '../store.js?v=1.39.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.39.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.39.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.39.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.39.0';
+import { buildServiceCenterStatus } from '../service-center.js?v=1.39.0';
 
 let built = false;
 let sparksAt = 0;
 let sectorTab = 'up';
 let currentBrief = null;
 let servicePlanDraft = null;
+let routineTrial = null;
 let routineEffectiveness = null;
 let observationStatus = null;
 let observationDraft = null;
@@ -104,11 +105,12 @@ export function init(container) {
           <span class="routine-next" id="ov-routine-next">下一次服务时间待确认</span>
         </div>
         <div class="routine-options" role="group" aria-label="选择深脉主动服务时段">
-          <label><input type="checkbox" data-routine-task="pre_market"><span><b>盘前准备</b><small>08:45 后整理观察清单</small></span></label>
-          <label><input type="checkbox" data-routine-task="intraday"><span><b>盘中检查</b><small>只做一次结构检查</small></span></label>
-          <label><input type="checkbox" data-routine-task="close_review"><span><b>收盘复盘</b><small>15:10 后生成复盘待办</small></span></label>
+          <article class="routine-service-item" data-routine-service="pre_market"><label><input type="checkbox" data-routine-task="pre_market"><span><b>盘前准备</b><small>08:45 后整理观察清单</small></span></label><button type="button" class="btn sm ghost" data-routine-trial="pre_market">用当前数据试一次</button></article>
+          <article class="routine-service-item" data-routine-service="intraday"><label><input type="checkbox" data-routine-task="intraday"><span><b>盘中检查</b><small>只做一次结构检查</small></span></label><button type="button" class="btn sm ghost" data-routine-trial="intraday">用当前数据试一次</button></article>
+          <article class="routine-service-item" data-routine-service="close_review"><label><input type="checkbox" data-routine-task="close_review"><span><b>收盘复盘</b><small>15:10 后生成复盘待办</small></span></label><button type="button" class="btn sm ghost" data-routine-trial="close_review">用当前数据试一次</button></article>
         </div>
       </div>
+      <section class="routine-trial" id="ov-routine-trial" aria-live="polite" aria-busy="false" hidden></section>
       <div class="service-plan-composer">
         <label for="ov-service-intent"><b>用一句话安排深脉</b><span>先生成透明草稿，确认后才生效</span></label>
         <div class="service-plan-input"><input id="ov-service-intent" maxlength="300" placeholder="例如：盘前提醒我准备，盘中只报重要变化，晚上 22:30 到 8:00 别打扰"><button class="btn sm primary" id="ov-service-preview">生成草稿</button></div>
@@ -400,9 +402,73 @@ export function init(container) {
     if (e.target === serviceDialog) closeServiceCenter();
   });
 
+  const runRoutineTrial = async (kind, trigger) => {
+    if (!kind) return;
+    if (trigger) trigger.disabled = true;
+    routineTrial = null;
+    renderRoutineTrial(container, null, kind);
+    try {
+      routineTrial = await api.previewRoutineTrial(kind);
+      renderRoutineTrial(container, routineTrial);
+    } catch (error) {
+      renderRoutineTrial(container, null);
+      toast(error.message || '试运行失败；现有设置没有改变', 'err');
+    } finally {
+      if (trigger) trigger.disabled = false;
+    }
+  };
+
+  container.querySelector('#ov-routine').addEventListener('click', async e => {
+    const trialButton = e.target.closest('[data-routine-trial]');
+    if (trialButton) {
+      await runRoutineTrial(trialButton.dataset.routineTrial, trialButton);
+      return;
+    }
+    if (e.target.closest('[data-routine-dismiss]')) {
+      const kind = routineTrial?.routineKind;
+      routineTrial = null;
+      renderRoutineTrial(container, null);
+      container.querySelector(`.routine-options [data-routine-trial="${kind}"]`)?.focus();
+      return;
+    }
+    if (e.target.closest('[data-routine-adjust]')) {
+      const label = routineTrial?.routineLabel || '主动服务';
+      const input = container.querySelector('#ov-service-intent');
+      input.value = `${label}持续开启，只进入提醒中心`;
+      input.focus();
+      return;
+    }
+    if (e.target.closest('[data-routine-manage-delivery]')) {
+      closeServiceCenter();
+      document.querySelector('#btn-attention')?.click();
+      return;
+    }
+    const confirm = e.target.closest('[data-routine-confirm]');
+    if (!confirm || !routineTrial) return;
+    confirm.disabled = true;
+    try {
+      const result = await api.confirmRoutineTrial(routineTrial.trialId, routineTrial.profileRevision);
+      state.routine = result.routine;
+      routineTrial = { ...routineTrial, authorizationReceipt: result.authorizationReceipt };
+      await syncProfile();
+      renderRoutine(container, result.routine);
+      renderRoutineTrial(container, routineTrial);
+      toast(`${routineTrial.routineLabel}已持续开启，仅进入提醒中心`, 'ok');
+    } catch (error) {
+      confirm.disabled = false;
+      toast(error.message || '未能持续开启；现有设置没有改变', 'err');
+    }
+  });
+
   container.querySelector('#ov-routine').addEventListener('change', async e => {
     const input = e.target.closest('[data-routine-task]');
     if (!input) return;
+    if (input.checked) {
+      input.checked = false;
+      await runRoutineTrial(input.dataset.routineTask,
+        container.querySelector(`.routine-options [data-routine-trial="${input.dataset.routineTask}"]`));
+      return;
+    }
     const inputs = [...container.querySelectorAll('[data-routine-task]')];
     const tasks = Object.fromEntries(inputs.map(node => [node.dataset.routineTask, node.checked]));
     inputs.forEach(node => { node.disabled = true; });
@@ -411,9 +477,8 @@ export function init(container) {
       state.routine = result.routine;
       await syncProfile();
       renderRoutine(container, result.routine);
-      toast(tasks[input.dataset.routineTask]
-        ? `${input.parentElement.querySelector('b').textContent}已开启`
-        : `${input.parentElement.querySelector('b').textContent}已关闭`);
+      const label = input.closest('.routine-service-item')?.querySelector('b')?.textContent || '主动服务';
+      toast(`${label}已关闭`);
     } catch {
       input.checked = !input.checked;
       toast('主动服务设置失败，请确认本机深脉服务正在运行', 'err');
@@ -893,6 +958,10 @@ const ROUTINE_STATES = {
   paused: '已暂停',
 };
 
+const ROUTINE_TASK_LABELS = {
+  pre_market: '盘前准备', intraday: '盘中检查', close_review: '收盘复盘',
+};
+
 const ROUTINE_TIMELINE_STATES = {
   completed: '已完成', skipped: '已跳过', paused: '暂停中', missed: '已错过', upcoming: '待执行',
 };
@@ -905,11 +974,15 @@ function renderServicePlanDraft(container, plan) {
   const understood = (plan.understood || []).map(row => `<li>${esc(row)}</li>`).join('');
   const unresolved = (plan.unresolved || []).map(row => `<li class="unresolved">${esc(row)}</li>`).join('');
   const noChanges = !(plan.changes || []).length;
+  const firstEnabledKind = (plan.changes || []).find(row =>
+    row?.to === true && String(row?.field || '').startsWith('marketRoutine.tasks.'))
+    ?.field?.split('.').pop();
+  const applyLabel = firstEnabledKind ? '直接持续开启' : '确认应用';
   target.innerHTML = `
     <div class="service-plan-summary"><b>我理解的是</b><span>置信度 ${Math.round((plan.confidence || 0) * 100)}%</span></div>
     <ul>${understood || '<li>暂未识别出可应用设置</li>'}${unresolved}</ul>
     <p>${esc(plan.boundary || '')}</p>
-    <div class="service-plan-actions"><button class="btn sm primary" data-service-apply ${noChanges ? 'disabled' : ''}>确认应用 ${noChanges ? '' : `(${plan.changes.length} 项变化)`}</button><button class="btn sm ghost" data-service-discard>放弃</button></div>`;
+    <div class="service-plan-actions">${firstEnabledKind ? `<button class="btn sm primary" data-routine-trial="${esc(firstEnabledKind)}">先试运行“${esc(ROUTINE_TASK_LABELS[firstEnabledKind] || '主动服务')}”</button>` : ''}<button class="btn sm ${firstEnabledKind ? 'ghost' : 'primary'}" data-service-apply ${noChanges ? 'disabled' : ''}>${applyLabel} ${noChanges ? '' : `(${plan.changes.length} 项变化)`}</button><button class="btn sm ghost" data-service-discard>放弃</button></div>`;
 }
 
 const OBS_SIGNAL_LABELS = {
@@ -994,6 +1067,60 @@ async function refreshObservationRules(container) {
   catch { container.querySelector('#ov-observation-list').innerHTML = '<div class="empty compact">观察规则暂时无法读取，请确认本机服务正在运行。</div>'; }
 }
 
+function routineTrialTime(value) {
+  if (!value) return '等待下一个交易日窗口';
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return '等待下一个交易日窗口';
+  return at.toLocaleString('zh-CN', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+function renderRoutineTrial(container, trial, loadingKind = '') {
+  const root = container.querySelector('#ov-routine-trial');
+  if (!root) return;
+  if (loadingKind) {
+    root.hidden = false;
+    root.setAttribute('aria-busy', 'true');
+    root.innerHTML = `<div class="routine-trial-loading"><span class="spinner" aria-hidden="true"></span><b>正在用当前数据试运行“${esc(ROUTINE_TASK_LABELS[loadingKind] || '主动服务')}”</b><p>只生成页面内样例，不会写入提醒、修改设置或发送到设备。</p></div>`;
+    return;
+  }
+  root.setAttribute('aria-busy', 'false');
+  root.hidden = !trial;
+  if (!trial) { root.innerHTML = ''; return; }
+  const output = trial.output || {};
+  const auth = trial.proposedAuthorization || {};
+  const receipt = trial.authorizationReceipt;
+  const status = output.degraded ? '部分数据降级' : '数据可用';
+  const dateText = output.dataDate || '数据日待确认';
+  if (receipt) {
+    root.innerHTML = `<article class="routine-trial-result confirmed">
+      <header><div><span class="tag">持续授权已生效</span><h3 id="ov-routine-trial-title" tabindex="-1">已开启“${esc(receipt.routineLabel || trial.routineLabel)}”</h3></div><em>仅进入提醒中心</em></header>
+      <p>下次 ${esc(routineTrialTime(receipt.nextRunAt))}。关闭网页后继续运行，关闭本机深脉服务即停止。</p>
+      <div class="routine-trial-actions"><button class="btn sm ghost" data-routine-dismiss>知道了</button><button class="btn sm ghost" data-routine-manage-delivery>管理投递</button></div>
+    </article>`;
+    root.querySelector('#ov-routine-trial-title')?.focus({ preventScroll: true });
+    return;
+  }
+  root.innerHTML = `<article class="routine-trial-result ${output.degraded ? 'degraded' : ''}">
+    <header><div><span class="tag">试运行结果 · 不会发送</span><h3 id="ov-routine-trial-title" tabindex="-1">${esc(output.title || trial.routineLabel || '主动服务样例')}</h3></div><em>${esc(status)}</em></header>
+    <p class="routine-trial-detail">${esc(output.detail || '暂时没有可展示内容')}</p>
+    <dl class="routine-trial-facts">
+      <div><dt>数据时点</dt><dd>${esc(dateText)}${output.degraded ? ' · 非实时结论' : ''}</dd></div>
+      <div><dt>使用依据</dt><dd>${esc(output.evidence || '当前已授权的本机数据')}</dd></div>
+      <div><dt>持续开启后</dt><dd>${esc(auth.deliveryLabel || '仅进入提醒中心')} · ${esc(routineTrialTime(auth.nextRunAt))}</dd></div>
+      <div><dt>运行方式</dt><dd>网页关闭后继续；本机服务停止即停止</dd></div>
+    </dl>
+    <p class="routine-trial-boundary">${esc(trial.boundary || '')}</p>
+    <div class="routine-trial-actions">
+      ${trial.alreadyActive ? '<span class="muted">该时段已经持续开启，本次只预览下一次内容。</span>' : '<button class="btn sm primary" data-routine-confirm>持续开启，仅进入中心</button>'}
+      <button class="btn sm ghost" data-routine-adjust>调整后再开启</button>
+      <button class="btn sm ghost" data-routine-dismiss>不用了</button>
+    </div>
+  </article>`;
+  root.querySelector('#ov-routine-trial-title')?.focus({ preventScroll: true });
+}
+
 function renderRoutine(container, routine) {
   const root = container.querySelector('#ov-routine');
   if (!root) return;
@@ -1001,6 +1128,10 @@ function renderRoutine(container, routine) {
   const tasks = value.config && value.config.tasks || {};
   root.querySelectorAll('[data-routine-task]').forEach(input => {
     input.checked = tasks[input.dataset.routineTask] === true;
+  });
+  root.querySelectorAll('.routine-options [data-routine-trial]').forEach(button => {
+    const active = tasks[button.dataset.routineTrial] === true;
+    button.textContent = active ? '预览下一次' : '用当前数据试一次';
   });
   const stateName = value.runtime && value.runtime.state || 'disabled';
   root.dataset.state = stateName;

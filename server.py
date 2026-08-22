@@ -168,7 +168,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.38.0'
+VERSION = '1.39.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1636,6 +1636,7 @@ PROFILE_LIST_LIMITS = {
     'attention_disposition_receipts': 500,
     'routine_receipts': 180,
     'routine_skips': 180,
+    'routine_authorization_receipts': 180,
     'routine_effect_actions': 100,
     'event_receipts': 500,
     'research_hypotheses': 300,
@@ -3453,6 +3454,9 @@ _routine_lock = threading.Lock()
 _routine_stop = threading.Event()
 _routine_wake = threading.Event()
 _routine_thread = None
+_routine_trial_lock = threading.Lock()
+_routine_trials = {}
+ROUTINE_TRIAL_TTL_SECONDS = 10 * 60
 _routine_runtime = {
     'thread_running': False,
     'state': 'disabled',
@@ -3478,6 +3482,9 @@ def normalize_routine_config(value=None):
     return {
         'tasks': normalized,
         'enabled': any(normalized.values()),
+        'delivery': (str(source.get('delivery') or 'digest')
+                     if str(source.get('delivery') or 'digest') in {'digest', 'center_only'}
+                     else 'digest'),
         'market_hours_basis': 'Asia/Shanghai weekday windows; data date is always disclosed',
         'enabled_at': str(source.get('enabled_at') or source.get('enabledAt') or '')[:40] or None,
         'paused_until': str(source.get('paused_until') or source.get('pausedUntil') or '')[:40] or None,
@@ -3489,9 +3496,15 @@ def load_routine_config():
     return normalize_routine_config(profile.get('market_routine'))
 
 
-def save_routine_config(value):
+def save_routine_config(value, allow_new_enable=True):
     cfg = normalize_routine_config(value)
     previous = load_routine_config()
+    if isinstance(value, dict) and 'delivery' not in value:
+        cfg['delivery'] = previous.get('delivery') or 'digest'
+    newly_enabled = [key for key in ROUTINE_LABELS
+                     if cfg['tasks'].get(key) and not previous['tasks'].get(key)]
+    if newly_enabled and allow_new_enable is not True:
+        raise ValueError('首次开启主动服务请先试运行，或使用已明确确认的服务安排')
     if cfg['enabled'] and not previous['enabled']:
         cfg['enabled_at'] = now_bj().isoformat(timespec='seconds')
     elif not cfg['enabled']:
@@ -3598,6 +3611,8 @@ def apply_service_plan_draft(draft, confirmed=False):
     routine_source = draft.get('marketRoutine') if isinstance(draft.get('marketRoutine'), dict) else {}
     routine = normalize_routine_config(routine_source)
     previous = normalize_routine_config(data.get('market_routine'))
+    if not isinstance(routine_source, dict) or 'delivery' not in routine_source:
+        routine['delivery'] = previous.get('delivery') or 'digest'
     routine['enabled_at'] = (previous.get('enabled_at') or now_bj().isoformat(timespec='seconds')) if routine['enabled'] else None
     routine['paused_until'] = previous.get('paused_until')
 
@@ -3897,6 +3912,7 @@ def _journal_has_date(rows, data_date):
 def build_routine_attention(kind, current=None, emotion_loader=None):
     now = (current or now_bj()).astimezone(BJC)
     profile = load_profile().get('data') or {}
+    routine_config = normalize_routine_config(profile.get('market_routine'))
     created = int(now.timestamp() * 1000)
     day = now.strftime('%Y-%m-%d')
     common = {
@@ -3904,7 +3920,7 @@ def build_routine_attention(kind, current=None, emotion_loader=None):
         'fingerprint': 'routine:%s:%s' % (kind, day),
         'kind': 'routine',
         'priority': 'medium',
-        'delivery': 'digest',
+        'delivery': routine_config.get('delivery') or 'digest',
         'createdAt': created,
         'expiresAt': created + ({'pre_market': 8, 'intraday': 4, 'close_review': 36}.get(kind, 24)
                                 * 60 * 60 * 1000),
@@ -3973,6 +3989,133 @@ def build_routine_attention(kind, current=None, emotion_loader=None):
                 evidence='收盘后情绪快照 + 本机复盘记录；不构成投资建议')
 
 
+def _routine_trial_fingerprint(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                     separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def preview_routine_trial(kind, current=None, emotion_loader=None):
+    """Build one real routine output without saving, delivering or authorizing anything."""
+    clean_kind = str(kind or '').strip()
+    if clean_kind not in ROUTINE_LABELS:
+        raise ValueError('请选择盘前、盘中或收盘服务进行试运行')
+    now = (current or now_bj()).astimezone(BJC)
+    before = load_profile()
+    item = build_routine_attention(clean_kind, now, emotion_loader)
+    after = load_profile()
+    if int(before.get('revision') or 0) != int(after.get('revision') or 0):
+        raise ValueError('试运行期间用户档案已变化，请重新试一次')
+    data = after.get('data') or {}
+    config = normalize_routine_config(data.get('market_routine'))
+    proposed_config = dict(config, tasks=dict(config.get('tasks') or {}), delivery='center_only')
+    proposed_config['tasks'][clean_kind] = True
+    proposed_config['enabled'] = True
+    next_service = next_routine_service(now, proposed_config, data)
+    output = {
+        key: item.get(key) for key in (
+            'title', 'detail', 'dataDate', 'degraded', 'evidence', 'page',
+            'journalSaved', 'serviceDate') if key in item
+    }
+    output_fingerprint = _routine_trial_fingerprint(output)
+    created_epoch = time.time()
+    trial_id = 'routine-trial:' + secrets.token_urlsafe(18)
+    result = {
+        'schema': 1,
+        'trialId': trial_id,
+        'routineKind': clean_kind,
+        'routineLabel': ROUTINE_LABELS[clean_kind],
+        'profileRevision': int(after.get('revision') or 0),
+        'createdAt': int(created_epoch * 1000),
+        'expiresAt': int((created_epoch + ROUTINE_TRIAL_TTL_SECONDS) * 1000),
+        'noWrite': True,
+        'noDelivery': True,
+        'alreadyActive': config.get('tasks', {}).get(clean_kind) is True,
+        'output': output,
+        'outputFingerprint': output_fingerprint,
+        'generator': 'same-local-routine-generator',
+        'proposedAuthorization': {
+            'delivery': 'center_only',
+            'deliveryLabel': '仅进入提醒中心',
+            'nextRunAt': next_service.get('at') if next_service else None,
+            'nextRunLabel': next_service.get('label') if next_service else ROUTINE_LABELS[clean_kind],
+            'continuesWhenPageClosed': True,
+            'stopsWhenLocalServiceStops': True,
+        },
+        'boundary': ('试运行只读取当前已授权数据并复用真实服务生成器；不会写入提醒、回执或设置，'
+                     '不会发送 Windows 或墨水屏通知。持续开启后，深脉可自行整理和压缩表述，'
+                     '但不能扩大来源、修改自选、改变时段、开启设备投递或执行交易。'),
+    }
+    stored = dict(result, createdEpoch=created_epoch)
+    with _routine_trial_lock:
+        expired = [key for key, row in _routine_trials.items()
+                   if created_epoch - float(row.get('createdEpoch') or 0) > ROUTINE_TRIAL_TTL_SECONDS]
+        for key in expired:
+            _routine_trials.pop(key, None)
+        if len(_routine_trials) >= 100:
+            _routine_trials.clear()
+        _routine_trials[trial_id] = stored
+    return result
+
+
+def confirm_routine_trial(trial_id, expected_revision=None, confirmed=False):
+    """Turn a fresh, user-viewed trial into one center-only persistent authorization."""
+    if confirmed is not True:
+        raise ValueError('必须看过试运行结果并明确确认后才能持续开启')
+    with _routine_trial_lock:
+        trial = _routine_trials.pop(str(trial_id or ''), None)
+    if not trial:
+        raise ValueError('试运行凭证不存在或已经使用，请重新试一次')
+    if time.time() - float(trial.get('createdEpoch') or 0) > ROUTINE_TRIAL_TTL_SECONDS:
+        raise ValueError('试运行结果已过期，请用当前数据重新试一次')
+    kind = str(trial.get('routineKind') or '')
+    if kind not in ROUTINE_LABELS:
+        raise ValueError('试运行服务类型无效')
+    expected = int(trial.get('profileRevision') or 0)
+    if expected_revision is not None and int(expected_revision) != expected:
+        raise ValueError('试运行档案版本不一致，请重新试一次')
+    now = now_bj()
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        if int(current.get('revision') or 0) != expected:
+            raise ValueError('用户档案已变化，请重新试一次再确认')
+        data = current.setdefault('data', {})
+        config = normalize_routine_config(data.get('market_routine'))
+        if config.get('tasks', {}).get(kind) is True:
+            raise ValueError('%s已经持续开启' % ROUTINE_LABELS[kind])
+        config['tasks'][kind] = True
+        config['enabled'] = True
+        config['delivery'] = 'center_only'
+        config['enabled_at'] = config.get('enabled_at') or now.isoformat(timespec='seconds')
+        next_service = next_routine_service(now, config, data)
+        created = int(now.timestamp() * 1000)
+        receipt = {
+            'id': 'routine-authorization:%s:%d' % (kind, created),
+            'action': 'enabled_after_trial',
+            'status': 'active',
+            'routineKind': kind,
+            'routineLabel': ROUTINE_LABELS[kind],
+            'delivery': 'center_only',
+            'trialId': str(trial.get('trialId') or '')[:160],
+            'trialOutputFingerprint': str(trial.get('outputFingerprint') or '')[:80],
+            'createdAt': created,
+            'nextRunAt': next_service.get('at') if next_service else None,
+            'boundary': '持续服务仅进入提醒中心；关闭网页后继续，关闭本机服务即停止。',
+        }
+        receipts = [row for row in (data.get('routine_authorization_receipts') or [])
+                    if isinstance(row, dict)]
+        receipts.append(receipt)
+        data['market_routine'] = config
+        data['routine_authorization_receipts'] = receipts[-PROFILE_LIST_LIMITS['routine_authorization_receipts']:]
+        saved = _write_profile_unlocked(current)
+    _routine_wake.set()
+    return {
+        'profileRevision': int(saved.get('revision') or 0),
+        'routine': market_routine_status(),
+        'authorizationReceipt': receipt,
+    }
+
+
 def commit_routine_attention(item):
     """Publish at most one item per service kind and calendar date."""
     if not isinstance(item, dict) or not item.get('id'):
@@ -4032,6 +4175,8 @@ def market_routine_status(current=None):
                  if isinstance(row, dict) and row.get('serviceDate') == today]
     skipped = [row.get('kind') for row in (profile.get('routine_skips') or [])
                if isinstance(row, dict) and row.get('serviceDate') == today]
+    authorization_receipts = [row for row in (profile.get('routine_authorization_receipts') or [])
+                              if isinstance(row, dict)]
     next_service = next_routine_service(now, cfg, profile)
     with _routine_lock:
         runtime = dict(_routine_runtime)
@@ -4057,6 +4202,12 @@ def market_routine_status(current=None):
         'skipped_today': skipped,
         'next_service': next_service,
         'timeline': routine_timeline(now, cfg, profile),
+        'authorization': {
+            'delivery': cfg.get('delivery') or 'digest',
+            'deliveryLabel': ('仅进入提醒中心' if cfg.get('delivery') == 'center_only'
+                              else '按提醒偏好投递'),
+            'latestReceipt': authorization_receipts[-1] if authorization_receipts else None,
+        },
         'effectiveness': routine_effectiveness_status(profile),
         'calendar': calendar,
         'service_continues_when_page_closed': True,
@@ -7226,7 +7377,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.38.0'
+    server_version = 'DeepPulse/1.39.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -7353,6 +7504,9 @@ class Handler(BaseHTTPRequestHandler):
                            'chat_action_receipts': 1,
                           'background_monitor': 1,
                           'market_routine': 1,
+                          'routine_trial': 1,
+                          'routine_trial_confirm': 1,
+                          'routine_authorization_receipts': 1,
                           'akshare_enrichment': 1,
                           'akshare_research_snapshot': 1,
                           'akshare_research_packs': 1,
@@ -7749,11 +7903,19 @@ class Handler(BaseHTTPRequestHandler):
                     body.get('ruleId'), body.get('action'), body.get('fingerprint') or '')})
             elif u.path == '/api/routine/config':
                 body = self.read_json_body()
-                saved = save_routine_config(body.get('config') or {})
+                saved = save_routine_config(body.get('config') or {}, allow_new_enable=False)
                 self.send_json({'ok': True, 'data': {
                     'profile': saved,
                     'routine': market_routine_status(),
                 }})
+            elif u.path == '/api/routine/trial':
+                body = self.read_json_body(4096)
+                self.send_json({'ok': True, 'data': preview_routine_trial(body.get('kind'))})
+            elif u.path == '/api/routine/trial/confirm':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': confirm_routine_trial(
+                    body.get('trialId'), body.get('expectedRevision'),
+                    confirmed=body.get('confirmed') is True)})
             elif u.path == '/api/service-plan/preview':
                 body = self.read_json_body(8192)
                 self.send_json({'ok': True, 'data': parse_service_intent(body.get('text'))})

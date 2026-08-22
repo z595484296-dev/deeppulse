@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.38.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.39.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 主动服务先试后开（v1.39）
+
+- 盘前准备、盘中检查和收盘复盘首次开启前，可用当前数据运行一次真实样例；样例复用正式服务生成器，不使用静态演示文案。
+- 试运行明确展示实际内容、数据日、使用依据、下一次时间和预计去向，但不会修改档案、写入提醒或回执，也不会发送 Windows 或墨水屏通知。
+- 看过样例后仍需使用 10 分钟有效的服务端预览凭证再次确认；档案发生变化、凭证过期或重复使用都会阻止持续授权。
+- 首次持续授权默认只进入提醒中心，并留下可读回执。深脉可在已授权范围内自行整理信息，但不能扩大来源、改变时段、开启设备投递或执行交易。
 
 ### 事件相关性精准学习（v1.38）
 

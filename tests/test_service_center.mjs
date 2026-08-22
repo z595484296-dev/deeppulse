@@ -57,3 +57,12 @@ test('active observation rules are included without adding another service cente
   assert.equal(status.enabledCount, 1);
   assert.deepEqual(status.enabledItems, ['2 条观察规则']);
 });
+
+test('trial-authorized routine discloses center-only delivery in the status strip', () => {
+  const status = buildServiceCenterStatus({
+    config: { enabled: true, delivery: 'center_only', tasks: { close_review: true } },
+    runtime: { state: 'waiting' },
+  }, {});
+  assert.equal(status.routineDelivery, 'center_only');
+  assert.match(status.summary, /日程仅进中心/);
+});

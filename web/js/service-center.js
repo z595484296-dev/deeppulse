@@ -64,8 +64,9 @@ export function buildServiceCenterStatus(routineValue, eventValue, observationVa
     alert = '主动服务连接或来源异常';
   }
 
+  const routineDelivery = routineConfig.delivery === 'center_only' ? ' · 日程仅进中心' : '';
   const summary = enabledItems.length
-    ? `${enabledItems.length} 项已开启：${enabledItems.join('、')}`
+    ? `${enabledItems.length} 项已开启：${enabledItems.join('、')}${routineDelivery}`
     : '尚未开启持续主动服务';
   const next = nextLabel(routine.next_service)
     || (enabledItems.length ? '等待下一个已授权时段或新事件' : '可按需开启，不会默认访问外部来源');
@@ -79,6 +80,7 @@ export function buildServiceCenterStatus(routineValue, eventValue, observationVa
     enabledCount: enabledItems.length,
     enabledItems,
     routineState,
+    routineDelivery: routineConfig.delivery || 'digest',
     eventState,
   };
 }
