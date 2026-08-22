@@ -4,10 +4,13 @@
    配置 DeepSeek API Key（data/config.json）后自动升级为云端大脑。
    ============================================================ */
 
-import { api } from './api.js?v=1.31.0';
-import { addWatch, removeWatch, loadWatch, persistChatHistory } from './store.js?v=1.31.0';
-import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.31.0';
-import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.31.0';
+import { api } from './api.js?v=1.32.0';
+import { addWatch, removeWatch, loadWatch, persistChatHistory, state, bus } from './store.js?v=1.32.0';
+import {
+  classifyMessageFreshness, historyForCurrentMarket, marketSensitiveQuestion, marketSnapshotFromState,
+} from './chat-freshness.js?v=1.32.0';
+import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.32.0';
+import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.32.0';
 
 export const BOT_NAME = '蚂小财';
 const HISTORY_KEY = 'dp_chat_v1';
@@ -439,7 +442,11 @@ export async function ensureGreeting() {
     if (em && em.engine && em.engine.temp != null) {
       const en = em.engine;
       const c = PHASE_COLORS[en.color] || '#e9eef8';
-      chatStore.push('bot', `顺便播报一下：今天市场温度 <b style="color:${c}">${en.temp}°</b>（${esc(en.phase)}），风险暴露参考区间为 ${esc(en.advice ? en.advice.position : '--')}。`, [], true);
+      chatStore.push('bot', `顺便播报一下：今天市场温度 <b style="color:${c}">${en.temp}°</b>（${esc(en.phase)}），风险暴露参考区间为 ${esc(en.advice ? en.advice.position : '--')}。`, [], true, '今天情绪怎么样', {
+        marketSnapshot: {
+          dataDate: em.date || null, temp: en.temp, phase: en.phase || null, asOf: Date.now(),
+        },
+      });
     }
   } catch { /* 数据不可达就只问候 */ }
 }
@@ -549,7 +556,7 @@ async function tryCloudBrain(history) {
    ============================================================ */
 
 export const chatStore = {
-  messages: [],   // {role:'user'|'bot', html, actions?, safe?, sourceQuestion?}
+  messages: [],   // {role, html, actions?, safe?, sourceQuestion?, createdAt?, marketSnapshot?}
   typing: false,
   listeners: new Set(),
   _load() {
@@ -563,8 +570,12 @@ export const chatStore = {
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(messages)); } catch { /* 忽略 */ }
     persistChatHistory(messages);
   },
-  push(role, html, actions, safe, sourceQuestion) {
-    this.messages.push({ role, html, actions, safe: !!safe, sourceQuestion });
+  push(role, html, actions, safe, sourceQuestion, metadata = {}) {
+    const createdAt = Number(metadata.createdAt) || Date.now();
+    this.messages.push({
+      role, html, actions, safe: !!safe, sourceQuestion, createdAt,
+      ...(metadata.marketSnapshot ? { marketSnapshot: metadata.marketSnapshot } : {}),
+    });
     this._save();
     this.notify();
   },
@@ -604,7 +615,37 @@ function mdPlain(s) {
 
 const ANT_SVG = `<svg viewBox="0 0 48 48" style="width:30px;height:30px"><g fill="none" stroke="#7cb0ff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 8.5C15 5 11.5 3.5 9.5 5S8 10 11 11.5M31.5 8.5C33 5 36.5 3.5 38.5 5S40 10 37 11.5"/><circle cx="24" cy="17.5" r="7.2"/><circle cx="24" cy="33" r="9.5"/><path d="M24 24.7v-1M12 29.5c-2.5 2.5-2.5 5.5 0 8M36 29.5c2.5 2.5 2.5 5.5 0 8M12.5 21l-6-3M35.5 21l6-3"/><circle cx="21" cy="16.6" r="1.5" fill="#7cb0ff" stroke="none"/><circle cx="27" cy="16.6" r="1.5" fill="#7cb0ff" stroke="none"/><path d="M21.5 20.8c1.5 1.1 3.5 1.1 5 0" stroke="#7cb0ff"/></g></svg>`;
 
-function botBubble(html, actions, safe, sourceQuestion) {
+function formatAnswerTime(timestamp) {
+  const value = Number(timestamp);
+  if (!value) return '';
+  return new Date(value).toLocaleString('zh-CN', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+function freshnessMeta(message, currentSnapshot) {
+  const freshness = classifyMessageFreshness(message, currentSnapshot);
+  const recorded = freshness.recorded || message.marketSnapshot || {};
+  const when = formatAnswerTime(message.createdAt || recorded.asOf);
+  if (freshness.status === 'unknown') {
+    return { stale: true, text: '历史回答 · 旧版本未记录数据时点' };
+  }
+  if (freshness.status === 'stale') {
+    const formerTemp = recorded.temp === null || recorded.temp === undefined || recorded.temp === '' ? null : Number(recorded.temp);
+    const former = [recorded.dataDate, Number.isFinite(formerTemp) ? `${formerTemp}°` : '', recorded.phase]
+      .filter(Boolean).join(' · ');
+    const current = freshness.current || {};
+    const currentTemp = current.temp === null || current.temp === undefined || current.temp === '' ? null : Number(current.temp);
+    const latest = [current.dataDate, Number.isFinite(currentTemp) ? `${currentTemp}°` : '', current.phase]
+      .filter(Boolean).join(' · ');
+    return { stale: true, text: `历史回答${former ? ` · 当时 ${former}` : when ? ` · ${when}` : ''}${latest ? `；当前 ${latest}` : ''}` };
+  }
+  const parts = [when ? `生成于 ${when}` : '', recorded.dataDate ? `数据日 ${recorded.dataDate}` : ''].filter(Boolean);
+  return { stale: false, text: parts.join(' · ') };
+}
+
+function botBubble(message, currentSnapshot) {
+  const { html, actions, safe, sourceQuestion } = message;
   const acts = (actions || []).map(a => {
     let label = '';
     if (a.type === 'nav') {
@@ -624,9 +665,15 @@ function botBubble(html, actions, safe, sourceQuestion) {
     ? `<button class="chat-act chat-act-ask" data-ask="${esc(String(sourceQuestion).slice(0, 400))}">🧠 让 DeepSeek 深入分析</button>`
     : '';
   const copyBtn = `<button class="chat-act" data-copy="${esc(html.replace(/<[^>]+>/g, ''))}">复制</button>`;
+  const freshness = freshnessMeta(message, currentSnapshot);
+  const retryBtn = freshness.stale && sourceQuestion
+    ? `<button class="chat-act chat-act-refresh" data-regenerate="${esc(String(sourceQuestion).slice(0, 400))}">基于当前数据重新回答</button>`
+    : '';
+  const meta = freshness.text
+    ? `<div class="chat-answer-meta ${freshness.stale ? 'stale' : ''}">${esc(freshness.text)}</div>` : '';
   return `<div class="msg-row bot">
     <div class="bot-avatar">${ANT_SVG.replace('width:30px;height:30px', 'width:26px;height:26px')}</div>
-    <div><div class="bubble">${body}</div><div class="chat-acts">${acts}${copyBtn}${askBtn}</div></div>
+    <div><div class="bubble">${body}</div>${meta}<div class="chat-acts">${acts}${copyBtn}${askBtn}${retryBtn}</div></div>
   </div>`;
 }
 
@@ -660,8 +707,9 @@ export function createChatView(root) {
   const sendBtn = root.querySelector('[data-send]');
 
   const render = () => {
+    const currentSnapshot = marketSnapshotFromState(state);
     msgsEl.innerHTML = chatStore.messages
-      .map(m => m.role === 'user' ? userBubble(m.html) : botBubble(m.html, m.actions, m.safe, m.sourceQuestion)).join('')
+      .map(m => m.role === 'user' ? userBubble(m.html) : botBubble(m, currentSnapshot)).join('')
       + (chatStore.typing ? typingBubble() : '');
     msgsEl.scrollTop = msgsEl.scrollHeight;
   };
@@ -675,7 +723,8 @@ export function createChatView(root) {
     const started = Date.now();
 
     // 云端大脑优先（未配置时后端秒回 local 模式）
-    const history = chatStore.messages.slice(-10)
+    const snapshotAtQuestion = marketSnapshotFromState(state, started);
+    const history = historyForCurrentMarket(chatStore.messages.slice(-10), snapshotAtQuestion, started)
       .filter(m => m.role !== 'typing')
       .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.role === 'user' ? m.html : m.html.replace(/<[^>]+>/g, '') }));
     let result = null;
@@ -690,7 +739,10 @@ export function createChatView(root) {
     const wait = Math.max(0, 650 - (Date.now() - started));
     await new Promise(r => setTimeout(r, wait));
     chatStore.setTyping(false);
-    chatStore.push('bot', result.html, result.actions || [], result.safe, t);
+    chatStore.push('bot', result.html, result.actions || [], result.safe, t, {
+      createdAt: Date.now(),
+      marketSnapshot: marketSensitiveQuestion(t) ? marketSnapshotFromState(state) : null,
+    });
     (result.actions || []).forEach(runAction);
   }
 
@@ -707,6 +759,11 @@ export function createChatView(root) {
     send(b.textContent);
   });
   msgsEl.addEventListener('click', e => {
+    const regenerateBtn = e.target.closest('[data-regenerate]');
+    if (regenerateBtn) {
+      send(regenerateBtn.dataset.regenerate || '');
+      return;
+    }
     const askBtn = e.target.closest('[data-ask]');
     if (askBtn) {
       const sent = askDeepSeek({
@@ -730,5 +787,13 @@ export function createChatView(root) {
     }
   });
 
-  return { send, destroy: unsub };
+  const rerenderForMarket = () => render();
+  bus.addEventListener('emotion', rerenderForMarket);
+  const freshnessTimer = window.setInterval(render, 60_000);
+
+  return { send, destroy: () => {
+    unsub();
+    bus.removeEventListener('emotion', rerenderForMarket);
+    window.clearInterval(freshnessTimer);
+  } };
 }

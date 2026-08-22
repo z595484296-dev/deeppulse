@@ -98,6 +98,25 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual([item['id'] for item in receipts], ['brief-b'])
         self.assertEqual(receipts[0]['contentHash'], 'bbb')
 
+    def test_chat_history_preserves_answer_time_and_market_snapshot(self):
+        message = {
+            'role': 'bot', 'html': '52度发酵期', 'sourceQuestion': '今天情绪怎么样',
+            'createdAt': 1787372400000,
+            'marketSnapshot': {
+                'dataDate': '2026-08-21', 'temp': 52, 'phase': '发酵期',
+                'asOf': 1787372399000,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_file = os.path.join(tmp, 'profile.json')
+            with patch.object(server, 'PROFILE_FILE', profile_file):
+                server.save_profile({'chat_history': [message]})
+                loaded = server.load_profile()['data']['chat_history'][0]
+
+        self.assertEqual(loaded['createdAt'], message['createdAt'])
+        self.assertEqual(loaded['marketSnapshot']['dataDate'], '2026-08-21')
+        self.assertEqual(loaded['marketSnapshot']['temp'], 52)
+
 
 class SectorHistoryTests(unittest.TestCase):
     def test_sector_cycle_uses_only_recorded_trading_snapshots(self):

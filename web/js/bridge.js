@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.31.0';
+import { applyChartTheme } from './charts.js?v=1.32.0';
 
 export const EMBEDDED = (() => {
   try {

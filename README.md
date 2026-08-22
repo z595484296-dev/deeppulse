@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.31.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.32.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### AI 回答新鲜度（v1.32）
+
+- 助手的市场相关回答现在保存生成时间、行情数据日以及当时的情绪温度和阶段，不再把历史结论无时点地留在对话里。
+- 数据日、温度、阶段发生变化，或市场型回答超过 15 分钟后，会明确标为“历史回答”，并同时展示当时与当前状态。
+- 用户可点击“基于当前数据重新回答”；系统不会自动联网或自动改写旧回答，历史记录继续保留以便复盘。
+- 旧版本没有时点元数据的市场回答会诚实标注“未记录数据时点”；过期助手文本不会再混入下一次云端模型上下文，避免旧判断污染新回答。
 
 ### 主动服务硬边界（v1.31）
 

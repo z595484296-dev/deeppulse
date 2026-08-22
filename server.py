@@ -135,7 +135,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.31.0'
+VERSION = '1.32.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -5920,7 +5920,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.31.0'
+    server_version = 'DeepPulse/1.32.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -6042,6 +6042,7 @@ class Handler(BaseHTTPRequestHandler):
                           'attention_learning': 1,
                           'attention_triage': 1,
                           'attention_center_only_boundary': 1,
+                          'chat_answer_freshness': 1,
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,
