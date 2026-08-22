@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.27.0'
+const MIN_BACKEND_VERSION = '1.28.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -109,6 +109,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['research_run_comparison'] === 1
       && capabilities['research_workflow_lineage'] === 1
       && capabilities['research_evidence_timeline'] === 1
+      && capabilities['research_suggestion_inbox'] === 1
+      && capabilities['research_suggestion_preview'] === 1
       && capabilities['epaper_research_workflow'] === 1
       ? baseUrl
       : undefined
@@ -242,6 +244,9 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const researchWorkflows = recordOf(raw['researchWorkflows'])
   const researchWorkflowSummary = recordOf(researchWorkflows['summary'])
   const researchWorkflowPermissions = recordOf(researchWorkflows['permissions'])
+  const researchSuggestions = recordOf(raw['researchSuggestions'])
+  const researchSuggestionSummary = recordOf(researchSuggestions['summary'])
+  const researchSuggestionContract = recordOf(researchSuggestions['contract'])
   const sanitizeCockpitItem = (value: unknown) => {
     const item = recordOf(value)
     const evidence = recordOf(item['evidence'])
@@ -532,6 +537,33 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     ? researchWorkflows['items'].slice(0, 12).map(sanitizeResearchWorkflow) : []
   const standaloneResearchWorkflow = Object.keys(recordOf(raw['researchWorkflow'])).length
     ? sanitizeResearchWorkflow(raw['researchWorkflow']) : null
+  const researchSuggestionItems = Array.isArray(researchSuggestions['items'])
+    ? researchSuggestions['items'].slice(0, 5).map(value => {
+      const item = recordOf(value)
+      const draft = recordOf(item['proposedDraft'])
+      const target = recordOf(draft['target'])
+      const contract = recordOf(item['contract'])
+      return {
+        id: short(item['id'], 180), role: short(item['role'], 40), title: short(item['title'], 180),
+        reason: short(item['reason'], 360), sourceType: short(item['sourceType'], 40),
+        sourceId: short(item['sourceId'], 180), state: short(item['state'], 30),
+        expiresAt: short(item['expiresAt'], 80), evidenceGaps: uniqueStrings(item['evidenceGaps'], 5, 120),
+        proposedDraft: {
+          kind: short(draft['kind'], 30), title: short(draft['title'], 120),
+          target: { type: short(target['type'], 30), code: short(target['code'], 20), name: short(target['name'], 80) },
+          question: short(draft['question'], 1200), sources: uniqueStrings(draft['sources'], 5, 60),
+          reviewDays: finite(draft['reviewDays']), outputs: uniqueStrings(draft['outputs'], 5, 60),
+          reminderEnabled: draft['reminderEnabled'] === true,
+        },
+        contract: {
+          requiresWorkflowPreview: contract['requiresWorkflowPreview'] === true,
+          requiresExplicitConfirmation: contract['requiresExplicitConfirmation'] === true,
+          automaticWorkflowCreation: contract['automaticWorkflowCreation'] === true,
+          automaticExternalAuthorization: contract['automaticExternalAuthorization'] === true,
+          automaticTradingAction: contract['automaticTradingAction'] === true,
+        },
+      }
+    }) : []
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -1044,6 +1076,26 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         boundary: short(researchWorkflows['boundary'], 400), items: researchWorkflowItems,
       } : null,
       researchWorkflow: standaloneResearchWorkflow,
+      researchSuggestions: Object.keys(researchSuggestions).length ? {
+        modelVersion: short(researchSuggestions['modelVersion'], 60),
+        generatedAt: short(researchSuggestions['generatedAt'], 80),
+        summary: {
+          total: finite(researchSuggestionSummary['total']), pending: finite(researchSuggestionSummary['pending']),
+          dismissed: finite(researchSuggestionSummary['dismissed']), accepted: finite(researchSuggestionSummary['accepted']),
+          expired: finite(researchSuggestionSummary['expired']),
+        },
+        items: researchSuggestionItems,
+        boundary: short(researchSuggestions['boundary'], 400),
+        contract: {
+          explicitRecordsOnly: researchSuggestionContract['explicitRecordsOnly'] === true,
+          requiresWorkflowPreview: researchSuggestionContract['requiresWorkflowPreview'] === true,
+          requiresExplicitConfirmation: researchSuggestionContract['requiresExplicitConfirmation'] === true,
+          automaticWorkflowCreation: researchSuggestionContract['automaticWorkflowCreation'] === true,
+          automaticExternalAuthorization: researchSuggestionContract['automaticExternalAuthorization'] === true,
+          automaticGoalInference: researchSuggestionContract['automaticGoalInference'] === true,
+          automaticTradingAction: researchSuggestionContract['automaticTradingAction'] === true,
+        },
+      } : null,
       akshareResearch: Object.keys(akshareResearch).length ? {
         modelVersion: short(akshareResearch['modelVersion'], 60),
         provider: {
@@ -1210,6 +1262,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
     '15. akshareResearch 是用户按数据包选择并按需生成的研究增强背景；只能使用 selection 中已授权的数据包。必须检查每项 asOf、status、source.interface、source.independentGroup 和 interfaceHealth；陈旧、缺失或接口失败的数据不得描述为当前事实，最终上游相同的指标不能算独立互证。这些指标不参与情绪温度、仓位区间、提醒或交易触发。',
     '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论。templateSpec 只允许复用方法，新标的必须重新预览，不继承旧运行或结论；runComparison 只比较两次收集的数量、状态和陈旧度，不代表研究假设增强或减弱。lineage 只记录研究方法版本及来源，evidenceTimeline 只记录观察时点、数据时点和上游；历史记录不可被新版本覆盖，二者都不能被解释为方向结论。',
+    '17. researchSuggestions 只由用户自选、已保存假设和明确数据缺口生成，是可编辑研究草稿建议，不是目标推断、机会排名或行情预测。你可以解释依据和缺口，但不得替用户载入、忽略、恢复、授权、创建或运行流程；dismissed、accepted、expired 项不得当作当前待办。',
   ].join('\n')
 }
 

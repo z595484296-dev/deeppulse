@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.27.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.28.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ### 用户可控 AKShare 研究数据包（v1.27）
 - 数据源页可分别选择增长景气、价格环境、流动性、利率环境和外储黄金数据包；设置保存在本机，只有点击生成时才访问所选接口。

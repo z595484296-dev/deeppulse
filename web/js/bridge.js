@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.27.0';
+import { applyChartTheme } from './charts.js?v=1.28.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -167,6 +167,10 @@ export function boundedContext(value) {
         ...plain.researchWorkflows,
         items: (plain.researchWorkflows.items || []).slice(0, 8).map(item => trimWorkflowEvidence(item)),
       } : null,
+      researchSuggestions: plain.researchSuggestions ? {
+        ...plain.researchSuggestions,
+        items: (plain.researchSuggestions.items || []).slice(0, 5),
+      } : null,
       emotionAnalysis: {
         ...emotion,
         history: (emotion.history || []).slice(-8),
@@ -237,6 +241,14 @@ export function boundedContext(value) {
         permissions: reduced.researchWorkflows.permissions,
       } : null,
       researchWorkflow: trimWorkflowEvidence(reduced.researchWorkflow, 5, 5) || null,
+      researchSuggestions: reduced.researchSuggestions ? {
+        modelVersion: reduced.researchSuggestions.modelVersion,
+        generatedAt: reduced.researchSuggestions.generatedAt,
+        summary: reduced.researchSuggestions.summary,
+        items: (reduced.researchSuggestions.items || []).slice(0, 3),
+        boundary: reduced.researchSuggestions.boundary,
+        contract: reduced.researchSuggestions.contract,
+      } : null,
       akshareResearch: reduced.akshareResearch || null,
       selectedSecurity: reduced.selectedSecurity,
       market: {

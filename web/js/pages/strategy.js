@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.27.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.27.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.27.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.27.0';
+import { api } from '../api.js?v=1.28.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.28.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.28.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.28.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -14,6 +14,9 @@ let researchWorkflowData = null;
 let researchWorkflowPreview = null;
 let activeWorkflowTemplate = null;
 let activeWorkflowOrigin = null;
+let researchSuggestionData = null;
+let activeResearchSuggestion = null;
+let suggestionDraftBackup = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -94,12 +97,25 @@ export function init(container) {
         </div>
       </div>
 
+      <section class="card span-12 research-suggestion-inbox" aria-labelledby="st-suggestion-title">
+        <div class="card-head research-suggestion-head">
+          <div><div class="card-title" id="st-suggestion-title">📥 主动研究建议</div><div class="card-sub">基于你的明确关注与研究记录 · 默认只进入这里</div></div>
+          <div class="research-suggestion-summary"><span id="st-suggestion-summary">正在整理…</span><button type="button" class="btn sm ghost" id="st-suggestion-refresh">重新整理</button></div>
+        </div>
+        <p class="hypothesis-boundary">建议只提出值得验证的问题，不代表看多、看空或买卖判断。载入只填写草稿，不会访问来源、预览权限、创建或运行流程。</p>
+        <div class="research-suggestion-layout">
+          <div class="research-suggestion-list" id="st-suggestion-list"><div class="empty compact">正在读取主动研究建议…</div></div>
+          <article class="research-suggestion-detail" id="st-suggestion-detail" tabindex="-1"><div class="empty compact">选择一条建议，查看它为什么出现、还缺什么证据。</div></article>
+        </div>
+      </section>
+
       <section class="card span-12 workflow-studio" aria-labelledby="st-workflow-title">
         <div class="card-head workflow-head">
           <div><div class="card-title" id="st-workflow-title">🧭 研究流程</div><div class="card-sub">先预览范围与权限 · 再创建、执行和复盘</div></div>
           <div class="workflow-summary" id="st-workflow-summary">正在读取…</div>
         </div>
         <p class="hypothesis-boundary">把研究对象、问题、证据源、复盘时点和输出方式组合成一个可控任务。预览不会访问外部数据；DeepSeek 只能建议拆解，不能替你确认权限。</p>
+        <div class="workflow-origin-banner" id="st-wf-origin-banner" hidden></div>
         <div class="workflow-builder">
           <form id="st-workflow-form" class="workflow-form" autocomplete="off">
             <div class="workflow-field workflow-title-field"><label for="st-wf-title">流程名称</label><input id="st-wf-title" maxlength="120" placeholder="例如：工业富联算力热点验证"></div>
@@ -377,6 +393,66 @@ export function init(container) {
 
   const workflowForm = container.querySelector('#st-workflow-form');
   const workflowPreviewPanel = container.querySelector('#st-wf-preview-panel');
+  container.querySelector('#st-suggestion-refresh').addEventListener('click', async e => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchSuggestion('refresh');
+      researchSuggestionData = result.suggestions;
+      state.researchSuggestions = researchSuggestionData;
+      renderResearchSuggestions(container);
+      toast('主动研究建议已按当前记录重新整理');
+    } catch (error) { toast(error.message || '研究建议整理失败', 'err'); }
+    finally { button.disabled = false; }
+  });
+  container.querySelector('#st-suggestion-list').addEventListener('click', e => {
+    const button = e.target.closest('[data-suggestion-id]');
+    if (!button) return;
+    renderResearchSuggestionDetail(container, button.dataset.suggestionId);
+  });
+  container.querySelector('#st-suggestion-detail').addEventListener('click', async e => {
+    const button = e.target.closest('[data-suggestion-action]');
+    if (!button) return;
+    const suggestionId = button.dataset.suggestionId;
+    const action = button.dataset.suggestionAction;
+    button.disabled = true;
+    try {
+      if (action === 'prepare') {
+        const result = await api.mutateResearchSuggestion('prepare', { suggestionId });
+        suggestionDraftBackup = workflowDraft(container);
+        fillSuggestionDraft(container, result.draft);
+        activeResearchSuggestion = result.suggestion;
+        researchWorkflowPreview = null;
+        renderWorkflowPreview(container);
+        renderWorkflowOrigin(container);
+        container.querySelector('#st-workflow-title').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        container.querySelector('#st-wf-title').focus({ preventScroll: true });
+        toast('建议已载入草稿；尚未预览、授权、创建或执行');
+        return;
+      }
+      const result = await api.mutateResearchSuggestion(action, { suggestionId });
+      researchSuggestionData = result.suggestions;
+      state.researchSuggestions = researchSuggestionData;
+      renderResearchSuggestions(container);
+      toast(action === 'dismiss' ? '这条建议已忽略，7 天后若依据仍存在可再次出现' : '建议已恢复到待处理');
+    } catch (error) { toast(error.message || '研究建议操作失败', 'err'); }
+    finally { button.disabled = false; }
+  });
+  container.querySelector('#st-wf-origin-banner').addEventListener('click', e => {
+    if (!e.target.closest('[data-suggestion-undo]') || !suggestionDraftBackup) return;
+    fillSuggestionDraft(container, suggestionDraftBackup);
+    suggestionDraftBackup = null;
+    activeResearchSuggestion = null;
+    researchWorkflowPreview = null;
+    renderWorkflowPreview(container);
+    renderWorkflowOrigin(container);
+    toast('已恢复载入建议前的研究草稿');
+  });
+  workflowForm.addEventListener('input', e => {
+    if (!e.isTrusted || !activeResearchSuggestion) return;
+    activeResearchSuggestion = null;
+    renderWorkflowOrigin(container, true);
+  });
   const syncWorkflowTargetFields = () => {
     const stock = container.querySelector('#st-wf-target-type').value === 'stock';
     const code = container.querySelector('#st-wf-code');
@@ -428,8 +504,11 @@ export function init(container) {
     researchWorkflowPreview = null;
     activeWorkflowTemplate = null;
     activeWorkflowOrigin = null;
+    activeResearchSuggestion = null;
+    suggestionDraftBackup = null;
     workflowPreviewPanel.innerHTML = '<div class="empty compact">草稿已清空。重新填写后再预览，不会影响已创建流程。</div>';
     container.querySelector('#st-wf-suggestion').hidden = true;
+    renderWorkflowOrigin(container);
     syncWorkflowTargetFields();
   });
   workflowPreviewPanel.addEventListener('change', () => updateWorkflowConfirmState(container));
@@ -445,11 +524,20 @@ export function init(container) {
         confirmations,
         originWorkflowId: activeWorkflowOrigin?.workflowId || '',
         originKind: activeWorkflowOrigin?.kind || '',
+        suggestionId: activeResearchSuggestion?.id || '',
       });
       researchWorkflowData = result.workflows;
       state.researchWorkflows = researchWorkflowData;
       researchWorkflowPreview = null;
       activeWorkflowOrigin = null;
+      activeResearchSuggestion = null;
+      suggestionDraftBackup = null;
+      if (result.suggestions) {
+        researchSuggestionData = result.suggestions;
+        state.researchSuggestions = researchSuggestionData;
+        renderResearchSuggestions(container);
+      }
+      renderWorkflowOrigin(container);
       renderWorkflowPreview(container);
       renderResearchWorkflows(container);
       bus.dispatchEvent(new CustomEvent('research-workflows', { detail: researchWorkflowData }));
@@ -509,7 +597,13 @@ export function init(container) {
     state.researchWorkflows = researchWorkflowData;
     renderResearchWorkflows(container);
   });
+  bus.addEventListener('research-suggestions', e => {
+    researchSuggestionData = e.detail;
+    state.researchSuggestions = researchSuggestionData;
+    renderResearchSuggestions(container);
+  });
   refreshResearchWorkflows(container);
+  refreshResearchSuggestions(container);
 
   container.querySelector('#st-hyp-list').addEventListener('click', async e => {
     const button = e.target.closest('[data-hyp-action]');
@@ -717,6 +811,85 @@ export function init(container) {
   calNote.textContent = '格子颜色 = 当日情绪阶段（蓝冰点/青修复/金发酵/红高潮/紫亢奋），📔 = 你写过的复盘。点击任意一天，可补写或让 DeepSeek 基于当日快照生成复盘；生成期间可查看会话，正文完整后会自动回填。';
   calRender = renderCal;
   renderCal();
+}
+
+function fillSuggestionDraft(container, draft) {
+  const value = draft || {};
+  const target = value.target || {};
+  const keepReminder = container.querySelector('#st-wf-reminder').checked;
+  activeWorkflowTemplate = null;
+  activeWorkflowOrigin = null;
+  container.querySelector('#st-wf-kind').value = value.kind || 'one_off';
+  container.querySelector('#st-wf-title').value = value.title || '';
+  container.querySelector('#st-wf-target-type').value = target.type || 'stock';
+  container.querySelector('#st-wf-code').value = target.code || '';
+  container.querySelector('#st-wf-name').value = target.name || '';
+  container.querySelector('#st-wf-question').value = value.question || '';
+  container.querySelector('#st-wf-days').value = String(value.reviewDays || 5);
+  container.querySelector('#st-wf-reminder').checked = keepReminder;
+  const sources = new Set(value.sources || []);
+  container.querySelectorAll('[name="wf-source"]').forEach(input => { input.checked = sources.has(input.value); });
+  const outputs = new Set(value.outputs || []);
+  container.querySelectorAll('[name="wf-output"]').forEach(input => { input.checked = outputs.has(input.value); });
+  container.querySelector('#st-wf-target-type').dispatchEvent(new Event('change'));
+  container.querySelector('#st-wf-suggestion').hidden = true;
+}
+
+function renderWorkflowOrigin(container, edited = false) {
+  const root = container.querySelector('#st-wf-origin-banner');
+  if (!root) return;
+  if (!activeResearchSuggestion && !suggestionDraftBackup) {
+    root.hidden = true;
+    root.innerHTML = '';
+    return;
+  }
+  root.hidden = false;
+  const title = activeResearchSuggestion?.title || '已载入的主动研究建议';
+  root.innerHTML = `<div><b>${edited ? '已编辑为独立草稿' : '已从主动研究建议载入'}</b><span>${esc(title)} · ${edited ? '创建后不会自动关闭原建议' : '尚未预览或授权'}</span></div><button type="button" class="btn sm ghost" data-suggestion-undo>撤销载入</button>`;
+}
+
+async function refreshResearchSuggestions(container) {
+  try {
+    researchSuggestionData = await api.researchSuggestions();
+    state.researchSuggestions = researchSuggestionData;
+    renderResearchSuggestions(container);
+  } catch {
+    container.querySelector('#st-suggestion-list').innerHTML = '<div class="empty compact">主动建议暂时不可用，不影响你手动创建研究流程。</div>';
+  }
+}
+
+function renderResearchSuggestions(container) {
+  const root = container.querySelector('#st-suggestion-list');
+  const detail = container.querySelector('#st-suggestion-detail');
+  if (!root || !researchSuggestionData) return;
+  const summary = researchSuggestionData.summary || {};
+  container.querySelector('#st-suggestion-summary').textContent = `待处理 ${summary.pending || 0} · 已忽略 ${summary.dismissed || 0} · 已转流程 ${summary.accepted || 0}`;
+  const pending = (researchSuggestionData.items || []).filter(row => row.state === 'pending').slice(0, 5);
+  const dismissed = (researchSuggestionData.items || []).filter(row => row.state === 'dismissed').slice(0, 3);
+  const rows = [...pending, ...dismissed];
+  if (!rows.length) {
+    root.innerHTML = '<div class="empty compact">暂时没有值得打扰你的研究建议。深脉会继续观察，不会为了显得聪明而凑数。</div>';
+    detail.innerHTML = `<div class="empty compact">${esc(researchSuggestionData.boundary || '')}</div>`;
+    return;
+  }
+  root.innerHTML = rows.map(row => `<button type="button" class="research-suggestion-row" data-suggestion-id="${esc(row.id)}" data-state="${esc(row.state)}"><span><em>${esc(row.role || '研究')}</em><time>${esc(formatHypothesisTime(row.expiresAt))} 前有效</time></span><b>${esc(row.title)}</b><small>${esc(row.reason)}</small>${row.state === 'dismissed' ? '<i>已忽略 · 可恢复</i>' : ''}</button>`).join('');
+  renderResearchSuggestionDetail(container, pending[0]?.id || dismissed[0]?.id);
+}
+
+function renderResearchSuggestionDetail(container, suggestionId) {
+  const detail = container.querySelector('#st-suggestion-detail');
+  const item = (researchSuggestionData?.items || []).find(row => row.id === suggestionId);
+  if (!detail || !item) return;
+  container.querySelectorAll('[data-suggestion-id]').forEach(row => row.setAttribute('aria-current', row.dataset.suggestionId === suggestionId ? 'true' : 'false'));
+  const draft = item.proposedDraft || {};
+  const gaps = (item.evidenceGaps || []).map(row => `<li>${esc(row)}</li>`).join('');
+  const sourceLabels = { official_disclosures: '官方披露', market_quote: '公开行情' };
+  const sources = (draft.sources || []).map(id => `<span>${esc(sourceLabels[id] || id)} · 创建前需确认</span>`).join('');
+  const action = item.state === 'dismissed'
+    ? `<button type="button" class="btn" data-suggestion-action="restore" data-suggestion-id="${esc(item.id)}">恢复建议</button>`
+    : `<button type="button" class="btn primary" data-suggestion-action="prepare" data-suggestion-id="${esc(item.id)}">载入为研究草稿</button><button type="button" class="btn ghost" data-suggestion-action="dismiss" data-suggestion-id="${esc(item.id)}">不需要</button>`;
+  detail.innerHTML = `<header><span class="badge violet">${esc(item.role || '研究建议')}</span><time>生成 ${esc(formatHypothesisTime(item.generatedAt))}</time></header><h3>${esc(item.title)}</h3><section><h4>为什么现在提示你</h4><p>${esc(item.reason)}</p></section><section><h4>建议验证的问题</h4><p>${esc(draft.question || '')}</p></section><section><h4>拟使用来源</h4><div class="research-suggestion-sources">${sources}</div></section>${gaps ? `<details open><summary>仍需补齐的证据</summary><ul>${gaps}</ul></details>` : ''}<p class="research-suggestion-boundary">这是一份研究问题草稿，不代表看多、看空或买卖建议。载入不会联网、预览、授权、创建或执行。</p><div class="research-suggestion-actions">${action}</div>`;
+  detail.focus({ preventScroll: true });
 }
 
 const WORKFLOW_STATUS = {

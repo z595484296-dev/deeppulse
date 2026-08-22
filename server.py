@@ -73,6 +73,16 @@ except Exception:
     RESEARCH_WORKFLOW_MODEL_VERSION = 'research-workflow-unavailable'
 
 try:
+    from research_suggestions import (build_snapshot as build_research_suggestion_snapshot,
+                                      draft_fingerprint as research_suggestion_draft_fingerprint,
+                                      mutate_item as mutate_research_suggestion_item,
+                                      MODEL_VERSION as RESEARCH_SUGGESTION_MODEL_VERSION)
+except Exception:
+    build_research_suggestion_snapshot = research_suggestion_draft_fingerprint = None
+    mutate_research_suggestion_item = None
+    RESEARCH_SUGGESTION_MODEL_VERSION = 'research-suggestions-unavailable'
+
+try:
     from akshare_research import (build_snapshot as build_akshare_research_snapshot,
                                   unloaded_snapshot as unloaded_akshare_research_snapshot,
                                   normalize_pack_ids as normalize_akshare_pack_ids,
@@ -118,7 +128,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.27.0'
+VERSION = '1.28.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1589,6 +1599,7 @@ PROFILE_LIST_LIMITS = {
     'hypothesis_receipts': 500,
     'research_workflows': 200,
     'research_workflow_receipts': 500,
+    'research_suggestions': 200,
     'delivery_receipts': 1000,
 }
 PROFILE_OBJECT_LIMITS = {
@@ -3366,6 +3377,60 @@ def research_workflows_status(current=None):
     return result
 
 
+def research_suggestions_status(current=None):
+    profile = current if isinstance(current, dict) else load_profile()
+    data = profile.get('data') if isinstance(profile.get('data'), dict) else {}
+    if build_research_suggestion_snapshot is None:
+        return {
+            'modelVersion': RESEARCH_SUGGESTION_MODEL_VERSION,
+            'items': [], 'visible': [], 'summary': {'total': 0, 'pending': 0},
+            'error': '主动研究建议模型不可用',
+        }
+    hypotheses = (hypothesis_snapshot(data.get('research_hypotheses') or [], now_bj()).get('items')
+                  if hypothesis_snapshot is not None else [])
+    return build_research_suggestion_snapshot(
+        data, hypotheses, data.get('research_suggestions') or [], now_bj())
+
+
+def mutate_research_suggestion(action, payload=None):
+    body = payload if isinstance(payload, dict) else {}
+    clean_action = str(action or '').strip()
+    live = research_suggestions_status()
+    suggestion_id = str(body.get('suggestionId') or '').strip()[:180]
+    if clean_action == 'refresh':
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            refreshed = research_suggestions_status(current)
+            current['data']['research_suggestions'] = refreshed.get('items') or []
+            saved = _write_profile_unlocked(current)
+        return {'suggestions': research_suggestions_status(saved)}
+    item = next((row for row in (live.get('items') or [])
+                 if str(row.get('id') or '') == suggestion_id), None)
+    if not item:
+        raise ValueError('这条研究建议已经变化，请刷新后重试')
+    if clean_action == 'prepare':
+        if item.get('state') not in {'pending', 'dismissed'}:
+            raise ValueError('这条研究建议当前不能载入')
+        draft = item.get('proposedDraft') or {}
+        return {'suggestion': item, 'draft': draft, 'previewRequired': True,
+                'automaticPreview': False, 'automaticExternalAccess': False}
+    if clean_action not in {'dismiss', 'restore'}:
+        raise ValueError('不支持的研究建议操作')
+    updated = mutate_research_suggestion_item(item, clean_action, now_bj())
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        snapshot = research_suggestions_status(current)
+        rows = [dict(row) for row in (snapshot.get('items') or []) if isinstance(row, dict)]
+        index = next((i for i, row in enumerate(rows)
+                      if str(row.get('id') or '') == suggestion_id), -1)
+        if index < 0:
+            raise ValueError('这条研究建议已经变化，请刷新后重试')
+        rows[index] = updated
+        current['data']['research_suggestions'] = rows[-PROFILE_LIST_LIMITS['research_suggestions']:]
+        saved = _write_profile_unlocked(current)
+    return {'updated': updated, 'suggestions': research_suggestions_status(saved)}
+
+
 def preview_research_workflow(draft):
     if preview_workflow is None:
         raise ValueError('研究流程模型不可用')
@@ -3473,6 +3538,7 @@ def mutate_research_workflow(action, payload=None):
         created = create_workflow(live_preview, body.get('confirmations'), now_bj())
         origin_id = str(body.get('originWorkflowId') or '').strip()[:180]
         origin_kind = str(body.get('originKind') or '').strip()[:30]
+        suggestion_id = str(body.get('suggestionId') or '').strip()[:180]
         with _profile_lock:
             current = _read_profile_unlocked()
             rows = [row for row in (current['data'].get('research_workflows') or [])
@@ -3481,10 +3547,27 @@ def mutate_research_workflow(action, payload=None):
             if origin_id and not origin:
                 raise ValueError('来源研究流程已不存在，请重新载入后再创建')
             created = attach_workflow_lineage(created, origin, rows, origin_kind)
+            suggestions = []
+            if suggestion_id:
+                suggestion_state = research_suggestions_status(current)
+                suggestions = [dict(row) for row in (suggestion_state.get('items') or [])
+                               if isinstance(row, dict)]
+                suggestion_index = next((i for i, row in enumerate(suggestions)
+                                         if str(row.get('id') or '') == suggestion_id), -1)
+                if suggestion_index < 0:
+                    raise ValueError('来源研究建议已经变化，请不带建议来源重新预览')
+                proposed = suggestions[suggestion_index].get('proposedDraft') or {}
+                if (research_suggestion_draft_fingerprint(proposed) !=
+                        research_suggestion_draft_fingerprint(live_preview.get('draft') or {})):
+                    raise ValueError('建议草稿已被编辑，请重新预览后作为独立流程创建')
+                suggestions[suggestion_index] = mutate_research_suggestion_item(
+                    suggestions[suggestion_index], 'accept', now_bj(), created.get('id'))
+                current['data']['research_suggestions'] = suggestions[-PROFILE_LIST_LIMITS['research_suggestions']:]
             rows.append(created)
             current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
             saved = _write_profile_unlocked(current)
-        return {'created': created, 'workflows': research_workflows_status(saved)}
+        return {'created': created, 'workflows': research_workflows_status(saved),
+                'suggestions': research_suggestions_status(saved)}
 
     workflow_id = str(body.get('workflowId') or '').strip()[:180]
     if not workflow_id:
@@ -5559,7 +5642,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.27.0'
+    server_version = 'DeepPulse/1.28.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5724,6 +5807,8 @@ class Handler(BaseHTTPRequestHandler):
                            'research_run_comparison': 1,
                            'research_workflow_lineage': 1,
                            'research_evidence_timeline': 1,
+                           'research_suggestion_inbox': 1,
+                           'research_suggestion_preview': 1,
                            'epaper_gateway': 1,
                            'epaper_research_workflow': 1,
                           'epaper_frame': '800x480-1bpp',
@@ -5804,6 +5889,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': research_memory_status()})
         elif path == '/api/research-workflows':
             self.send_json({'ok': True, 'data': research_workflows_status()})
+        elif path == '/api/research-suggestions':
+            self.send_json({'ok': True, 'data': research_suggestions_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -6054,6 +6141,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/research-workflows':
                 body = self.read_json_body(32768)
                 self.send_json({'ok': True, 'data': mutate_research_workflow(
+                    body.get('action'), body)})
+            elif u.path == '/api/research-suggestions':
+                body = self.read_json_body(16384)
+                self.send_json({'ok': True, 'data': mutate_research_suggestion(
                     body.get('action'), body)})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()

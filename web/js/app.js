@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.27.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.27.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.27.0';
+import { api } from './api.js?v=1.28.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.28.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.28.0';
 
-import * as pageOverview from './pages/overview.js?v=1.27.0';
-import * as pageEmotion from './pages/emotion.js?v=1.27.0';
-import * as pageMarket from './pages/market.js?v=1.27.0';
-import * as pageLadder from './pages/ladder.js?v=1.27.0';
-import * as pageWatch from './pages/watch.js?v=1.27.0';
-import * as pageStrategy from './pages/strategy.js?v=1.27.0';
-import * as pageEpaper from './pages/epaper.js?v=1.27.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.27.0';
-import * as pageAbout from './pages/about.js?v=1.27.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.27.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.27.0';
-import { initOnboarding } from './onboarding.js?v=1.27.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.27.0';
+import * as pageOverview from './pages/overview.js?v=1.28.0';
+import * as pageEmotion from './pages/emotion.js?v=1.28.0';
+import * as pageMarket from './pages/market.js?v=1.28.0';
+import * as pageLadder from './pages/ladder.js?v=1.28.0';
+import * as pageWatch from './pages/watch.js?v=1.28.0';
+import * as pageStrategy from './pages/strategy.js?v=1.28.0';
+import * as pageEpaper from './pages/epaper.js?v=1.28.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.28.0';
+import * as pageAbout from './pages/about.js?v=1.28.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.28.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.28.0';
+import { initOnboarding } from './onboarding.js?v=1.28.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.28.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -247,6 +247,19 @@ function currentHarnessContext() {
       })),
       boundary: state.researchWorkflows.boundary,
       permissions: state.researchWorkflows.permissions,
+    } : null,
+    researchSuggestions: state.researchSuggestions ? {
+      modelVersion: state.researchSuggestions.modelVersion,
+      generatedAt: state.researchSuggestions.generatedAt,
+      summary: state.researchSuggestions.summary,
+      items: (state.researchSuggestions.visible || []).slice(0, 5).map(row => ({
+        id: row.id, role: row.role, title: row.title, reason: row.reason,
+        sourceType: row.sourceType, sourceId: row.sourceId,
+        evidenceGaps: row.evidenceGaps, proposedDraft: row.proposedDraft,
+        expiresAt: row.expiresAt, state: row.state, contract: row.contract,
+      })),
+      boundary: state.researchSuggestions.boundary,
+      contract: state.researchSuggestions.contract,
     } : null,
     akshareResearch: state.akshareResearch && state.akshareResearch.status !== 'not_loaded' ? {
       modelVersion: state.akshareResearch.modelVersion,
@@ -569,6 +582,13 @@ async function pollResearchWorkflows() {
   } catch { /* 研究流程失败不影响行情与原始研究记录 */ }
 }
 
+async function pollResearchSuggestions() {
+  try {
+    state.researchSuggestions = await api.researchSuggestions();
+    emit('research-suggestions', state.researchSuggestions);
+  } catch { /* 主动建议失败不影响手动研究流程 */ }
+}
+
 /** 异动差分：新涨停 / 炸板（仅交易时段播报，防止盘后修订误报） */
 function diffMoves(data) {
   const ztPool = (data.pools && data.pools.ZT && data.pools.ZT.pool) || [];
@@ -645,7 +665,7 @@ function schedule() {
   newsTimer = setInterval(pollNews, open ? 60000 : 300000);
   alertTimer = setInterval(pollAlerts, 10000);
   routineTimer = setInterval(pollRoutine, 30000);
-  eventTimer = setInterval(() => { pollEventImpact(); pollHypotheses(); pollResearchCockpit(); pollResearchMemory(); pollResearchWorkflows(); }, 300000);
+  eventTimer = setInterval(() => { pollEventImpact(); pollHypotheses(); pollResearchCockpit(); pollResearchMemory(); pollResearchWorkflows(); pollResearchSuggestions(); }, 300000);
   if (open) pollAlerts();
   pollRoutine();
   pollEventImpact();
@@ -653,6 +673,7 @@ function schedule() {
   pollResearchCockpit();
   pollResearchMemory();
   pollResearchWorkflows();
+  pollResearchSuggestions();
 }
 
 /* ---------------- 时钟 ---------------- */
@@ -888,7 +909,7 @@ async function boot() {
   }
 
   goto(location.hash.slice(1) || 'overview', true);
-  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact(), pollHypotheses(), pollResearchCockpit(), pollResearchMemory(), pollResearchWorkflows()]);
+  await Promise.allSettled([pollEmotion(), pollIndices(), pollNews(), pollEventImpact(), pollHypotheses(), pollResearchCockpit(), pollResearchMemory(), pollResearchWorkflows(), pollResearchSuggestions()]);
   booted = true;
   schedule();
 
@@ -903,7 +924,7 @@ async function boot() {
       if (newsTimer) clearInterval(newsTimer);
       if (eventTimer) clearInterval(eventTimer);
     } else {
-      pollEmotion(); pollIndices(); pollNews(); pollEventImpact(); pollHypotheses(); pollResearchCockpit(); pollResearchMemory(); pollResearchWorkflows();
+      pollEmotion(); pollIndices(); pollNews(); pollEventImpact(); pollHypotheses(); pollResearchCockpit(); pollResearchMemory(); pollResearchWorkflows(); pollResearchSuggestions();
       schedule();
     }
   });
