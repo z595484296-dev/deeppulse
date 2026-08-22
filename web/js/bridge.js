@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.22.1';
+import { applyChartTheme } from './charts.js?v=1.23.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -35,6 +35,17 @@ function trimHypothesisEvidence(item, limit = 8) {
   return item ? { ...item, evidenceCandidates: (item.evidenceCandidates || []).slice(0, limit) } : item;
 }
 
+function trimWorkflowEvidence(item, resultLimit = 5, evidenceLimit = 5) {
+  if (!item) return item;
+  const runs = (item.runs || (item.latestRun ? [item.latestRun] : [])).slice(-1).map(run => ({
+    ...run,
+    results: (run.results || []).slice(0, resultLimit).map(result => ({
+      ...result, evidence: (result.evidence || []).slice(0, evidenceLimit),
+    })),
+  }));
+  return { ...item, runs, latestRun: runs[0] || null };
+}
+
 export function boundedContext(value) {
   try {
     const plain = JSON.parse(JSON.stringify(value || {}));
@@ -50,6 +61,10 @@ export function boundedContext(value) {
       researchHypotheses: plain.researchHypotheses ? {
         ...plain.researchHypotheses,
         items: (plain.researchHypotheses.items || []).slice(0, 5).map(item => trimHypothesisEvidence(item, 8)),
+      } : null,
+      researchWorkflows: plain.researchWorkflows ? {
+        ...plain.researchWorkflows,
+        items: (plain.researchWorkflows.items || []).slice(0, 8).map(item => trimWorkflowEvidence(item)),
       } : null,
       emotionAnalysis: {
         ...emotion,
@@ -113,6 +128,14 @@ export function boundedContext(value) {
         automaticTradingAction: reduced.researchMemory.automaticTradingAction,
       } : null,
       researchMemoryItem: reduced.researchMemoryItem || null,
+      researchWorkflows: reduced.researchWorkflows ? {
+        modelVersion: reduced.researchWorkflows.modelVersion,
+        summary: reduced.researchWorkflows.summary,
+        items: (reduced.researchWorkflows.items || []).slice(0, 4).map(item => trimWorkflowEvidence(item, 4, 3)),
+        boundary: reduced.researchWorkflows.boundary,
+        permissions: reduced.researchWorkflows.permissions,
+      } : null,
+      researchWorkflow: trimWorkflowEvidence(reduced.researchWorkflow, 5, 5) || null,
       akshareResearch: reduced.akshareResearch || null,
       selectedSecurity: reduced.selectedSecurity,
       market: {
@@ -129,7 +152,7 @@ export function boundedContext(value) {
         raw: emotion.raw, missing: emotion.missing,
       },
       indices: reduced.indices, sources: reduced.sources, disclaimer: reduced.disclaimer,
-      contextTruncated: { value: true, sections: ['history', 'signals', 'tdxFields'] },
+      contextTruncated: { value: true, sections: ['history', 'signals', 'tdxFields', 'workflowEvidence'] },
     };
   } catch { return {}; }
 }

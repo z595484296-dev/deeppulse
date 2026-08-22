@@ -1,15 +1,17 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.22.1';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.22.1';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.22.1';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.22.1';
+import { api } from '../api.js?v=1.23.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.23.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.23.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.23.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
 let calRender = null; // 复盘日历渲染句柄（refresh 时重绘）
 let hypothesisData = null;
 let researchMemoryData = null;
+let researchWorkflowData = null;
+let researchWorkflowPreview = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -89,6 +91,43 @@ export function init(container) {
           <span style="font-size:11px;color:var(--text-3)" id="st-tune-hint"></span>
         </div>
       </div>
+
+      <section class="card span-12 workflow-studio" aria-labelledby="st-workflow-title">
+        <div class="card-head workflow-head">
+          <div><div class="card-title" id="st-workflow-title">🧭 研究流程</div><div class="card-sub">先预览范围与权限 · 再创建、执行和复盘</div></div>
+          <div class="workflow-summary" id="st-workflow-summary">正在读取…</div>
+        </div>
+        <p class="hypothesis-boundary">把研究对象、问题、证据源、复盘时点和输出方式组合成一个可控任务。预览不会访问外部数据；DeepSeek 只能建议拆解，不能替你确认权限。</p>
+        <div class="workflow-builder">
+          <form id="st-workflow-form" class="workflow-form" autocomplete="off">
+            <div class="workflow-field workflow-title-field"><label for="st-wf-title">流程名称</label><input id="st-wf-title" maxlength="120" placeholder="例如：工业富联算力热点验证"></div>
+            <div class="workflow-field"><label for="st-wf-target-type">研究对象</label><div class="workflow-inline"><select id="st-wf-target-type"><option value="stock">股票</option><option value="market">市场</option><option value="theme">主题</option><option value="custom">自定义</option></select><input id="st-wf-code" maxlength="6" inputmode="numeric" placeholder="601138"><input id="st-wf-name" maxlength="80" placeholder="工业富联"></div></div>
+            <div class="workflow-field"><label for="st-wf-question">我想验证的问题</label><textarea id="st-wf-question" maxlength="1200" placeholder="例如：近期算力热点是否获得公司公告、行情结构和宏观背景的共同支持？"></textarea></div>
+            <fieldset class="workflow-options"><legend>证据来源（创建后仍需手动执行）</legend>
+              <label><input type="checkbox" name="wf-source" value="official_disclosures" checked><span><b>官方披露</b><small>巨潮公告原文</small></span></label>
+              <label><input type="checkbox" name="wf-source" value="market_quote" checked><span><b>公开行情</b><small>通达信优先、双备援</small></span></label>
+              <label><input type="checkbox" name="wf-source" value="tdx_local"><span><b>通达信复核</b><small>本机只读</small></span></label>
+              <label><input type="checkbox" name="wf-source" value="akshare_macro" checked><span><b>AKShare</b><small>宏观与跨市场背景</small></span></label>
+              <label><input type="checkbox" name="wf-source" value="event_news"><span><b>事件快讯</b><small>需已开启事件雷达</small></span></label>
+            </fieldset>
+            <fieldset class="workflow-options compact"><legend>输出方式</legend>
+              <label><input type="checkbox" name="wf-output" value="dashboard_card" checked><span><b>研究卡片</b></span></label>
+              <label><input type="checkbox" name="wf-output" value="review_note" checked><span><b>到期复盘</b></span></label>
+              <label><input type="checkbox" name="wf-output" value="deepseek_brief" checked><span><b>DeepSeek 简报</b></span></label>
+            </fieldset>
+            <div class="workflow-settings">
+              <label>类型<select id="st-wf-kind"><option value="one_off">一次性任务</option><option value="template">可复用模板</option></select></label>
+              <label>复盘窗口<select id="st-wf-days"><option value="1">1 个工作日</option><option value="3">3 个工作日</option><option value="5" selected>5 个工作日</option><option value="10">10 个工作日</option><option value="20">20 个工作日</option></select></label>
+              <label class="workflow-check"><input type="checkbox" id="st-wf-reminder" checked><span>到期写入本机提醒</span></label>
+            </div>
+            <div class="workflow-actions"><button type="button" class="btn primary" id="st-wf-preview">预览流程与权限</button><button type="button" class="btn" id="st-wf-decompose">让 DeepSeek 帮我拆解</button><button type="button" class="btn ghost" id="st-wf-clear">清空草稿</button></div>
+            <div class="workflow-ai-suggestion" id="st-wf-suggestion" hidden></div>
+          </form>
+          <div class="workflow-preview" id="st-wf-preview-panel"><div class="empty compact">填写研究问题后先预览。这里会显示执行步骤、数据源状态和每项待确认权限。</div></div>
+        </div>
+        <div class="workflow-list-head"><b>已创建流程</b><span>执行只读取已冻结的来源；暂停和复制不会丢失历史</span></div>
+        <div id="st-workflow-list"><div class="empty">正在读取研究流程…</div></div>
+      </section>
 
       <section class="card span-12 hypothesis-lab" aria-labelledby="st-hyp-title">
         <div class="card-head">
@@ -334,6 +373,120 @@ export function init(container) {
     tuneEl.innerHTML = '<div class="empty" style="padding:14px">权重接口暂不可用</div>';
   });
 
+  const workflowForm = container.querySelector('#st-workflow-form');
+  const workflowPreviewPanel = container.querySelector('#st-wf-preview-panel');
+  const syncWorkflowTargetFields = () => {
+    const stock = container.querySelector('#st-wf-target-type').value === 'stock';
+    const code = container.querySelector('#st-wf-code');
+    code.disabled = !stock;
+    code.placeholder = stock ? '601138' : '非股票对象无需代码';
+  };
+  container.querySelector('#st-wf-target-type').addEventListener('change', syncWorkflowTargetFields);
+  syncWorkflowTargetFields();
+  container.querySelector('#st-wf-preview').addEventListener('click', async e => {
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchWorkflow('preview', { draft: workflowDraft(container) });
+      researchWorkflowPreview = result.preview;
+      renderWorkflowPreview(container);
+      toast(researchWorkflowPreview.ready ? '流程预览已生成；请逐项确认权限' : '请先解决预览中的缺失项', researchWorkflowPreview.ready ? 'ok' : 'err');
+    } catch (error) {
+      toast(error.message || '流程预览失败', 'err');
+    } finally { button.disabled = false; }
+  });
+  container.querySelector('#st-wf-decompose').addEventListener('click', async e => {
+    const button = e.currentTarget;
+    const suggestion = container.querySelector('#st-wf-suggestion');
+    const draft = workflowDraft(container);
+    if ((draft.question || '').trim().length < 4) { toast('先写下想验证的问题', 'err'); return; }
+    button.disabled = true;
+    const previous = button.textContent;
+    button.textContent = 'DeepSeek 正在拆解…';
+    try {
+      const prompt = '请把下面的研究草稿拆成 3-5 个可验证子问题，并指出每个子问题需要什么证据、哪些结论不能从现有来源推出。只提供建议，不要替用户新增来源、确认权限、创建提醒或给出买卖指令。草稿：' + JSON.stringify(draft);
+      const generated = await generateReviewBody(prompt, 'research-workflow-decompose');
+      suggestion.hidden = false;
+      suggestion.innerHTML = `<b>DeepSeek 拆解建议（不会自动改草稿）</b><pre>${esc(generated.reply)}</pre>`;
+      toast('拆解建议已返回；你决定是否修改草稿');
+    } catch (error) {
+      toast('拆解失败：' + error.message, 'err');
+    } finally { button.disabled = false; button.textContent = previous; }
+  });
+  container.querySelector('#st-wf-clear').addEventListener('click', () => {
+    workflowForm.reset();
+    container.querySelector('#st-wf-days').value = '5';
+    container.querySelector('#st-wf-kind').value = 'one_off';
+    researchWorkflowPreview = null;
+    workflowPreviewPanel.innerHTML = '<div class="empty compact">草稿已清空。重新填写后再预览，不会影响已创建流程。</div>';
+    container.querySelector('#st-wf-suggestion').hidden = true;
+    syncWorkflowTargetFields();
+  });
+  workflowPreviewPanel.addEventListener('change', () => updateWorkflowConfirmState(container));
+  workflowPreviewPanel.addEventListener('click', async e => {
+    const button = e.target.closest('[data-workflow-confirm]');
+    if (!button || !researchWorkflowPreview) return;
+    const confirmations = [...workflowPreviewPanel.querySelectorAll('[data-wf-permission]:checked')].map(input => input.value);
+    if (workflowPreviewPanel.querySelector('[data-wf-confirm-create]:checked')) confirmations.push('confirm:create');
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchWorkflow('confirm', {
+        draft: workflowDraft(container), previewId: researchWorkflowPreview.previewId,
+        confirmations,
+      });
+      researchWorkflowData = result.workflows;
+      state.researchWorkflows = researchWorkflowData;
+      researchWorkflowPreview = null;
+      renderWorkflowPreview(container);
+      renderResearchWorkflows(container);
+      bus.dispatchEvent(new CustomEvent('research-workflows', { detail: researchWorkflowData }));
+      toast(result.created.kind === 'template' ? '研究模板已创建' : '研究流程已创建；来源尚未执行');
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message || '创建研究流程失败', 'err');
+    }
+  });
+  container.querySelector('#st-workflow-list').addEventListener('click', async e => {
+    const button = e.target.closest('[data-wf-action]');
+    if (!button) return;
+    const workflow = (researchWorkflowData?.items || []).find(row => row.id === button.dataset.wfId);
+    if (!workflow) return;
+    const action = button.dataset.wfAction;
+    if (action === 'ask') {
+      document.dispatchEvent(new CustomEvent('ask-research-workflow', { detail: { workflow } }));
+      return;
+    }
+    if (action === 'copy') {
+      fillWorkflowDraft(container, workflow, workflow.kind === 'template');
+      researchWorkflowPreview = null;
+      renderWorkflowPreview(container);
+      container.querySelector('#st-workflow-title').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      toast(workflow.kind === 'template' ? '模板已复制为一次性草稿；请预览后创建' : '已复制为新草稿；原流程不变');
+      return;
+    }
+    button.disabled = true;
+    const oldText = button.textContent;
+    if (action === 'run') button.textContent = '正在读取来源…';
+    try {
+      const result = await api.mutateResearchWorkflow(action, { workflowId: workflow.id });
+      researchWorkflowData = result.workflows;
+      state.researchWorkflows = researchWorkflowData;
+      renderResearchWorkflows(container);
+      bus.dispatchEvent(new CustomEvent('research-workflows', { detail: researchWorkflowData }));
+      toast(action === 'run' ? '本次证据读取已记录；系统没有自动生成结论' : action === 'pause' ? '流程已暂停' : action === 'resume' ? '流程已继续' : '流程已完成');
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = oldText;
+      toast(error.message || '研究流程操作失败', 'err');
+    }
+  });
+  bus.addEventListener('research-workflows', e => {
+    researchWorkflowData = e.detail;
+    state.researchWorkflows = researchWorkflowData;
+    renderResearchWorkflows(container);
+  });
+  refreshResearchWorkflows(container);
+
   container.querySelector('#st-hyp-list').addEventListener('click', async e => {
     const button = e.target.closest('[data-hyp-action]');
     if (!button) return;
@@ -540,6 +693,133 @@ export function init(container) {
   calNote.textContent = '格子颜色 = 当日情绪阶段（蓝冰点/青修复/金发酵/红高潮/紫亢奋），📔 = 你写过的复盘。点击任意一天，可补写或让 DeepSeek 基于当日快照生成复盘；生成期间可查看会话，正文完整后会自动回填。';
   calRender = renderCal;
   renderCal();
+}
+
+const WORKFLOW_STATUS = {
+  active: ['运行中', 'cyan'], review_due: ['待复盘', 'amber'], paused: ['已暂停', 'gray'],
+  template: ['模板', 'violet'], completed: ['已完成', 'cyan'], invalid: ['需检查', 'red'],
+};
+
+function workflowDraft(container) {
+  const targetType = container.querySelector('#st-wf-target-type').value;
+  return {
+    kind: container.querySelector('#st-wf-kind').value,
+    title: container.querySelector('#st-wf-title').value.trim(),
+    target: {
+      type: targetType,
+      code: targetType === 'stock' ? container.querySelector('#st-wf-code').value.trim() : '',
+      name: container.querySelector('#st-wf-name').value.trim(),
+    },
+    question: container.querySelector('#st-wf-question').value.trim(),
+    sources: [...container.querySelectorAll('[name="wf-source"]:checked')].map(input => input.value),
+    reviewDays: Number(container.querySelector('#st-wf-days').value || 5),
+    outputs: [...container.querySelectorAll('[name="wf-output"]:checked')].map(input => input.value),
+    reminderEnabled: container.querySelector('#st-wf-reminder').checked,
+  };
+}
+
+function fillWorkflowDraft(container, workflow, fromTemplate = false) {
+  const target = workflow.target || {};
+  container.querySelector('#st-wf-kind').value = fromTemplate ? 'one_off' : (workflow.kind || 'one_off');
+  container.querySelector('#st-wf-title').value = workflow.title ? `${workflow.title} · 副本` : '';
+  container.querySelector('#st-wf-target-type').value = target.type || 'stock';
+  container.querySelector('#st-wf-code').value = target.code || '';
+  container.querySelector('#st-wf-name').value = target.name || '';
+  container.querySelector('#st-wf-question').value = workflow.question || '';
+  container.querySelector('#st-wf-days').value = String(workflow.reviewDays || 5);
+  container.querySelector('#st-wf-reminder').checked = workflow.reminderEnabled === true;
+  const sources = new Set(workflow.sources || []);
+  container.querySelectorAll('[name="wf-source"]').forEach(input => { input.checked = sources.has(input.value); });
+  const outputs = new Set(workflow.outputs || []);
+  container.querySelectorAll('[name="wf-output"]').forEach(input => { input.checked = outputs.has(input.value); });
+  container.querySelector('#st-wf-target-type').dispatchEvent(new Event('change'));
+  container.querySelector('#st-wf-suggestion').hidden = true;
+}
+
+function updateWorkflowConfirmState(container) {
+  const panel = container.querySelector('#st-wf-preview-panel');
+  const button = panel.querySelector('[data-workflow-confirm]');
+  if (!button || !researchWorkflowPreview?.ready) return;
+  const required = panel.querySelectorAll('[data-wf-permission]').length;
+  const checked = panel.querySelectorAll('[data-wf-permission]:checked').length;
+  const create = panel.querySelector('[data-wf-confirm-create]')?.checked;
+  button.disabled = checked !== required || !create;
+}
+
+function renderWorkflowPreview(container) {
+  const panel = container.querySelector('#st-wf-preview-panel');
+  if (!researchWorkflowPreview) {
+    panel.innerHTML = '<div class="empty compact">尚未预览。已创建流程不会因编辑草稿而变化。</div>';
+    return;
+  }
+  const preview = researchWorkflowPreview;
+  const blockers = preview.blockers || [];
+  if (blockers.length) {
+    panel.innerHTML = `<div class="workflow-preview-title"><b>还不能创建</b><span>草稿没有保存</span></div><ul class="workflow-blockers">${blockers.map(row => `<li>${esc(row.message)}</li>`).join('')}</ul>`;
+    return;
+  }
+  const sourceRows = (preview.sources || []).map(source => {
+    const environment = source.environment || {};
+    const tone = environment.available ? 'ok' : 'warn';
+    return `<li><span><b>${esc(source.label)}</b><small>${esc(source.purpose)}</small></span><em class="${tone}">${esc(environment.status || 'unobserved')}</em></li>`;
+  }).join('');
+  panel.innerHTML = `
+    <div class="workflow-preview-title"><b>执行预览</b><span>${esc(preview.previewId)}</span></div>
+    <ol class="workflow-steps">${(preview.steps || []).map(step => `<li><span>${Number(step.order)}</span><div><b>${esc(step.label)}</b><small>${step.externalAccess ? '执行时可能访问外部公开来源' : '本机内部步骤'}${step.automatic ? ' · 自动整理' : ' · 需用户动作'}</small></div></li>`).join('')}</ol>
+    <div class="workflow-source-preview"><b>来源状态</b><ul>${sourceRows}</ul></div>
+    <fieldset class="workflow-permissions"><legend>逐项确认本流程允许的范围</legend>
+      ${(preview.permissions || []).map(permission => `<label><input type="checkbox" data-wf-permission value="${esc(permission.id)}"><span><b>${esc(permission.label)}</b><small>${permission.persistent ? '持续到流程完成或暂停' : '仅限这条流程按需执行'}</small></span></label>`).join('')}
+      <label class="workflow-final-confirm"><input type="checkbox" data-wf-confirm-create><span><b>我确认按以上草稿创建</b><small>创建不会立即读取来源，也不会生成交易动作</small></span></label>
+    </fieldset>
+    <button type="button" class="btn primary workflow-confirm-btn" data-workflow-confirm disabled>确认创建流程</button>`;
+  updateWorkflowConfirmState(container);
+}
+
+async function refreshResearchWorkflows(container) {
+  try {
+    researchWorkflowData = await api.researchWorkflows();
+    state.researchWorkflows = researchWorkflowData;
+    renderResearchWorkflows(container);
+  } catch {
+    container.querySelector('#st-workflow-list').innerHTML = '<div class="empty">研究流程服务暂不可用，不影响其他策略功能</div>';
+  }
+}
+
+function renderResearchWorkflows(container) {
+  const root = container.querySelector('#st-workflow-list');
+  if (!root || !researchWorkflowData) return;
+  const summary = researchWorkflowData.summary || {};
+  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 暂停 <b>${summary.paused || 0}</b> · 模板 <b>${summary.template || 0}</b>`;
+  const items = researchWorkflowData.items || [];
+  if (!items.length) {
+    root.innerHTML = '<div class="empty">还没有研究流程。可以从一个具体问题开始，先预览再创建。</div>';
+    return;
+  }
+  const sources = researchWorkflowData.sourceDefinitions || {};
+  root.innerHTML = items.map(item => {
+    const status = WORKFLOW_STATUS[item.effectiveStatus] || WORKFLOW_STATUS.invalid;
+    const target = item.target || {};
+    const latest = (item.runs || []).slice(-1)[0];
+    const results = latest?.results || [];
+    const sourceTags = (item.sources || []).map(id => `<span>${esc(sources[id]?.label || id)}</span>`).join('');
+    const runRows = results.map(row => `<li data-status="${esc(row.status)}"><b>${esc(sources[row.sourceId]?.label || row.sourceId)}</b><span>${esc(row.summary || row.error || '无摘要')}</span><em>${esc(row.upstream || row.status)}</em></li>`).join('');
+    const canRun = item.status === 'active';
+    return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}">
+      <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b>${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
+      <div class="workflow-target"><b>${esc(target.name || target.code || target.type || '研究对象')}</b>${target.code ? `<span>${esc(target.code)}</span>` : ''}<span>${Number(item.reviewDays || 0)} 个工作日</span></div>
+      <p>${esc(item.question || '')}</p>
+      <div class="workflow-source-tags">${sourceTags}</div>
+      <details class="workflow-run" ${item.effectiveStatus === 'review_due' && latest ? 'open' : ''}><summary>${latest ? `最近执行 ${esc(formatHypothesisTime(latest.ranAt))} · 成功 ${Number(latest.summary?.ok || 0)} / ${Number(latest.summary?.selected || 0)}` : '尚未执行来源读取'}</summary>${runRows ? `<ul>${runRows}</ul>` : '<div class="empty compact">执行后会记录各来源的事实摘要、最终上游和失败原因，但不会自动下结论。</div>'}</details>
+      <div class="workflow-item-actions">
+        ${canRun ? `<button class="btn sm primary" data-wf-action="run" data-wf-id="${esc(item.id)}">执行一次</button>` : ''}
+        ${item.status === 'active' ? `<button class="btn sm" data-wf-action="pause" data-wf-id="${esc(item.id)}">暂停</button>` : ''}
+        ${item.status === 'paused' ? `<button class="btn sm" data-wf-action="resume" data-wf-id="${esc(item.id)}">继续</button>` : ''}
+        <button class="btn sm" data-wf-action="copy" data-wf-id="${esc(item.id)}">${item.kind === 'template' ? '从模板创建' : '复制为草稿'}</button>
+        <button class="btn sm" data-wf-action="ask" data-wf-id="${esc(item.id)}">让 DeepSeek 解读</button>
+        ${['active', 'paused'].includes(item.status) ? `<button class="btn sm ghost" data-wf-action="complete" data-wf-id="${esc(item.id)}">标记完成</button>` : ''}
+      </div>
+    </article>`;
+  }).join('');
 }
 
 const HYP_STATUS = {

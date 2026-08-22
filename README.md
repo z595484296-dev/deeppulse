@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.22.1-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.23.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 用户可控研究流程（v1.23）
+
+- 在“策略 → 研究流程”中组合研究对象、问题、证据来源、输出形式和复盘周期，先预览步骤与权限，再明确确认创建。
+- 支持一次性任务与可复用模板，并可运行、暂停、恢复、完成或复制；每个来源独立降级，失败不会污染其他来源。
+- 官方披露、公开行情、通达信本地只读行情、AKShare 研究增强和已授权事件服务均保留来源与时点。AKShare 是补充层，不替代官方披露和行情主链路。
+- DeepSeek 可以协助拆解问题、解释最近一次运行结果和建议下一步，但不能修改来源、权限、提醒或流程状态，也不能代替用户访问来源或触发交易。
 
 ---
 

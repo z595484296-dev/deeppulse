@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.22.1';
+const MIN_VERSION = '1.23.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -83,7 +83,10 @@ async function probeBase(base, signal) {
       && capabilities.research_cockpit_context === 1
       && capabilities.research_memory === 1
       && capabilities.research_memory_controls === 1
-      && capabilities.research_memory_context === 1 ? base : '';
+      && capabilities.research_memory_context === 1
+      && capabilities.research_workflows === 1
+      && capabilities.research_workflow_preview === 1
+      && capabilities.research_workflow_permissions === 1 ? base : '';
   } catch { return ''; }
 }
 
@@ -97,7 +100,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.22.1+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.23.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -194,6 +197,8 @@ export const api = {
   mutateResearchCockpit: (action, itemId) => post('/api/research-cockpit', { action, itemId }, 10000),
   researchMemory: () => request('/api/research-memory', 10000),
   mutateResearchMemory: (action, payload = {}) => post('/api/research-memory', { action, ...payload }, 10000),
+  researchWorkflows: () => request('/api/research-workflows', 10000),
+  mutateResearchWorkflow: (action, payload = {}) => post('/api/research-workflows', { action, ...payload }, 90000),
   deviceConfig: () => request('/api/device/config', 10000),
   saveDeviceConfig: (config) => post('/api/device/config', { config }, 15000),
   rotateDeviceToken: () => post('/api/device/token/rotate', undefined, 15000),

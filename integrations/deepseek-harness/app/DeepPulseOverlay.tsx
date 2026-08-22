@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.22.1'
+const MIN_BACKEND_VERSION = '1.23.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -228,6 +228,9 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const akshareResearch = recordOf(raw['akshareResearch'])
   const akshareProvider = recordOf(akshareResearch['provider'])
   const akshareSummary = recordOf(akshareResearch['summary'])
+  const researchWorkflows = recordOf(raw['researchWorkflows'])
+  const researchWorkflowSummary = recordOf(researchWorkflows['summary'])
+  const researchWorkflowPermissions = recordOf(researchWorkflows['permissions'])
   const sanitizeCockpitItem = (value: unknown) => {
     const item = recordOf(value)
     const evidence = recordOf(item['evidence'])
@@ -313,6 +316,85 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         purpose: short(module['purpose'], 300), status: short(module['status'], 30), metrics,
       }
     }) : []
+  const sanitizeWorkflowEvidence = (value: unknown) => {
+    const item = recordOf(value)
+    const source = recordOf(item['source'])
+    const metrics = Array.isArray(item['metrics']) ? item['metrics'].slice(0, 8).map(value => {
+      const metric = recordOf(value)
+      const metricSource = recordOf(metric['source'])
+      return {
+        id: short(metric['id'], 80), label: short(metric['label'], 120), value: scalar(metric['value'], 120),
+        unit: short(metric['unit'], 30), asOf: short(metric['asOf'], 80), status: short(metric['status'], 30),
+        note: short(metric['note'], 300),
+        source: {
+          upstream: short(metricSource['upstream'], 100), tier: short(metricSource['tier'], 30),
+          independentGroup: short(metricSource['independentGroup'], 80),
+        },
+      }
+    }) : []
+    return {
+      id: short(item['id'], 120), title: short(item['title'], 300), label: short(item['label'], 160),
+      date: short(item['date'], 30), asOf: short(item['asOf'], 80), publishedAt: short(item['publishedAt'], 80),
+      url: short(item['url'], 500), focus: item['focus'] === true,
+      code: short(item['code'], 20), name: short(item['name'], 80), price: finite(item['price']),
+      prevClose: finite(item['prevClose']), pct: finite(item['pct']), high: finite(item['high']),
+      low: finite(item['low']), amount: finite(item['amount']), source: short(item['source'], 80),
+      sourceName: short(item['sourceName'], 100), status: short(item['status'], 30),
+      purpose: short(item['purpose'], 300),
+      lineage: {
+        upstream: short(source['upstream'], 100), tier: short(source['tier'], 30),
+        independentGroup: short(source['independentGroup'], 80),
+      },
+      metrics,
+    }
+  }
+  const sanitizeWorkflowResult = (value: unknown) => {
+    const item = recordOf(value)
+    return {
+      sourceId: short(item['sourceId'], 60), status: short(item['status'], 30),
+      fetchedAt: short(item['fetchedAt'], 80), summary: short(item['summary'], 600),
+      upstream: short(item['upstream'], 120), error: short(item['error'], 240),
+      evidence: Array.isArray(item['evidence']) ? item['evidence'].slice(0, 8).map(sanitizeWorkflowEvidence) : [],
+    }
+  }
+  const sanitizeResearchWorkflow = (value: unknown) => {
+    const item = recordOf(value)
+    const target = recordOf(item['target'])
+    const contract = recordOf(item['contract'])
+    const runs = Array.isArray(item['runs']) ? item['runs'] : []
+    const latest = recordOf(item['latestRun'] ?? runs[runs.length - 1])
+    const latestSummary = recordOf(latest['summary'])
+    return {
+      id: short(item['id'], 180), modelVersion: short(item['modelVersion'], 60), title: short(item['title'], 240),
+      kind: short(item['kind'], 30), status: short(item['status'], 30), effectiveStatus: short(item['effectiveStatus'], 30),
+      target: { type: short(target['type'], 30), code: short(target['code'], 20), name: short(target['name'], 100) },
+      question: short(item['question'], 1000), sources: uniqueStrings(item['sources'], 5, 60),
+      outputs: uniqueStrings(item['outputs'], 3, 60), reviewDays: finite(item['reviewDays']),
+      reminderEnabled: item['reminderEnabled'] === true, dueAt: short(item['dueAt'], 80),
+      lastRunAt: short(item['lastRunAt'], 80), calendarBasis: short(item['calendarBasis'], 160),
+      latestRun: Object.keys(latest).length ? {
+        id: short(latest['id'], 180), ranAt: short(latest['ranAt'], 80),
+        summary: {
+          selected: finite(latestSummary['selected']), ok: finite(latestSummary['ok']),
+          degraded: finite(latestSummary['degraded']),
+        },
+        results: Array.isArray(latest['results']) ? latest['results'].slice(0, 5).map(sanitizeWorkflowResult) : [],
+        automaticConclusion: latest['automaticConclusion'] === true,
+        automaticTradingAction: latest['automaticTradingAction'] === true,
+      } : null,
+      contract: {
+        userConfirmed: contract['userConfirmed'] === true,
+        automaticExternalAuthorization: contract['automaticExternalAuthorization'] === true,
+        automaticTradingAction: contract['automaticTradingAction'] === true,
+        automaticStrategyChange: contract['automaticStrategyChange'] === true,
+        deepSeekMaySuggestOnly: contract['deepSeekMaySuggestOnly'] === true,
+      },
+    }
+  }
+  const researchWorkflowItems = Array.isArray(researchWorkflows['items'])
+    ? researchWorkflows['items'].slice(0, 12).map(sanitizeResearchWorkflow) : []
+  const standaloneResearchWorkflow = Object.keys(recordOf(raw['researchWorkflow'])).length
+    ? sanitizeResearchWorkflow(raw['researchWorkflow']) : null
   const sanitizeEventItem = (value: unknown) => {
     const item = recordOf(value)
     const event = recordOf(item['event'])
@@ -809,6 +891,22 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         automaticTradingAction: researchMemory['automaticTradingAction'] === true,
       } : null,
       researchMemoryItem: standaloneResearchMemory,
+      researchWorkflows: Object.keys(researchWorkflows).length ? {
+        modelVersion: short(researchWorkflows['modelVersion'], 60),
+        summary: {
+          total: finite(researchWorkflowSummary['total']), active: finite(researchWorkflowSummary['active']),
+          reviewDue: finite(researchWorkflowSummary['review_due']), paused: finite(researchWorkflowSummary['paused']),
+          template: finite(researchWorkflowSummary['template']), completed: finite(researchWorkflowSummary['completed']),
+        },
+        permissions: {
+          previewRequired: researchWorkflowPermissions['previewRequired'] === true,
+          explicitConfirmationRequired: researchWorkflowPermissions['explicitConfirmationRequired'] === true,
+          automaticExternalAuthorization: researchWorkflowPermissions['automaticExternalAuthorization'] === true,
+          automaticTradingAction: researchWorkflowPermissions['automaticTradingAction'] === true,
+        },
+        boundary: short(researchWorkflows['boundary'], 400), items: researchWorkflowItems,
+      } : null,
+      researchWorkflow: standaloneResearchWorkflow,
       akshareResearch: Object.keys(akshareResearch).length ? {
         modelVersion: short(akshareResearch['modelVersion'], 60),
         provider: {
@@ -971,6 +1069,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
     '15. akshareResearch 是按需生成的研究增强背景；必须检查每项 asOf 和 status，陈旧或缺失数据不得描述为当前事实。source.independentGroup 相同表示最终上游相同，不能算独立互证；这些指标不参与情绪温度、仓位区间或交易触发。',
+    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据，仍需核对时点、来源层级与缺口。',
   ].join('\n')
 }
 

@@ -64,6 +64,15 @@ except Exception:
     RESEARCH_MEMORY_MODEL_VERSION = 'research-memory-unavailable'
 
 try:
+    from research_workflow import (create_workflow, mutate_workflow, preview_workflow,
+                                   record_run as record_workflow_run, workflow_snapshot,
+                                   MODEL_VERSION as RESEARCH_WORKFLOW_MODEL_VERSION)
+except Exception:
+    create_workflow = mutate_workflow = preview_workflow = None
+    record_workflow_run = workflow_snapshot = None
+    RESEARCH_WORKFLOW_MODEL_VERSION = 'research-workflow-unavailable'
+
+try:
     from akshare_research import (build_snapshot as build_akshare_research_snapshot,
                                   unloaded_snapshot as unloaded_akshare_research_snapshot,
                                   MODEL_VERSION as AKSHARE_RESEARCH_MODEL_VERSION)
@@ -106,7 +115,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.22.1'
+VERSION = '1.23.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1520,6 +1529,8 @@ PROFILE_LIST_LIMITS = {
     'event_receipts': 500,
     'research_hypotheses': 300,
     'hypothesis_receipts': 500,
+    'research_workflows': 200,
+    'research_workflow_receipts': 500,
     'delivery_receipts': 1000,
 }
 PROFILE_OBJECT_LIMITS = {
@@ -3242,6 +3253,211 @@ def _repair_hypothesis_display(item):
     return row
 
 
+def research_workflow_environment():
+    """Describe source readiness without probing or granting new access."""
+    tdx = tdx_status(probe=False)
+    akshare = akshare_status(probe=False)
+    event = load_event_service_config()
+    return {
+        'official_disclosures': {
+            'status': 'available', 'available': True,
+            'detail': '创建后执行时按需访问巨潮资讯。',
+        },
+        'market_quote': {
+            'status': 'available', 'available': True,
+            'detail': '执行时使用通达信优先、东方财富和腾讯备援的行情链。',
+        },
+        'tdx_local': {
+            'status': ('ready' if tdx.get('service_ready') else str(tdx.get('status') or 'unavailable')),
+            'available': tdx.get('service_ready') is True,
+            'detail': '只读本地接口；不会访问账户、持仓或下单能力。',
+        },
+        'akshare_macro': {
+            'status': str(akshare.get('status') or 'not_installed'),
+            'available': akshare.get('installed') is True,
+            'detail': ('已安装 AKShare ' + str(akshare.get('version') or '')
+                       if akshare.get('installed') else '本机未安装 AKShare。'),
+        },
+        'event_news': {
+            'status': 'authorized' if event.get('enabled') else 'authorization_required',
+            'available': event.get('enabled') is True,
+            'detail': ('事件服务已获得持续访问授权。' if event.get('enabled')
+                       else '需先在总览单独开启事件影响雷达。'),
+        },
+    }
+
+
+def research_workflows_status(current=None):
+    profile = current if isinstance(current, dict) else load_profile()
+    data = profile.get('data') if isinstance(profile.get('data'), dict) else {}
+    if workflow_snapshot is None:
+        return {
+            'modelVersion': RESEARCH_WORKFLOW_MODEL_VERSION,
+            'items': [], 'summary': {'total': 0},
+            'error': '研究流程模型不可用',
+        }
+    result = workflow_snapshot(data.get('research_workflows') or [], now_bj())
+    result['environment'] = research_workflow_environment()
+    result['permissions'] = {
+        'previewRequired': True,
+        'explicitConfirmationRequired': True,
+        'automaticExternalAuthorization': False,
+        'automaticTradingAction': False,
+    }
+    return result
+
+
+def preview_research_workflow(draft):
+    if preview_workflow is None:
+        raise ValueError('研究流程模型不可用')
+    return preview_workflow(draft, research_workflow_environment(), now_bj())
+
+
+def _workflow_quote_result(source_id, quote, fetched_at):
+    price = quote.get('price')
+    previous = quote.get('prev_close')
+    pct = quote.get('pct')
+    if pct is None:
+        try:
+            pct = round((float(price) / float(previous) - 1) * 100, 2) if float(previous) else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            pct = None
+    upstream = str(quote.get('source_name') or quote.get('source') or '')[:120]
+    return {
+        'sourceId': source_id, 'status': 'ok', 'fetchedAt': fetched_at,
+        'upstream': upstream,
+        'summary': '%s %s，现价 %s，涨跌幅 %s%%' % (
+            quote.get('code') or '', quote.get('name') or '',
+            '--' if price is None else price, '--' if pct is None else pct),
+        'evidence': [{
+            'code': quote.get('code'), 'name': quote.get('name'), 'price': price,
+            'prevClose': previous, 'pct': pct, 'high': quote.get('high'),
+            'low': quote.get('low'), 'amount': quote.get('amount'),
+            'source': quote.get('source'), 'sourceName': quote.get('source_name'),
+        }],
+    }
+
+
+def collect_research_workflow_sources(item):
+    """Run only the sources frozen in a user-confirmed active workflow."""
+    target = item.get('target') if isinstance(item.get('target'), dict) else {}
+    code = normalize_code(str(target.get('code') or ''))
+    results = []
+    for source_id in item.get('sources') or []:
+        fetched_at = now_bj().isoformat(timespec='seconds')
+        try:
+            if source_id == 'official_disclosures':
+                data = cninfo_disclosures(code, 8)
+                rows = data.get('items') or []
+                results.append({
+                    'sourceId': source_id, 'status': 'ok', 'fetchedAt': fetched_at,
+                    'upstream': '巨潮资讯',
+                    'summary': '读取 %d 条最近公告；官方索引共 %s 条。' % (
+                        len(rows), data.get('total') if data.get('total') is not None else '--'),
+                    'evidence': [{
+                        'id': row.get('id'), 'title': row.get('title'), 'date': row.get('date'),
+                        'publishedAt': row.get('published_at'), 'url': row.get('pdf_url'),
+                        'focus': row.get('focus') is True,
+                    } for row in rows[:8]],
+                })
+            elif source_id == 'market_quote':
+                results.append(_workflow_quote_result(source_id, quote_with_fallback(code), fetched_at))
+            elif source_id == 'tdx_local':
+                results.append(_workflow_quote_result(source_id, tdx_read_quote(code), fetched_at))
+            elif source_id == 'akshare_macro':
+                snapshot = akshare_research_snapshot(refresh=True)
+                summary = snapshot.get('summary') or {}
+                results.append({
+                    'sourceId': source_id,
+                    'status': 'ok' if snapshot.get('status') == 'ok' else 'degraded',
+                    'fetchedAt': fetched_at, 'upstream': 'AKShare（逐项保留最终上游）',
+                    'summary': '研究指标 %s 项，当前 %s，陈旧 %s，不可用 %s。' % (
+                        summary.get('metrics', 0), summary.get('current', 0),
+                        summary.get('stale', 0), summary.get('unavailable', 0)),
+                    'evidence': snapshot.get('modules') or [],
+                    'error': '; '.join(str(row.get('error') or '')
+                                      for row in (snapshot.get('errors') or [])[:5]),
+                })
+            elif source_id == 'event_news':
+                config = load_event_service_config()
+                if not config.get('enabled'):
+                    raise ValueError('事件影响雷达尚未单独授权')
+                snapshot = event_service_status(include_impact=True)
+                impact = snapshot.get('impact') if isinstance(snapshot.get('impact'), dict) else {}
+                events = impact.get('items') if isinstance(impact.get('items'), list) else []
+                results.append({
+                    'sourceId': source_id, 'status': 'ok', 'fetchedAt': fetched_at,
+                    'upstream': '已授权事件影响服务',
+                    'summary': '读取 %d 条可追踪事件路径。' % len(events),
+                    'evidence': events[:10],
+                })
+            else:
+                raise ValueError('未知研究来源')
+        except Exception as exc:
+            results.append({
+                'sourceId': source_id, 'status': 'unavailable', 'fetchedAt': fetched_at,
+                'upstream': '', 'summary': '本次读取失败，不影响其他来源。',
+                'evidence': [], 'error': str(exc)[:240],
+            })
+    return results
+
+
+def mutate_research_workflow(action, payload=None):
+    body = payload if isinstance(payload, dict) else {}
+    clean_action = str(action or '').strip()
+    if clean_action == 'preview':
+        return {'preview': preview_research_workflow(body.get('draft'))}
+    if clean_action == 'confirm':
+        live_preview = preview_research_workflow(body.get('draft'))
+        if str(body.get('previewId') or '') != live_preview.get('previewId'):
+            raise ValueError('研究草稿已变化，请重新预览后确认')
+        created = create_workflow(live_preview, body.get('confirmations'), now_bj())
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            rows = [row for row in (current['data'].get('research_workflows') or [])
+                    if isinstance(row, dict) and row.get('id')]
+            rows.append(created)
+            current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+            saved = _write_profile_unlocked(current)
+        return {'created': created, 'workflows': research_workflows_status(saved)}
+
+    workflow_id = str(body.get('workflowId') or '').strip()[:180]
+    if not workflow_id:
+        raise ValueError('研究流程 ID 是必需的')
+    if clean_action == 'run':
+        profile = load_profile()
+        source = next((row for row in (profile.get('data') or {}).get('research_workflows') or []
+                       if isinstance(row, dict) and str(row.get('id') or '') == workflow_id), None)
+        if not source:
+            raise ValueError('研究流程不存在')
+        source_results = collect_research_workflow_sources(source)
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                    if isinstance(row, dict) and row.get('id')]
+            index = next((i for i, row in enumerate(rows)
+                          if str(row.get('id') or '') == workflow_id), -1)
+            if index < 0:
+                raise ValueError('研究流程不存在')
+            rows[index], run = record_workflow_run(rows[index], source_results, now_bj())
+            current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+            saved = _write_profile_unlocked(current)
+        return {'run': run, 'workflows': research_workflows_status(saved)}
+
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                if isinstance(row, dict) and row.get('id')]
+        index = next((i for i, row in enumerate(rows)
+                      if str(row.get('id') or '') == workflow_id), -1)
+        if index < 0:
+            raise ValueError('研究流程不存在')
+        rows[index] = mutate_workflow(rows[index], clean_action, now_bj())
+        current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+        saved = _write_profile_unlocked(current)
+    return {'updated': rows[index], 'workflows': research_workflows_status(saved)}
+
+
 def research_hypotheses_status(current=None):
     """Return the hypothesis lifecycle with time-derived review state."""
     profile = current if isinstance(current, dict) else load_profile()
@@ -3765,6 +3981,55 @@ def publish_due_hypothesis_reminders(now=None):
         return published
 
 
+def publish_due_research_workflow_reminders(now=None):
+    """Publish one local reminder for each explicitly enabled due workflow."""
+    if workflow_snapshot is None:
+        return 0
+    current_time = now if isinstance(now, datetime) else now_bj()
+    timestamp = int(current_time.timestamp() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        snapshot = workflow_snapshot(current['data'].get('research_workflows') or [], current_time)
+        due = [row for row in snapshot.get('items') or []
+               if row.get('effectiveStatus') == 'review_due'
+               and row.get('reminderEnabled') is True]
+        receipts = [row for row in (current['data'].get('research_workflow_receipts') or [])
+                    if isinstance(row, dict) and row.get('id')]
+        receipt_ids = {row['id'] for row in receipts}
+        inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict) and row.get('id')]
+        published = 0
+        for row in due:
+            receipt_id = 'workflow-due:' + str(row.get('id') or '')[:120]
+            if receipt_id in receipt_ids:
+                continue
+            target = row.get('target') if isinstance(row.get('target'), dict) else {}
+            target_name = target.get('name') or target.get('code') or '研究对象'
+            inbox = [item for item in inbox if item.get('id') != receipt_id]
+            inbox.append({
+                'id': receipt_id, 'fingerprint': receipt_id,
+                'kind': 'research_workflow_review', 'priority': 'medium',
+                'delivery': 'digest', 'page': 'strategy', 'createdAt': timestamp,
+                'expiresAt': timestamp + 14 * 24 * 60 * 60 * 1000,
+                'title': '研究流程到期：' + str(row.get('title') or target_name)[:120],
+                'detail': '预设复盘窗口已结束。请检查已收集证据、数据缺口和反证条件。',
+                'reason': '你创建该流程时明确开启了本机到期提醒',
+                'workflowId': row.get('id'), 'reviewDueAt': row.get('dueAt'),
+            })
+            receipts.append({
+                'id': receipt_id, 'workflowId': row.get('id'),
+                'publishedAt': current_time.isoformat(timespec='seconds'),
+            })
+            receipt_ids.add(receipt_id)
+            published += 1
+        if published:
+            current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+            current['data']['research_workflow_receipts'] = receipts[
+                -PROFILE_LIST_LIMITS['research_workflow_receipts']:]
+            _write_profile_unlocked(current)
+        return published
+
+
 def _event_service_loop():
     with _event_service_lock:
         _event_service_runtime['thread_running'] = True
@@ -3773,6 +4038,10 @@ def _event_service_loop():
             publish_due_hypothesis_reminders(now_bj())
         except Exception as exc:
             log('hypothesis due reminder -> %s' % exc)
+        try:
+            publish_due_research_workflow_reminders(now_bj())
+        except Exception as exc:
+            log('research workflow due reminder -> %s' % exc)
         cfg = load_event_service_config()
         if cfg['enabled']:
             with _event_service_lock:
@@ -5148,7 +5417,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.22.1'
+    server_version = 'DeepPulse/1.23.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5300,10 +5569,13 @@ class Handler(BaseHTTPRequestHandler):
                           'research_cockpit': 1,
                           'research_priority_controls': 1,
                           'research_cockpit_context': 1,
-                          'research_memory': 1,
-                          'research_memory_controls': 1,
-                          'research_memory_context': 1,
-                          'epaper_gateway': 1,
+                           'research_memory': 1,
+                           'research_memory_controls': 1,
+                           'research_memory_context': 1,
+                           'research_workflows': 1,
+                           'research_workflow_preview': 1,
+                           'research_workflow_permissions': 1,
+                           'epaper_gateway': 1,
                           'epaper_frame': '800x480-1bpp',
                       }}
             # 顶层字段兼容桌面宿主，data 字段供统一 Web API 客户端使用。
@@ -5375,6 +5647,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': research_cockpit_status()})
         elif path == '/api/research-memory':
             self.send_json({'ok': True, 'data': research_memory_status()})
+        elif path == '/api/research-workflows':
+            self.send_json({'ok': True, 'data': research_workflows_status()})
         elif path == '/api/device/config':
             cfg = load_device_config(persist=True)
             self.send_json({'ok': True, 'data': {
@@ -5617,6 +5891,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == '/api/research-memory':
                 body = self.read_json_body(16384)
                 self.send_json({'ok': True, 'data': mutate_research_memory(
+                    body.get('action'), body)})
+            elif u.path == '/api/research-workflows':
+                body = self.read_json_body(32768)
+                self.send_json({'ok': True, 'data': mutate_research_workflow(
                     body.get('action'), body)})
             elif u.path == '/api/device/config':
                 body = self.read_json_body()

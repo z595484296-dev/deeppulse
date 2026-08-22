@@ -41,6 +41,7 @@ $runtimeFiles = @(
     'event_impact.py',
     'research_hypothesis.py',
     'research_memory.py',
+    'research_workflow.py',
     'akshare_research.py',
     'hypothesis_evidence.py',
     'tdx_local.py',
