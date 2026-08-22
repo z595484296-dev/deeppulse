@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.36.0';
+const MIN_VERSION = '1.37.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -118,7 +118,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.36.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.37.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -203,6 +203,13 @@ export const api = {
   retryDelivery: (channel, itemId) => post('/api/delivery/retry', { channel, itemId }, 5000),
   monitorStatus: () => request('/api/monitor/status', 5000),
   saveMonitorConfig: (config) => post('/api/monitor/config', { config }, 5000),
+  observationRules: () => request('/api/observation-rules', 10000),
+  parseObservationRule: (text) => post('/api/observation-rules/parse', { text }, 5000),
+  previewObservationRule: (draft) => post('/api/observation-rules/preview', { draft }, 90000),
+  confirmObservationRule: (previewId, expectedRevision) => post(
+    '/api/observation-rules/confirm', { previewId, expectedRevision, confirmed: true }, 15000),
+  mutateObservationRule: (ruleId, action, fingerprint = '') => post(
+    '/api/observation-rules/action', { ruleId, action, fingerprint }, action === 'check_now' ? 90000 : 10000),
   routineStatus: () => request('/api/routine/status', 5000),
   saveRoutineConfig: (config) => post('/api/routine/config', { config }, 5000),
   previewServicePlan: (text) => post('/api/service-plan/preview', { text }, 5000),

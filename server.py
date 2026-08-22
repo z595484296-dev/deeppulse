@@ -55,6 +55,19 @@ except Exception:
     ATTENTION_TRIAGE_MODEL_VERSION = 'attention-triage-unavailable'
 
 try:
+    from observation_rules import (parse_intent as parse_observation_intent,
+                                   normalize_draft as normalize_observation_draft,
+                                   evaluate as evaluate_observation_rule,
+                                   describe_clause as describe_observation_clause,
+                                   SIGNALS as OBSERVATION_SIGNALS,
+                                   MODEL_VERSION as OBSERVATION_RULES_MODEL_VERSION)
+except Exception:
+    parse_observation_intent = normalize_observation_draft = None
+    evaluate_observation_rule = describe_observation_clause = None
+    OBSERVATION_SIGNALS = {}
+    OBSERVATION_RULES_MODEL_VERSION = 'observation-rules-unavailable'
+
+try:
     from research_hypothesis import (create_hypothesis, review_hypothesis,
                                      hypothesis_snapshot,
                                      MODEL_VERSION as HYPOTHESIS_MODEL_VERSION)
@@ -150,7 +163,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.36.0'
+VERSION = '1.37.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1628,6 +1641,8 @@ PROFILE_LIST_LIMITS = {
     'delivery_receipts': 1000,
     'chat_action_plans': 120,
     'chat_action_receipts': 240,
+    'observation_rules': 100,
+    'observation_rule_receipts': 500,
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
@@ -2760,6 +2775,308 @@ def _write_profile_unlocked(current):
     return current
 
 
+# ---------------------------------------------------------------- 可组合观察规则（草稿由 AI/白名单整理，运行时仅确定性判断）
+
+_observation_preview_lock = threading.Lock()
+_observation_previews = {}
+
+
+def _active_observation_rules(data=None, current=None):
+    source = data if isinstance(data, dict) else (load_profile().get('data') or {})
+    timestamp = current if isinstance(current, datetime) else now_bj()
+    rows = []
+    for row in source.get('observation_rules') or []:
+        if not isinstance(row, dict) or not row.get('id'):
+            continue
+        try:
+            expires = datetime.fromisoformat(str(row.get('expiresAt') or ''))
+            expires = expires.astimezone(BJC) if expires.tzinfo else expires.replace(tzinfo=BJC)
+        except ValueError:
+            continue
+        if row.get('status') == 'active' and expires > timestamp:
+            rows.append(row)
+    return rows
+
+
+def _observation_values(rule, quote_loader=None, emotion_loader=None):
+    signals = {row.get('signal') for row in (rule.get('clauses') or [])}
+    values, evidence, errors = {}, [], []
+    if any(signal.startswith('emotion.') for signal in signals if signal):
+        try:
+            emotion = (emotion_loader or assemble_emotion)()
+            engine = emotion.get('engine') or {}
+            raw = engine.get('raw') or {}
+            mapping = {
+                'emotion.temperature': engine.get('temp'),
+                'emotion.phase': engine.get('phase'),
+                'emotion.break_rate': raw.get('zb_rate'),
+            }
+            for signal in signals:
+                if signal.startswith('emotion.'):
+                    values[signal] = mapping.get(signal)
+                    evidence.append({'signal': signal, 'value': mapping.get(signal),
+                                     'dataAt': emotion.get('server_time'), 'dataDate': emotion.get('date'),
+                                     'sourceId': 'emotion-engine',
+                                     'state': 'degraded' if engine.get('degraded') else 'ok'})
+                    if mapping.get(signal) is None or engine.get('degraded'):
+                        errors.append('%s 数据不足' % (OBSERVATION_SIGNALS.get(signal) or {}).get('label', signal))
+        except Exception as exc:
+            errors.append('情绪数据读取失败：%s' % str(exc)[:100])
+            for signal in signals:
+                if signal.startswith('emotion.'):
+                    values[signal] = None
+    if any(signal.startswith('quote.') for signal in signals if signal):
+        target = rule.get('target') or {}
+        code = normalize_code(target.get('code') or '')
+        try:
+            quote = (quote_loader or quote_with_fallback)(code)
+            mapping = {'quote.price': quote.get('price'), 'quote.pct': quote.get('pct')}
+            observed = now_bj().isoformat(timespec='seconds')
+            for signal in signals:
+                if signal.startswith('quote.'):
+                    values[signal] = mapping.get(signal)
+                    evidence.append({'signal': signal, 'value': mapping.get(signal),
+                                     'dataAt': observed, 'dataDate': now_bj().strftime('%Y-%m-%d'),
+                                     'sourceId': str(quote.get('source') or 'quote-fallback'),
+                                     'state': 'ok' if mapping.get(signal) is not None else 'degraded'})
+                    if mapping.get(signal) is None:
+                        errors.append('%s 数据不足' % (OBSERVATION_SIGNALS.get(signal) or {}).get('label', signal))
+        except Exception as exc:
+            errors.append('%s 行情读取失败：%s' % (target.get('name') or code, str(exc)[:100]))
+            for signal in signals:
+                if signal.startswith('quote.'):
+                    values[signal] = None
+    return values, evidence, errors
+
+
+def parse_observation_rule(text):
+    if parse_observation_intent is None:
+        raise ValueError('组合观察规则模块不可用')
+    profile = load_profile().get('data') or {}
+    return parse_observation_intent(text, profile.get('watchlist') or [], now_bj())
+
+
+def preview_observation_rule(draft):
+    if normalize_observation_draft is None:
+        raise ValueError('组合观察规则模块不可用')
+    profile = load_profile()
+    normalized = normalize_observation_draft(
+        draft, (profile.get('data') or {}).get('watchlist') or [], now_bj())
+    values, evidence, errors = _observation_values(normalized)
+    result = evaluate_observation_rule(normalized, values)
+    token = secrets.token_urlsafe(18)
+    preview_id = 'observation-preview:' + token
+    preview = {
+        'previewId': preview_id, 'profileRevision': int(profile.get('revision') or 0),
+        'createdAt': now_bj().isoformat(timespec='seconds'), 'draft': normalized,
+        'current': result, 'evidence': evidence, 'blockers': errors,
+        'permissions': ['background:observation_rule', 'source:emotion']
+                       + (['source:quote:' + normalized['target']['code']] if normalized.get('target') else []),
+        'requiresConfirmation': True,
+        'boundary': '确认前不会创建或检查；运行时不调用 DeepSeek，不执行交易。',
+    }
+    with _observation_preview_lock:
+        cutoff = time.time() - 10 * 60
+        _observation_previews.clear() if len(_observation_previews) > 100 else None
+        _observation_previews[preview_id] = dict(preview, createdEpoch=time.time())
+        for key in [key for key, row in _observation_previews.items()
+                    if float(row.get('createdEpoch') or 0) < cutoff]:
+            _observation_previews.pop(key, None)
+    return preview
+
+
+def confirm_observation_rule(preview_id, expected_revision=None, confirmed=False):
+    if confirmed is not True:
+        raise ValueError('必须由用户明确确认后才能开启观察规则')
+    with _observation_preview_lock:
+        preview = _observation_previews.pop(str(preview_id or ''), None)
+    if not preview or time.time() - float(preview.get('createdEpoch') or 0) > 10 * 60:
+        raise ValueError('观察规则预览已过期，请重新预览')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        revision = int(current.get('revision') or 0)
+        expected = preview.get('profileRevision') if expected_revision is None else int(expected_revision)
+        if revision != int(expected):
+            raise ValueError('用户档案已变化，请重新预览后确认')
+        draft = normalize_observation_draft(
+            preview.get('draft'), current['data'].get('watchlist') or [], now_bj())
+        if draft.get('configFingerprint') != (preview.get('draft') or {}).get('configFingerprint'):
+            raise ValueError('观察条件已变化，请重新预览')
+        rules = [row for row in (current['data'].get('observation_rules') or [])
+                 if isinstance(row, dict)]
+        if len(_active_observation_rules(current['data'])) >= 10:
+            raise ValueError('最多同时运行 10 条观察规则')
+        if any(row.get('status') == 'active' and row.get('configFingerprint') == draft['configFingerprint'] for row in rules):
+            raise ValueError('已有相同的观察规则在运行')
+        timestamp = now_bj().isoformat(timespec='seconds')
+        rule_id = 'observation-rule:' + secrets.token_hex(9)
+        rule = {
+            **draft, 'id': rule_id, 'version': 1, 'status': 'active',
+            'createdAt': timestamp, 'updatedAt': timestamp,
+            'runtime': {'state': 'baseline', 'lastEvaluatedAt': timestamp,
+                        'lastTruth': (preview.get('current') or {}).get('truth'),
+                        'lastTriggeredAt': None, 'lastError': None,
+                        'consecutiveFailures': len(preview.get('blockers') or []) and 1 or 0,
+                        'needsFalseToRearm': bool((preview.get('current') or {}).get('truth'))},
+            'lastEvidence': preview.get('evidence') or [],
+        }
+        rules.append(rule)
+        current['data']['observation_rules'] = rules[-PROFILE_LIST_LIMITS['observation_rules']:]
+        receipts = [row for row in (current['data'].get('observation_rule_receipts') or []) if isinstance(row, dict)]
+        receipts.append({'id': 'observation-receipt:' + secrets.token_hex(8), 'ruleId': rule_id,
+                         'action': 'created', 'createdAt': timestamp,
+                         'configFingerprint': rule['configFingerprint']})
+        current['data']['observation_rule_receipts'] = receipts[-PROFILE_LIST_LIMITS['observation_rule_receipts']:]
+        saved = _write_profile_unlocked(current)
+    _monitor_wake.set()
+    return {'profile': saved, 'rule': rule, 'status': observation_rules_status(saved.get('data'))}
+
+
+def _observation_attention(rule, evaluation, evidence, timestamp):
+    target = rule.get('target') or {}
+    joiner = ' 且 ' if rule.get('logic') == 'all' else ' 或 '
+    summary = joiner.join(describe_observation_clause(row, target) for row in rule.get('clauses') or [])
+    sequence = int((rule.get('runtime') or {}).get('triggerCount') or 0) + 1
+    trigger_id = '%s:%d' % (rule['id'], sequence)
+    return {
+        'id': 'observation-trigger:' + hashlib.sha256(trigger_id.encode('utf-8')).hexdigest()[:24],
+        'fingerprint': 'observation-trigger:' + hashlib.sha256(trigger_id.encode('utf-8')).hexdigest()[:24],
+        'kind': 'observation_rule', 'priority': 'medium', 'delivery': rule.get('delivery') or 'center_only',
+        'title': '组合观察条件已满足：' + str(rule.get('title') or '观察规则'),
+        'detail': summary + '。请核对触发事实，不将其直接解释为买卖信号。',
+        'reason': '你明确确认了这条本机观察规则；仅在条件由不满足变为满足时提醒',
+        'page': 'overview', 'observationRuleId': rule['id'], 'observationEvidence': evidence,
+        'createdAt': timestamp, 'expiresAt': timestamp + 3 * 24 * 60 * 60 * 1000,
+        'readAt': None,
+    }
+
+
+def process_observation_rules_once(now=None, quote_loader=None, emotion_loader=None, rule_id=''):
+    current_time = now if isinstance(now, datetime) else now_bj()
+    profile = load_profile().get('data') or {}
+    candidates = [row for row in _active_observation_rules(profile, current_time)
+                  if not rule_id or row.get('id') == rule_id]
+    checked = triggered = 0
+    outcomes = []
+    for snapshot in candidates:
+        values, evidence, errors = _observation_values(snapshot, quote_loader, emotion_loader)
+        evaluation = evaluate_observation_rule(snapshot, values)
+        checked += 1
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            rules = [row for row in (current['data'].get('observation_rules') or []) if isinstance(row, dict)]
+            rule = next((row for row in rules if row.get('id') == snapshot.get('id')
+                         and row.get('configFingerprint') == snapshot.get('configFingerprint')), None)
+            if not rule or rule.get('status') != 'active':
+                continue
+            runtime = dict(rule.get('runtime') or {})
+            previous = runtime.get('lastTruth')
+            truth = evaluation.get('truth')
+            timestamp_iso = current_time.isoformat(timespec='seconds')
+            runtime['lastEvaluatedAt'] = timestamp_iso
+            runtime['lastError'] = '; '.join(errors)[:240] or None
+            runtime['consecutiveFailures'] = (int(runtime.get('consecutiveFailures') or 0) + 1) if truth is None else 0
+            if truth is None:
+                runtime['state'] = 'degraded'
+            else:
+                if truth is False:
+                    runtime['needsFalseToRearm'] = False
+                    runtime['state'] = 'armed'
+                elif runtime.get('needsFalseToRearm'):
+                    runtime['state'] = 'waiting_reset'
+                elif previous is False:
+                    timestamp = int(current_time.timestamp() * 1000)
+                    item = _observation_attention(rule, evaluation, evidence, timestamp)
+                    inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                             if isinstance(row, dict) and row.get('id') != item['id']]
+                    inbox.append(item)
+                    current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+                    runtime['state'] = 'triggered'
+                    runtime['lastTriggeredAt'] = timestamp_iso
+                    runtime['triggerCount'] = int(runtime.get('triggerCount') or 0) + 1
+                    runtime['needsFalseToRearm'] = True
+                    triggered += 1
+                else:
+                    runtime['state'] = 'baseline' if previous is None else 'waiting_reset'
+            runtime['lastTruth'] = truth
+            rule['runtime'] = runtime
+            rule['lastEvidence'] = evidence
+            rule['updatedAt'] = timestamp_iso
+            current['data']['observation_rules'] = rules[-PROFILE_LIST_LIMITS['observation_rules']:]
+            _write_profile_unlocked(current)
+        outcomes.append({'ruleId': snapshot.get('id'), 'truth': evaluation.get('truth'),
+                         'state': runtime.get('state'), 'clauses': evaluation.get('clauses'),
+                         'errors': errors})
+    return {'state': 'monitoring' if candidates else 'idle_no_rules', 'checked': checked,
+            'triggered': triggered, 'outcomes': outcomes}
+
+
+def observation_rules_status(data=None):
+    source = data if isinstance(data, dict) else (load_profile().get('data') or {})
+    current = now_bj()
+    rules = []
+    for raw in source.get('observation_rules') or []:
+        if not isinstance(raw, dict):
+            continue
+        row = json.loads(json.dumps(raw, ensure_ascii=False))
+        if row.get('status') == 'active':
+            try:
+                expires = datetime.fromisoformat(str(row.get('expiresAt') or ''))
+                expires = expires.astimezone(BJC) if expires.tzinfo else expires.replace(tzinfo=BJC)
+                if expires <= current:
+                    row['status'] = 'expired'
+                    row.setdefault('runtime', {})['state'] = 'expired'
+            except ValueError:
+                row['status'] = 'invalid'
+        rules.append(row)
+    return {'modelVersion': OBSERVATION_RULES_MODEL_VERSION, 'rules': rules,
+            'activeCount': sum(1 for row in rules if row.get('status') == 'active'),
+            'limits': {'active': 10, 'clauses': 3},
+            'boundary': '运行时只使用白名单事实条件，不调用模型、不执行交易。'}
+
+
+def mutate_observation_rule(rule_id, action, fingerprint=''):
+    if action == 'check_now':
+        return {'status': observation_rules_status(),
+                'check': process_observation_rules_once(rule_id=str(rule_id or ''))}
+    if action not in {'pause', 'resume', 'retire', 'rearm'}:
+        raise ValueError('不支持的观察规则操作')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        rules = [row for row in (current['data'].get('observation_rules') or []) if isinstance(row, dict)]
+        rule = next((row for row in rules if row.get('id') == str(rule_id or '')), None)
+        if not rule:
+            raise ValueError('观察规则不存在')
+        if fingerprint and fingerprint != rule.get('configFingerprint'):
+            raise ValueError('观察规则已变化，请刷新后再操作')
+        if action == 'pause':
+            rule['status'] = 'paused'
+            rule.setdefault('runtime', {})['state'] = 'paused'
+        elif action == 'resume':
+            if rule.get('status') not in {'paused'}:
+                raise ValueError('只有已暂停规则可以恢复')
+            rule['status'] = 'active'
+            rule['runtime'] = {'state': 'baseline', 'lastTruth': None, 'needsFalseToRearm': False,
+                               'lastEvaluatedAt': None, 'lastTriggeredAt': (rule.get('runtime') or {}).get('lastTriggeredAt')}
+        elif action == 'retire':
+            rule['status'] = 'retired'
+            rule.setdefault('runtime', {})['state'] = 'retired'
+        elif action == 'rearm':
+            rule.setdefault('runtime', {})['needsFalseToRearm'] = False
+            rule['runtime']['lastTruth'] = False
+            rule['runtime']['state'] = 'armed'
+        rule['updatedAt'] = now_bj().isoformat(timespec='seconds')
+        receipts = [row for row in (current['data'].get('observation_rule_receipts') or []) if isinstance(row, dict)]
+        receipts.append({'id': 'observation-receipt:' + secrets.token_hex(8), 'ruleId': rule['id'],
+                         'action': action, 'createdAt': rule['updatedAt'],
+                         'configFingerprint': rule.get('configFingerprint')})
+        current['data']['observation_rules'] = rules[-PROFILE_LIST_LIMITS['observation_rules']:]
+        current['data']['observation_rule_receipts'] = receipts[-PROFILE_LIST_LIMITS['observation_rule_receipts']:]
+        saved = _write_profile_unlocked(current)
+    _monitor_wake.set()
+    return {'profile': saved, 'status': observation_rules_status(saved.get('data')), 'rule': rule}
+
+
 def commit_background_alert(alert_id, quote, triggered_at=None):
     """Atomically mark one alert and publish its matching attention item."""
     clean_id = str(alert_id or '').strip()[:160]
@@ -2845,14 +3162,15 @@ def background_monitor_status():
     profile = load_profile().get('data') or {}
     pending = sum(1 for row in (profile.get('alerts') or [])
                   if isinstance(row, dict) and not row.get('triggered'))
+    observation_count = len(_active_observation_rules(profile))
     with _monitor_lock:
         runtime = dict(_monitor_runtime)
     state = runtime['state']
-    if not cfg['enabled']:
+    if not cfg['enabled'] and observation_count == 0:
         state = 'disabled'
     elif _market_session_label() != 'OPEN' and state not in ('error',):
         state = 'paused_market_closed'
-    elif pending == 0 and state not in ('error',):
+    elif pending == 0 and observation_count == 0 and state not in ('error',):
         state = 'idle_no_alerts'
     elif state in ('disabled', 'stopped'):
         state = 'starting'
@@ -2860,6 +3178,7 @@ def background_monitor_status():
         'config': cfg,
         'runtime': dict(runtime, state=state),
         'pending_alerts': pending,
+        'active_observation_rules': observation_count,
         'service_continues_when_page_closed': True,
         'service_stops_when_local_server_stops': True,
     }
@@ -2870,8 +3189,10 @@ def _background_monitor_loop():
         _monitor_runtime['thread_running'] = True
     while not _monitor_stop.is_set():
         cfg = load_monitor_config()
+        profile = load_profile().get('data') or {}
+        observation_count = len(_active_observation_rules(profile))
         wait_seconds = 30
-        if not cfg['enabled']:
+        if not cfg['enabled'] and observation_count == 0:
             with _monitor_lock:
                 _monitor_runtime.update(state='disabled', next_check_at=None, last_error=None)
         elif _market_session_label() != 'OPEN':
@@ -2881,16 +3202,20 @@ def _background_monitor_loop():
             wait_seconds = cfg['interval_seconds']
             checked_at = now_bj()
             try:
-                result = process_background_alerts_once(checked_at)
+                result = process_background_alerts_once(checked_at) if cfg['enabled'] else {
+                    'checked': 0, 'triggered': 0, 'state': 'idle_no_alerts', 'errors': []}
+                observation = process_observation_rules_once(checked_at) if observation_count else {
+                    'checked': 0, 'triggered': 0, 'state': 'idle_no_rules', 'outcomes': []}
                 with _monitor_lock:
                     _monitor_runtime.update(
-                        state=result['state'],
+                        state='monitoring' if observation_count else result['state'],
                         last_check_at=checked_at.isoformat(timespec='seconds'),
                         last_success_at=checked_at.isoformat(timespec='seconds'),
                         next_check_at=(checked_at + timedelta(seconds=wait_seconds)).isoformat(timespec='seconds'),
                         last_error='; '.join(result.get('errors') or []) or None,
                         checks=int(_monitor_runtime.get('checks') or 0) + 1,
-                        triggered_count=int(_monitor_runtime.get('triggered_count') or 0) + result['triggered'],
+                        triggered_count=int(_monitor_runtime.get('triggered_count') or 0)
+                                        + result['triggered'] + observation['triggered'],
                     )
             except Exception as exc:
                 with _monitor_lock:
@@ -6641,7 +6966,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.36.0'
+    server_version = 'DeepPulse/1.37.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -6815,6 +7140,9 @@ class Handler(BaseHTTPRequestHandler):
                             'service_management_center': 1,
                             'proactive_target': 1,
                             'disposition_receipts': 1,
+                            'observation_rules': 1,
+                            'observation_rule_preview': 1,
+                            'observation_rule_receipts': 1,
                             'research_suggestion_inbox': 1,
                            'research_suggestion_preview': 1,
                            'research_handoff': 1,
@@ -6885,6 +7213,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': attention_delivery_status()})
         elif path == '/api/monitor/status':
             self.send_json({'ok': True, 'data': background_monitor_status()})
+        elif path == '/api/observation-rules':
+            self.send_json({'ok': True, 'data': observation_rules_status()})
         elif path == '/api/routine/status':
             self.send_json({'ok': True, 'data': market_routine_status()})
         elif path == '/api/routine/effectiveness':
@@ -7117,6 +7447,21 @@ class Handler(BaseHTTPRequestHandler):
                     'profile': saved,
                     'monitor': background_monitor_status(),
                 }})
+            elif u.path == '/api/observation-rules/parse':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': parse_observation_rule(body.get('text'))})
+            elif u.path == '/api/observation-rules/preview':
+                body = self.read_json_body(16384)
+                self.send_json({'ok': True, 'data': preview_observation_rule(body.get('draft') or {})})
+            elif u.path == '/api/observation-rules/confirm':
+                body = self.read_json_body(16384)
+                self.send_json({'ok': True, 'data': confirm_observation_rule(
+                    body.get('previewId'), body.get('expectedRevision'),
+                    confirmed=body.get('confirmed') is True)})
+            elif u.path == '/api/observation-rules/action':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': mutate_observation_rule(
+                    body.get('ruleId'), body.get('action'), body.get('fingerprint') or '')})
             elif u.path == '/api/routine/config':
                 body = self.read_json_body()
                 saved = save_routine_config(body.get('config') or {})

@@ -1022,6 +1022,34 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .event-radar-boundary { border-left: 3px solid var(--amber); }
 .event-radar-card[data-state="degraded"], .event-radar-card[data-state="unavailable"], .event-radar-card[data-state="error"] { border-color: rgba(244, 184, 64, .38); }
 
+.observation-rules-card { margin-top: 14px; padding: 16px 18px; }
+.observation-rules-head, .observation-draft-head, .observation-rule-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.observation-rules-head h2 { margin: 4px 0 3px; font-size: 16px; }
+.observation-rules-head p, .observation-boundary { margin: 0; color: var(--text-3); font-size: 10px; line-height: 1.6; }
+.observation-composer { display: grid; gap: 9px; margin-top: 13px; padding: 13px; border: 1px solid rgba(79,140,255,.28); border-radius: 11px; background: rgba(79,140,255,.045); }
+.observation-composer[hidden] { display: none; }
+.observation-composer > label { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+.observation-composer > label span { color: var(--text-3); font-size: 9px; }
+.observation-examples, .observation-draft-actions, .observation-rule-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.observation-rule-draft { display: grid; gap: 10px; padding: 12px; border: 1px solid rgba(48,201,148,.28); border-radius: 10px; background: var(--panel-2); }
+.observation-rule-draft.blocked { border-color: rgba(244,184,64,.38); }
+.observation-draft-head span, .observation-rule-item-head em { color: var(--violet); font-size: 10px; font-style: normal; }
+.observation-clause-list { display: grid; gap: 6px; }
+.observation-clause-list > div { display: flex; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; }
+.observation-clause-list b { font-size: 10px; }.observation-clause-list small { color: var(--text-3); font-size: 9px; }
+.observation-preview-facts { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin: 0; }
+.observation-preview-facts > div { padding: 8px; border-radius: 8px; background: rgba(255,255,255,.025); }
+.observation-preview-facts dt { color: var(--text-3); font-size: 8px; }.observation-preview-facts dd { margin: 3px 0 0; font-size: 10px; }
+.observation-blockers { display: grid; gap: 4px; padding: 9px 10px; border-radius: 8px; background: rgba(244,184,64,.08); color: var(--amber); font-size: 10px; }
+.observation-rule-boundary { margin: 0; color: var(--text-3); font-size: 9px; line-height: 1.6; }
+.observation-list { display: grid; gap: 8px; margin-top: 12px; }
+.observation-rule-item { display: grid; gap: 8px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.observation-rule-item.active { border-color: rgba(48,201,148,.26); }
+.observation-rule-item.paused { border-color: rgba(244,184,64,.28); }
+.observation-rule-item-head > div { display: grid; gap: 3px; }.observation-rule-item-head b { font-size: 11px; }.observation-rule-item-head span, .observation-rule-item > small { color: var(--text-3); font-size: 9px; }
+.observation-boundary { margin-top: 11px; padding-top: 9px; border-top: 1px dashed var(--line); }
+.observation-rule-item.attention-target { animation: attentionTarget 2.4s ease; }
+
 /* ---------------- 研究流程：预览、权限、执行与可逆控制 ---------------- */
 .workflow-studio { position: relative; overflow: hidden; border-color: rgba(168,85,247,.3); }
 .workflow-studio::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: linear-gradient(var(--violet), var(--accent)); }
@@ -2092,3 +2120,5 @@ body.light .proactive-fact { background: rgba(255, 255, 255, .58); }
 tr.attention-target,[data-diagnostic-component].attention-target,[data-effect-apply].attention-target{animation:attentionTarget 2.4s ease}
 @media (prefers-reduced-motion: reduce){.attention-item.attention-target,.workflow-item.workflow-focus,tr.attention-target,[data-diagnostic-component].attention-target,[data-effect-apply].attention-target{animation:none;transition:none;box-shadow:0 0 0 3px rgba(79,140,255,.18)}}
 @media(max-width:640px){.attention-panel{top:0;right:0;width:100vw;max-height:100dvh;height:100dvh;border-radius:0}.workflow-attention-context>div:first-child{align-items:flex-start;flex-direction:column}.workflow-attention-context .btn{min-height:40px;flex:1 1 calc(50% - 4px)}}
+@media(max-width:640px){.observation-rules-head,.observation-rule-item-head{align-items:stretch;flex-direction:column}.observation-rules-head>.btn{min-height:44px}.observation-composer>label{flex-direction:column}.observation-preview-facts{grid-template-columns:1fr 1fr}.observation-clause-list>div{align-items:flex-start;flex-direction:column}.observation-draft-actions .btn,.observation-rule-actions .btn{flex:1 1 calc(50% - 4px);min-height:44px}}
+@media (prefers-reduced-motion: reduce){.observation-rule-item.attention-target{animation:none;box-shadow:0 0 0 3px rgba(79,140,255,.18)}}

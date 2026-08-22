@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.36.0';
+import { applyChartTheme } from './charts.js?v=1.37.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -371,8 +371,8 @@ export function initBridge() {
         })), 60);
       }
       if (d.attentionId) {
-        const entityTypes = new Set(['research_workflow', 'research_hypothesis', 'research_suggestion', 'security', 'data_component', 'service_recommendation', 'review_day', 'attention']);
-        const views = new Set(['latest_change', 'latest_result', 'review', 'detail', 'alert', 'context', 'diagnostics', 'service_manager', 'calendar', 'evidence']);
+        const entityTypes = new Set(['research_workflow', 'research_hypothesis', 'research_suggestion', 'security', 'data_component', 'service_recommendation', 'observation_rule', 'review_day', 'attention']);
+        const views = new Set(['latest_change', 'latest_result', 'review', 'detail', 'alert', 'context', 'diagnostics', 'service_manager', 'last_trigger', 'calendar', 'evidence']);
         const safeId = value => {
           const text = String(value || '').trim().slice(0, 160);
           return text && !/[<>\\]/.test(text) && !text.includes('://') ? text : '';

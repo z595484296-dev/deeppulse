@@ -22,7 +22,7 @@ function nextLabel(next) {
   return `下一次：${day} ${time}${text(next.label) ? ` · ${text(next.label)}` : ''}`;
 }
 
-export function buildServiceCenterStatus(routineValue, eventValue) {
+export function buildServiceCenterStatus(routineValue, eventValue, observationValue) {
   const routine = routineValue || {};
   const routineConfig = routine.config || {};
   const tasks = routineConfig.tasks || {};
@@ -32,7 +32,9 @@ export function buildServiceCenterStatus(routineValue, eventValue) {
   const event = eventValue || {};
   const eventConfig = event.config || {};
   const eventEnabled = eventConfig.enabled === true;
-  const enabledItems = [...activeTasks, ...(eventEnabled ? ['事件影响雷达'] : [])];
+  const observationCount = Number(observationValue?.activeCount || 0);
+  const enabledItems = [...activeTasks, ...(eventEnabled ? ['事件影响雷达'] : []),
+    ...(observationCount ? [`${observationCount} 条观察规则`] : [])];
   const routineState = text(routine.runtime && routine.runtime.state) || 'disabled';
   const eventState = text(event.state || event.runtime && event.runtime.state)
     || (eventEnabled ? 'starting' : 'disabled');

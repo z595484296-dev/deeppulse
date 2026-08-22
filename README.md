@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.36.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.37.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 可组合观察规则（v1.37）
+
+- 在现有主动服务管理中心里，可用一句话组合情绪温度、周期阶段、炸板率与一只自选股的价格或涨跌幅，最多 3 个条件，统一选择“全部满足”或“任一满足”。
+- 草稿先经过白名单解析，再展示当前值、数据来源、检查频率、提醒范围和到期时间；用户明确确认前不会创建规则或启动后台读取。
+- 规则由本机确定性引擎运行。首次只建立基线，只有条件从不满足变为满足时才提醒；持续为真不重复，数据缺失或降级时显示“无法判断”且绝不触发。
+- 命中进入现有提醒中心，并可精准返回管理中心对应规则及触发依据；暂停、恢复、重新布防和结束均由用户操作。DeepSeek 不能确认规则、执行交易或把命中解释成方向结论。
 
 ### 主动事项精准落点（v1.36）
 

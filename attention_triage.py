@@ -21,6 +21,7 @@ TARGET_PAGES = {'overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 
 TARGET_ENTITY_TYPES = {
     'attention', 'research_workflow', 'research_hypothesis', 'research_suggestion',
     'security', 'data_component', 'service_recommendation', 'review_day',
+    'observation_rule',
 }
 
 
@@ -63,6 +64,7 @@ def _typed_target(item, attention_id=None, version_key=''):
     suggestion_id = _text(item.get('suggestionId'))[:180]
     component_id = _text(item.get('componentId') or item.get('diagnosticId'))[:120]
     recommendation_id = _text(item.get('recommendationId') or item.get('effectId'))[:160]
+    observation_rule_id = _text(item.get('observationRuleId'))[:160]
     review_day = _text(item.get('dataDate'))[:20]
     impact = item.get('eventImpact') if isinstance(item.get('eventImpact'), dict) else {}
     watchlist = [_text(value) for value in (impact.get('watchlist') or []) if re.fullmatch(r'\d{6}', _text(value))]
@@ -82,6 +84,8 @@ def _typed_target(item, attention_id=None, version_key=''):
         page, entity_type, entity_id, view = 'datasrc', 'data_component', component_id, 'diagnostics'
     elif recommendation_id:
         page, entity_type, entity_id, view = 'overview', 'service_recommendation', recommendation_id, 'service_manager'
+    elif observation_rule_id:
+        page, entity_type, entity_id, view = 'overview', 'observation_rule', observation_rule_id, 'last_trigger'
     elif review_day and item.get('kind') in {'routine', 'review'}:
         page, entity_type, entity_id, view = 'strategy', 'review_day', review_day, 'calendar'
     elif code:

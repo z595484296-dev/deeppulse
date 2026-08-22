@@ -51,3 +51,9 @@ test('disabled event radar does not surface an old degraded runtime state', () =
   assert.equal(status.alert, '');
 });
 
+test('active observation rules are included without adding another service center', () => {
+  const status = buildServiceCenterStatus({}, {}, { activeCount: 2 });
+  assert.equal(status.state, 'active');
+  assert.equal(status.enabledCount, 1);
+  assert.deepEqual(status.enabledItems, ['2 条观察规则']);
+});

@@ -40,6 +40,7 @@ $runtimeFiles = @(
     'emotion.py',
     'event_impact.py',
     'attention_triage.py',
+    'observation_rules.py',
     'research_hypothesis.py',
     'research_memory.py',
     'research_workflow.py',

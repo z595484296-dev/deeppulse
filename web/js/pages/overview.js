@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.36.0';
-import { state, bus, syncProfile } from '../store.js?v=1.36.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.36.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.36.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.36.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.36.0';
-import { buildServiceCenterStatus } from '../service-center.js?v=1.36.0';
+import { api } from '../api.js?v=1.37.0';
+import { state, bus, syncProfile } from '../store.js?v=1.37.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.37.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.37.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.37.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.37.0';
+import { buildServiceCenterStatus } from '../service-center.js?v=1.37.0';
 
 let built = false;
 let sparksAt = 0;
@@ -14,6 +14,9 @@ let sectorTab = 'up';
 let currentBrief = null;
 let servicePlanDraft = null;
 let routineEffectiveness = null;
+let observationStatus = null;
+let observationDraft = null;
+let observationPreview = null;
 
 const INDEX_CODES = [
   { code: '000001', name: '上证指数' },
@@ -122,6 +125,28 @@ export function init(container) {
         <p id="ov-effect-boundary">未反馈、打开页面和停留时间都不会被当成负面或完成。</p>
       </div>
       <p class="routine-boundary">逐项授权，关闭网页后仍由本机服务执行；关闭本机服务即停止。按北京时间工作日窗口运行，每条提醒都会注明数据日，不会把旧数据冒充实时行情。</p>
+    </section>
+
+    <section class="card observation-rules-card" id="ov-observation-rules" aria-labelledby="ov-observation-title">
+      <div class="observation-rules-head">
+        <div>
+          <div class="proactive-kicker">组合观察规则 <span class="tag">本机确定性判断</span></div>
+          <h2 id="ov-observation-title">多个事实条件满足时，再提醒我复盘</h2>
+          <p>支持情绪温度、阶段、炸板率与一只自选股的价格或涨跌幅；不会自动形成买卖结论。</p>
+        </div>
+        <button class="btn sm primary" id="ov-observation-create" aria-expanded="false">新建观察规则</button>
+      </div>
+      <div class="observation-composer" id="ov-observation-composer" hidden>
+        <label for="ov-observation-intent"><b>用一句话描述条件</b><span>最多 3 条，统一选择“全部”或“任一”</span></label>
+        <div class="service-plan-input"><input id="ov-observation-intent" maxlength="300" placeholder="例如：情绪温度低于 45，并且工业富联股价跌破 60 元时提醒我复盘"><button class="btn sm primary" id="ov-observation-parse">整理草稿</button></div>
+        <div class="observation-examples" aria-label="观察规则示例">
+          <button class="btn sm ghost" data-observation-example="情绪温度低于 45，并且工业富联股价跌破 60 元时提醒我复盘">低温 + 价格</button>
+          <button class="btn sm ghost" data-observation-example="情绪阶段进入退潮期，或者工业富联跌幅超过 4% 时提醒我复盘">退潮 + 跌幅</button>
+        </div>
+        <div class="observation-draft" id="ov-observation-draft" aria-live="polite"></div>
+      </div>
+      <div class="observation-list" id="ov-observation-list"><div class="empty compact">正在读取观察规则…</div></div>
+      <p class="observation-boundary">确认前不创建、不检查；运行时不调用 DeepSeek，不连接交易账户。单一价格条件仍使用自选页的价格提醒。</p>
     </section>
 
     <section class="card event-radar-card" id="ov-event-radar" aria-labelledby="ov-event-title">
@@ -359,6 +384,18 @@ export function init(container) {
     }
     e.detail?.acknowledge?.(Boolean(card));
   });
+  document.addEventListener('observation-rule-open', async e => {
+    openServiceCenter();
+    await refreshObservationRules(container);
+    const card = container.querySelector(`[data-observation-rule-id="${CSS.escape(String(e.detail?.ruleId || ''))}"]`);
+    if (card) {
+      card.classList.add('attention-target');
+      card.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+      card.querySelector('button')?.focus({ preventScroll: true });
+      setTimeout(() => card.classList.remove('attention-target'), 3200);
+    }
+    e.detail?.acknowledge?.(Boolean(card));
+  });
   serviceDialog.addEventListener('click', e => {
     if (e.target === serviceDialog) closeServiceCenter();
   });
@@ -437,6 +474,80 @@ export function init(container) {
     catch (error) { toast(error.message || '调整日程失败', 'err'); }
     finally { e.currentTarget.disabled = false; }
   });
+  const composer = container.querySelector('#ov-observation-composer');
+  container.querySelector('#ov-observation-create').addEventListener('click', e => {
+    const open = composer.hidden;
+    composer.hidden = !open;
+    e.currentTarget.setAttribute('aria-expanded', String(open));
+    if (open) container.querySelector('#ov-observation-intent').focus();
+  });
+  container.querySelector('#ov-observation-rules').addEventListener('click', async e => {
+    const example = e.target.closest('[data-observation-example]');
+    if (example) {
+      container.querySelector('#ov-observation-intent').value = example.dataset.observationExample;
+      container.querySelector('#ov-observation-intent').focus();
+      return;
+    }
+    const parse = e.target.closest('#ov-observation-parse');
+    if (parse) {
+      const text = container.querySelector('#ov-observation-intent').value.trim();
+      if (!text) { toast('先描述希望观察的条件'); return; }
+      parse.disabled = true;
+      try {
+        observationDraft = await api.parseObservationRule(text);
+        observationPreview = null;
+        renderObservationDraft(container);
+      } catch (error) { toast(error.message || '这条观察条件暂时无法整理', 'err'); }
+      finally { parse.disabled = false; }
+      return;
+    }
+    if (e.target.closest('[data-observation-discard]')) {
+      observationDraft = null; observationPreview = null;
+      renderObservationDraft(container);
+      return;
+    }
+    const previewButton = e.target.closest('[data-observation-preview]');
+    if (previewButton && observationDraft?.draft) {
+      previewButton.disabled = true;
+      try {
+        observationPreview = await api.previewObservationRule(observationDraft.draft);
+        renderObservationDraft(container);
+      } catch (error) { toast(error.message || '读取当前值失败', 'err'); }
+      finally { previewButton.disabled = false; }
+      return;
+    }
+    const confirmButton = e.target.closest('[data-observation-confirm]');
+    if (confirmButton && observationPreview) {
+      confirmButton.disabled = true;
+      try {
+        const result = await api.confirmObservationRule(
+          observationPreview.previewId, observationPreview.profileRevision);
+        observationDraft = null; observationPreview = null;
+        renderObservationDraft(container);
+        renderObservationRules(container, result.status);
+        await syncProfile();
+        toast('观察规则已确认；已建立当前基线，不会补发旧提醒', 'ok');
+      } catch (error) { toast(error.message || '确认观察规则失败', 'err'); }
+      finally { confirmButton.disabled = false; }
+      return;
+    }
+    const actionButton = e.target.closest('[data-observation-action]');
+    if (!actionButton) return;
+    const card = actionButton.closest('[data-observation-rule-id]');
+    const rule = (observationStatus?.rules || []).find(row => row.id === card?.dataset.observationRuleId);
+    if (!rule) return;
+    actionButton.disabled = true;
+    try {
+      const result = await api.mutateObservationRule(rule.id, actionButton.dataset.observationAction, rule.configFingerprint);
+      renderObservationRules(container, result.status);
+      const check = result.check?.outcomes?.[0];
+      if (actionButton.dataset.observationAction === 'check_now') {
+        toast(check?.truth === true ? '当前条件已满足；是否触发仍遵循基线与复位规则'
+          : check?.truth === false ? '当前条件未全部满足' : '数据不足，暂时无法判断', check?.truth == null ? 'err' : 'ok');
+      } else toast('观察规则状态已更新', 'ok');
+    } catch (error) { toast(error.message || '观察规则操作失败', 'err'); }
+    finally { actionButton.disabled = false; }
+  });
   container.querySelector('#ov-effect-suggestions').addEventListener('click', async e => {
     const apply = e.target.closest('[data-effect-apply]');
     const undo = e.target.closest('[data-effect-undo]');
@@ -460,6 +571,7 @@ export function init(container) {
   });
   refreshRoutine(container);
   refreshRoutineEffectiveness(container);
+  refreshObservationRules(container);
 
   container.querySelector('#ov-cockpit-refresh').addEventListener('click', async e => {
     e.currentTarget.disabled = true;
@@ -692,7 +804,7 @@ function eventTime(value) {
 function renderServiceCenterStatus(container, routine = state.routine, eventImpact = state.eventImpact) {
   const root = container.querySelector('#ov-service-status');
   if (!root) return;
-  const status = buildServiceCenterStatus(routine, eventImpact);
+  const status = buildServiceCenterStatus(routine, eventImpact, observationStatus);
   root.dataset.state = status.state;
   root.querySelector('#ov-service-status-state').textContent = status.stateLabel;
   root.querySelector('#ov-service-status-summary').textContent = status.summary;
@@ -798,6 +910,88 @@ function renderServicePlanDraft(container, plan) {
     <ul>${understood || '<li>暂未识别出可应用设置</li>'}${unresolved}</ul>
     <p>${esc(plan.boundary || '')}</p>
     <div class="service-plan-actions"><button class="btn sm primary" data-service-apply ${noChanges ? 'disabled' : ''}>确认应用 ${noChanges ? '' : `(${plan.changes.length} 项变化)`}</button><button class="btn sm ghost" data-service-discard>放弃</button></div>`;
+}
+
+const OBS_SIGNAL_LABELS = {
+  'emotion.temperature': '情绪温度', 'emotion.phase': '情绪阶段',
+  'emotion.break_rate': '炸板率', 'quote.price': '现价', 'quote.pct': '涨跌幅',
+};
+const OBS_STATE_LABELS = {
+  baseline: '已建立基线', armed: '等待触发', triggered: '刚刚触发',
+  waiting_reset: '等待条件复位', degraded: '数据不足', paused: '已暂停',
+  expired: '已到期', retired: '已结束',
+};
+
+function observationClauseText(clause, target) {
+  const prefix = clause.signal?.startsWith('quote.') && target ? `${target.name || target.code} ` : '';
+  const operator = { gte: '≥', lte: '≤', eq: '是', neq: '不是' }[clause.operator] || '?';
+  let value = clause.value;
+  if (clause.signal === 'emotion.break_rate') value = `${(Number(value) * 100).toFixed(1)}%`;
+  if (clause.signal === 'quote.pct') value = `${Number(value).toFixed(1)}%`;
+  return `${prefix}${OBS_SIGNAL_LABELS[clause.signal] || clause.signal} ${operator} ${value}`;
+}
+
+function renderObservationDraft(container) {
+  const root = container.querySelector('#ov-observation-draft');
+  if (!root) return;
+  if (!observationDraft && !observationPreview) { root.innerHTML = ''; return; }
+  const parsed = observationDraft || {};
+  const preview = observationPreview;
+  const draft = preview?.draft || parsed.draft || {};
+  const blockers = preview?.blockers || parsed.blockers || [];
+  const target = draft.target;
+  const clauses = draft.clauses || [];
+  const evidence = preview?.evidence || [];
+  const current = new Map(evidence.map(row => [row.signal, row]));
+  root.innerHTML = `<article class="observation-rule-draft ${blockers.length ? 'blocked' : ''}">
+    <div class="observation-draft-head"><b>${preview ? '开启前检查' : '我理解的是'}</b><span>${draft.logic === 'any' ? '任一满足' : '全部满足'} · ${clauses.length} 项</span></div>
+    <div class="observation-clause-list">${clauses.map(row => {
+      const fact = current.get(row.signal);
+      return `<div><b>${esc(observationClauseText(row, target))}</b>${preview ? `<small>当前 ${fact?.value ?? '不可用'} · ${esc(fact?.sourceId || '来源待核')}</small>` : ''}</div>`;
+    }).join('') || '<div>尚未识别到条件</div>'}</div>
+    <dl class="observation-preview-facts">
+      <div><dt>对象</dt><dd>${target ? `${esc(target.name)} ${esc(target.code)}` : '全市场情绪'}</dd></div>
+      <div><dt>检查</dt><dd>交易时段 · 每 ${draft.schedule?.intervalSeconds || 60} 秒</dd></div>
+      <div><dt>提醒</dt><dd>${draft.delivery === 'digest' ? '进入摘要' : '只进入提醒中心'}</dd></div>
+      <div><dt>结束</dt><dd>${draft.expiresAt ? new Date(draft.expiresAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '待确认'}</dd></div>
+    </dl>
+    ${blockers.length ? `<div class="observation-blockers" id="ov-observation-blockers"><b>还不能开启</b>${blockers.map(row => `<span>${esc(row)}</span>`).join('')}</div>` : ''}
+    <p class="observation-rule-boundary">${esc(preview?.boundary || parsed.boundary || '确认前不会生效。')}</p>
+    <div class="observation-draft-actions">
+      ${!preview ? `<button class="btn sm primary" data-observation-preview ${blockers.length ? 'disabled aria-describedby="ov-observation-blockers"' : ''}>读取当前值并预览</button>`
+        : `<button class="btn sm primary" data-observation-confirm ${blockers.length ? 'disabled aria-describedby="ov-observation-blockers"' : ''}>确认并开启</button>`}
+      <button class="btn sm ghost" data-observation-discard>放弃草稿</button>
+    </div>
+  </article>`;
+}
+
+function renderObservationRules(container, snapshot) {
+  observationStatus = snapshot || { rules: [] };
+  renderServiceCenterStatus(container);
+  const root = container.querySelector('#ov-observation-list');
+  if (!root) return;
+  const rows = observationStatus.rules || [];
+  root.innerHTML = rows.length ? rows.map(rule => {
+    const runtime = rule.runtime || {};
+    const active = rule.status === 'active';
+    const joiner = rule.logic === 'any' ? ' 或 ' : ' 且 ';
+    const evidence = (rule.lastEvidence || []).map(row => `${OBS_SIGNAL_LABELS[row.signal] || row.signal} ${row.value ?? '不可用'}`).join(' · ');
+    return `<article class="observation-rule-item ${esc(rule.status || '')}" data-observation-rule-id="${esc(rule.id)}">
+      <div class="observation-rule-item-head"><div><b>${esc(rule.title || '组合观察规则')}</b><span>${esc((rule.clauses || []).map(row => observationClauseText(row, rule.target)).join(joiner))}</span></div><em>${esc(OBS_STATE_LABELS[runtime.state] || rule.status || '未知')}</em></div>
+      <small>${runtime.lastEvaluatedAt ? `最近检查 ${new Date(runtime.lastEvaluatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '等待首次检查'}${evidence ? ` · ${esc(evidence)}` : ''}</small>
+      <div class="observation-rule-actions">
+        ${active ? `<button class="btn sm" data-observation-action="check_now">立即检查</button><button class="btn sm ghost" data-observation-action="pause">暂停</button>` : ''}
+        ${rule.status === 'paused' ? '<button class="btn sm" data-observation-action="resume">恢复</button>' : ''}
+        ${runtime.state === 'waiting_reset' ? '<button class="btn sm ghost" data-observation-action="rearm">重新布防</button>' : ''}
+        ${!['retired', 'expired'].includes(rule.status) ? '<button class="btn sm ghost" data-observation-action="retire">结束</button>' : ''}
+      </div>
+    </article>`;
+  }).join('') : '<div class="empty compact">还没有组合观察规则。现有价格提醒、主动日程和研究值守仍会照常运行；从示例开始也只会生成草稿。</div>';
+}
+
+async function refreshObservationRules(container) {
+  try { renderObservationRules(container, await api.observationRules()); }
+  catch { container.querySelector('#ov-observation-list').innerHTML = '<div class="empty compact">观察规则暂时无法读取，请确认本机服务正在运行。</div>'; }
 }
 
 function renderRoutine(container, routine) {
