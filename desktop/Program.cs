@@ -858,7 +858,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.42.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.42.1+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
@@ -1321,10 +1321,49 @@ internal sealed record DeepPulseInstallation(
             yield return configured;
         }
 
-        yield return Path.Combine(AppContext.BaseDirectory, "DeepPulse");
-        yield return Path.Combine(
+        var portable = Path.Combine(AppContext.BaseDirectory, "DeepPulse");
+        var installed = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
             "deepseek身体");
+        var portableVersion = ReadManifestVersion(portable);
+        var installedVersion = ReadManifestVersion(installed);
+        var installedIsCurrent = installedVersion is not null
+            && (portableVersion is null || installedVersion.CompareTo(portableVersion) >= 0);
+
+        // A synchronized local installation owns the user's profile and API
+        // configuration. Prefer it when it is at least as current as the
+        // portable runtime; otherwise use the newer packaged code safely.
+        if (installedIsCurrent)
+        {
+            yield return installed;
+        }
+        yield return portable;
+        if (!installedIsCurrent)
+        {
+            yield return installed;
+        }
+    }
+
+    private static Version? ReadManifestVersion(string projectDirectory)
+    {
+        try
+        {
+            var manifestPath = Path.Combine(projectDirectory, "deeppulse.manifest.json");
+            if (!File.Exists(manifestPath))
+            {
+                return null;
+            }
+            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            var root = document.RootElement;
+            return root.TryGetProperty("version", out var versionValue)
+                && Version.TryParse(versionValue.GetString(), out var version)
+                ? version
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static DeepPulseInstallation? TryResolve(string projectDirectory)

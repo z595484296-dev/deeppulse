@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.42.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.42.1-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ### AI 主动服务控制台（v1.42）
 
@@ -134,6 +134,8 @@
 ### 桌面生命周期保护（v1.22.1）
 
 Windows 桌面 App 启动的 DeepPulse 与 Harness 子进程会加入系统级生命周期作业。无论正常关闭、任务管理器结束还是外壳异常退出，Windows 都会自动回收这些由 App 拥有的后台进程，避免旧服务占用端口或在升级后继续提供旧页面。用户自行启动、App 仅附着使用的服务不会被接管或关闭。
+
+桌面“deepseek身体”安装目录与 App 包内 DeepPulse 同版本或更新时，App 会优先使用安装目录，继续复用本机自选、研究流程和 API 配置；若安装目录较旧，则回退到较新的包内运行时。分享 ZIP 仍不携带任何 `data/` 或密钥。
 
 ## 一、快速开始
 

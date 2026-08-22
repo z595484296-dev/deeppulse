@@ -580,4 +580,4 @@ R1-R16 优化日志完整留存；后续仍以后台主动服务、跨端并发�
 - 使用独立后台工作线程执行“锁内认领、锁外调用、锁内复核提交”，不复用聊天上下文、行动单解析或 Harness 会话桥。
 - DeepSeek 输出以独立未核验草稿保存，明确不计入结果卡、证据时间线、研究记忆或完成状态；填入复盘也只形成带警示的未保存文本。
 - 暂停或撤销不影响普通研究值守；撤销后的在途返回正文不落库。真实 loopback HTTP provider 测试覆盖凭据隔离、幂等、结构解析与撤销竞态。
-- 版本升级至 1.42.0，四端增加 `ai-research-duty-v1`、`ai-research-job-receipts-v1` 与 `ai-research-budget-v1` 能力门禁。
+- 版本升级至 1.42.1，四端增加 `ai-research-duty-v1`、`ai-research-job-receipts-v1` 与 `ai-research-budget-v1` 能力门禁。

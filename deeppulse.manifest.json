@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.42.0",
-  "minimumDesktopVersion": "1.42.0",
+  "version": "1.42.1",
+  "minimumDesktopVersion": "1.42.1",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",

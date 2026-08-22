@@ -1,7 +1,7 @@
 /* DeepPulse — shared, secret-safe DeepSeek provider trust gate. */
 
-import { api } from './api.js?v=1.42.0';
-import { esc, toast } from './util.js?v=1.42.0';
+import { api } from './api.js?v=1.42.1';
+import { esc, toast } from './util.js?v=1.42.1';
 
 let dialog = null;
 let status = null;
