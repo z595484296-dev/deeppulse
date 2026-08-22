@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.34.0';
+const MIN_VERSION = '1.35.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -52,6 +52,8 @@ async function probeBase(base, signal) {
       && capabilities.attention_triage === 1
       && capabilities.attention_center_only_boundary === 1
       && capabilities.chat_answer_freshness === 1
+      && capabilities.chat_action_plan === 1
+      && capabilities.chat_action_receipts === 1
       && capabilities.background_monitor === 1
       && capabilities.market_routine === 1
       && capabilities.akshare_enrichment === 1
@@ -59,7 +61,7 @@ async function probeBase(base, signal) {
       && capabilities.akshare_research_packs === 1
       && capabilities.akshare_interface_health === 1
       && capabilities.source_lineage === 1
-      && capabilities.event_impact === 1
+      && capabilities.event_impact === 2
       && capabilities.event_background_service === 1
       && capabilities.research_hypotheses === 1
       && capabilities.hypothesis_due_reminders === 1
@@ -116,7 +118,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.34.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.35.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -247,4 +249,6 @@ export const api = {
   news: () => request('/api/news'),
   search: (q) => request('/api/search?q=' + encodeURIComponent(q)),
   chat: (messages) => post('/api/chat', { messages }, 60000),
+  previewChatActions: (actions, source = 'local') => post('/api/chat/actions', { action: 'preview', actions, source }, 30000),
+  mutateChatAction: (action, planId) => post('/api/chat/actions', { action, planId }, 90000),
 };

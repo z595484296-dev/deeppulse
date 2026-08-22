@@ -4,7 +4,7 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.34.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.35.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
 
 ### 主动服务管理中心（v1.34）
 
@@ -350,7 +350,8 @@ deeppulse/
 | `/api/indices` | 五大指数实时行情 |
 | `/api/emotion` | 情绪全景（池子+宽度+资金+引擎评分+历史）；`?record=1` 强制记录快照 |
 | `/api/emotion/record` | POST 手动记录快照 |
-| `/api/chat` | POST 蚂小财对话（可配置 DeepSeek 模型 + 市场上下文注入 + 动作解析） |
+| `/api/chat` | POST 蚂小财对话（可配置 DeepSeek 模型 + 市场上下文注入 + 服务端行动意图校验） |
+| `/api/chat/actions` | POST 预览、确认、取消或撤销 AI 行动单；客户端不能提交可直接执行的写指令 |
 | `/api/device/config` | 本机专用的墨水屏配置与设备网关状态；令牌不会由 LAN 主应用接口提供 |
 | `/api/device/preview.bmp` | 本机专用的 800×480 墨水屏预览；`?demo=focus|overview|emotion|watch|hotspot|alert` 可预览指定模式 |
 | `/api/device/frame.bin` | 本机专用的 48,000 字节 1bpp 帧；真机使用受令牌保护的 `/device/v1/frame.bin` |

@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.34.0';
-import { state, bus, syncProfile } from '../store.js?v=1.34.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.34.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.34.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.34.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.34.0';
-import { buildServiceCenterStatus } from '../service-center.js?v=1.34.0';
+import { api } from '../api.js?v=1.35.0';
+import { state, bus, syncProfile } from '../store.js?v=1.35.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.35.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.35.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.35.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.35.0';
+import { buildServiceCenterStatus } from '../service-center.js?v=1.35.0';
 
 let built = false;
 let sparksAt = 0;

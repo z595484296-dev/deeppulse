@@ -548,7 +548,7 @@ internal sealed class HarnessForm : Form
                 || !capabilities.TryGetProperty("event_impact", out var eventImpact)
                 || eventImpact.ValueKind != JsonValueKind.Number
                 || !eventImpact.TryGetInt32(out var eventImpactVersion)
-                || eventImpactVersion != 1
+                || eventImpactVersion != 2
                 || !capabilities.TryGetProperty("event_background_service", out var eventBackgroundService)
                 || eventBackgroundService.ValueKind != JsonValueKind.Number
                 || !eventBackgroundService.TryGetInt32(out var eventBackgroundServiceVersion)
@@ -705,6 +705,14 @@ internal sealed class HarnessForm : Form
                 || researchSuggestionPreview.ValueKind != JsonValueKind.Number
                 || !researchSuggestionPreview.TryGetInt32(out var researchSuggestionPreviewVersion)
                 || researchSuggestionPreviewVersion != 1
+                || !capabilities.TryGetProperty("chat_action_plan", out var chatActionPlan)
+                || chatActionPlan.ValueKind != JsonValueKind.Number
+                || !chatActionPlan.TryGetInt32(out var chatActionPlanVersion)
+                || chatActionPlanVersion != 1
+                || !capabilities.TryGetProperty("chat_action_receipts", out var chatActionReceipts)
+                || chatActionReceipts.ValueKind != JsonValueKind.Number
+                || !chatActionReceipts.TryGetInt32(out var chatActionReceiptsVersion)
+                || chatActionReceiptsVersion != 1
                 || !capabilities.TryGetProperty("epaper_research_workflow", out var epaperResearchWorkflow)
                 || epaperResearchWorkflow.ValueKind != JsonValueKind.Number
                 || !epaperResearchWorkflow.TryGetInt32(out var epaperResearchWorkflowVersion)
@@ -769,7 +777,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.34.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.35.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

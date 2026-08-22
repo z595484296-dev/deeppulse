@@ -759,6 +759,39 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   color: #9cc2ff; cursor: pointer; font-family: var(--font); transition: all .15s;
 }
 .chat-act:hover { background: rgba(79, 140, 255, .22); color: #cfe2ff; }
+.chat-bot-content { min-width: 0; width: min(100%, 620px); }
+.chat-action-plan {
+  margin: 8px 0 0; padding: 11px 12px; border-radius: 11px;
+  border: 1px solid rgba(79, 140, 255, .34);
+  background: linear-gradient(145deg, rgba(79, 140, 255, .1), rgba(139, 92, 246, .06));
+}
+.chat-action-plan.executed, .chat-action-plan.undone, .chat-action-plan.no_change {
+  border-color: rgba(46, 189, 133, .34); background: rgba(46, 189, 133, .07);
+}
+.chat-action-plan.failed, .chat-action-plan.stale, .chat-action-plan.expired {
+  border-color: rgba(255, 184, 77, .42); background: rgba(255, 184, 77, .07);
+}
+.chat-action-plan.dismissed { opacity: .7; }
+.chat-plan-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.chat-plan-head b { font-size: 12px; line-height: 1.5; }
+.chat-plan-head span {
+  flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; font-size: 9px; font-weight: 700;
+  color: #a9c8ff; border: 1px solid rgba(79, 140, 255, .34); background: rgba(79, 140, 255, .09);
+}
+.chat-plan-detail { margin-top: 6px; color: var(--text-2); font-size: 10.5px; line-height: 1.65; }
+.chat-plan-contract { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.chat-plan-contract span {
+  padding: 2px 6px; border-radius: 5px; color: var(--text-3); background: var(--panel-2);
+  border: 1px solid var(--line); font-size: 9px;
+}
+.chat-plan-receipt {
+  margin-top: 8px; padding: 6px 8px; border-radius: 7px; color: var(--green);
+  background: rgba(46, 189, 133, .08); font-size: 10px; line-height: 1.5;
+}
+.chat-plan-receipt.error { color: var(--amber); background: rgba(255, 184, 77, .08); }
+.chat-plan-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.chat-plan-actions:empty { display: none; }
+.chat-plan-actions .btn:disabled { opacity: .55; cursor: wait; }
 
 /* 能力卡 */
 .mxc-abilities { display: flex; flex-direction: column; gap: 11px; }

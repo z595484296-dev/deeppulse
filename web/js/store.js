@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.34.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.34.0';
+import { api } from './api.js?v=1.35.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.35.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -107,6 +107,13 @@ export function saveWatch(list) {
   localStorage.setItem(WATCH_KEY, JSON.stringify(list));
   persistProfile('watchlist', list);
   emit('watch', list);
+}
+
+/** Apply the authoritative list returned by an atomic server action without writing it back again. */
+export function applyServerWatchlist(list) {
+  const clean = Array.isArray(list) ? list : [];
+  localStorage.setItem(WATCH_KEY, JSON.stringify(clean));
+  emit('watch', clean);
 }
 
 export function watchGroups(list) {

@@ -150,7 +150,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.34.0'
+VERSION = '1.35.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1503,12 +1503,14 @@ MA_XIAOCAI_SYSTEM = (
     '每次对话开头我会附上「今日市场上下文」（真实数据）：'
     '回答涉及行情/情绪/策略的问题时，必须以该上下文为准，不要编造数据；'
     '上下文没有的信息，可以说"这个我手头还没有数据"。\n'
-    '你可以调度整个工作台。当需要时，在回复末尾单独一行输出 JSON 指令块（不需要则省略）：\n'
+    '你可以调度整个工作台。当需要时，在回复末尾单独一行输出 JSON 行动意图（不需要则省略）：\n'
     '{"actions":[{"type":"nav","page":"ladder"},{"type":"quote","code":"600519","name":"贵州茅台"},'
     '{"type":"watch_add","code":"600519"},{"type":"watch_remove","code":"600519"},'
     '{"type":"refresh","_":1},{"type":"record","_":1}]}\n'
-    'page 可选值: overview/emotion/market/ladder/watch/strategy/datasrc/about。'
+    'page 可选值: overview/emotion/market/ladder/watch/strategy/epaper/datasrc/about。'
     '指令行必须是最后一行、单独成行、合法 JSON。回复主体是给用户看的自然语言。'
+    'watch_add、watch_remove、record 只是待确认意图，绝不得声称已经执行；'
+    '工作台会在用户明确确认后再执行。'
 )
 
 
@@ -1623,6 +1625,8 @@ PROFILE_LIST_LIMITS = {
     'research_workflow_receipts': 500,
     'research_suggestions': 200,
     'delivery_receipts': 1000,
+    'chat_action_plans': 120,
+    'chat_action_receipts': 240,
 }
 PROFILE_OBJECT_LIMITS = {
     'attention_preferences': 16 * 1024,
@@ -1635,16 +1639,35 @@ PROFILE_OBJECT_LIMITS = {
 }
 
 
+def _empty_profile():
+    return {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+
+
+def _read_profile_unlocked():
+    try:
+        with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
+            value = json.load(f)
+        if isinstance(value, dict) and isinstance(value.get('data'), dict):
+            return value
+    except Exception:
+        pass
+    return _empty_profile()
+
+
+def _write_profile_unlocked(value):
+    value['schema'] = 1
+    value['revision'] = int(value.get('revision') or 0) + 1
+    value['updated_at'] = now_bj().isoformat(timespec='seconds')
+    temp_file = PROFILE_FILE + '.tmp'
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        json.dump(value, f, ensure_ascii=False, indent=1)
+    os.replace(temp_file, PROFILE_FILE)
+    return value
+
+
 def load_profile():
     with _profile_lock:
-        try:
-            with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
-                value = json.load(f)
-            if isinstance(value, dict) and isinstance(value.get('data'), dict):
-                return value
-        except Exception:
-            pass
-        return {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        return _read_profile_unlocked()
 
 
 def save_profile(patch):
@@ -1675,22 +1698,399 @@ def save_profile(patch):
     if not clean:
         raise ValueError('profile patch has no supported fields')
     with _profile_lock:
-        try:
-            with open(PROFILE_FILE, 'r', encoding='utf-8') as f:
-                current = json.load(f)
-            if not isinstance(current, dict) or not isinstance(current.get('data'), dict):
-                current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
-        except Exception:
-            current = {'schema': 1, 'revision': 0, 'updated_at': None, 'data': {}}
+        current = _read_profile_unlocked()
         current['data'].update(clean)
-        current['schema'] = 1
-        current['revision'] = int(current.get('revision') or 0) + 1
-        current['updated_at'] = now_bj().isoformat(timespec='seconds')
-        temp_file = PROFILE_FILE + '.tmp'
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(current, f, ensure_ascii=False, indent=1)
-        os.replace(temp_file, PROFILE_FILE)
-        return current
+        return _write_profile_unlocked(current)
+
+
+CHAT_ACTION_PLAN_TTL_SECONDS = 15 * 60
+CHAT_ACTION_UNDO_TTL_SECONDS = 30 * 60
+CHAT_ACTION_SAFE_PAGES = {
+    'overview', 'emotion', 'market', 'ladder', 'watch', 'strategy',
+    'epaper', 'datasrc', 'about',
+}
+CHAT_ACTION_SAFE_TYPES = {'nav', 'quote', 'refresh'}
+CHAT_ACTION_WRITE_TYPES = {'watch_add', 'watch_remove', 'record'}
+
+
+def _chat_hash(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                     separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _chat_watchlist(value):
+    rows = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        code = normalize_code(str(item.get('code') or ''))
+        if len(code) != 6:
+            continue
+        clean = json.loads(json.dumps(item, ensure_ascii=False))
+        clean['code'] = code
+        rows.append(clean)
+    return rows[:PROFILE_LIST_LIMITS['watchlist']]
+
+
+def _chat_watch_fingerprint(rows):
+    return _chat_hash(_chat_watchlist(rows))
+
+
+def _chat_iso(value):
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+
+def _chat_now(value=None):
+    result = value if isinstance(value, datetime) else now_bj()
+    return result if result.tzinfo else result.replace(tzinfo=timezone(timedelta(hours=8)))
+
+
+def _resolve_chat_security(code, fallback=''):
+    """Resolve the display name from a server-side market source, never from model text alone."""
+    code = normalize_code(str(code or ''))
+    if len(code) != 6:
+        return None
+    try:
+        rows = cached('all_stocks', 2 * 3600, em_all_stocks)
+        item = next((row for row in rows if str(row.get('code') or '') == code), None)
+        if item and str(item.get('name') or '').strip():
+            return {'code': code, 'name': str(item['name']).strip()[:40]}
+    except Exception:
+        pass
+    try:
+        quote = cached('quote_' + code, 4, lambda: quote_with_fallback(code))
+        if isinstance(quote, dict) and str(quote.get('name') or '').strip():
+            return {'code': code, 'name': str(quote['name']).strip()[:40]}
+    except Exception:
+        pass
+    # A write intent without an independently resolved security is not executable.
+    return None
+
+
+def _sanitize_chat_safe_action(raw):
+    if not isinstance(raw, dict):
+        return None, 'action_not_object'
+    action_type = str(raw.get('type') or '').strip().lower()
+    if action_type == 'nav':
+        page = str(raw.get('page') or '').strip().lower()
+        if page not in CHAT_ACTION_SAFE_PAGES:
+            return None, 'page_not_allowed'
+        return {'type': 'nav', 'page': page}, None
+    if action_type == 'quote':
+        code = normalize_code(str(raw.get('code') or ''))
+        if len(code) != 6:
+            return None, 'invalid_security_code'
+        name = re.sub(r'[\x00-\x1f<>]', '', str(raw.get('name') or code)).strip()[:40]
+        return {'type': 'quote', 'code': code, 'name': name or code}, None
+    if action_type == 'refresh':
+        return {'type': 'refresh'}, None
+    return None, 'not_safe_action'
+
+
+def _chat_plan_public(plan):
+    allowed = {
+        'id', 'schema', 'modelVersion', 'status', 'createdAt', 'expiresAt',
+        'profileRevision', 'fingerprint', 'title', 'detail', 'scope',
+        'reversible', 'undoUntil', 'requiresConfirmation', 'action', 'contract',
+        'receiptId', 'failure',
+    }
+    return {key: json.loads(json.dumps(value, ensure_ascii=False))
+            for key, value in plan.items() if key in allowed}
+
+
+def preview_chat_actions(actions, source='local', current_time=None):
+    """Turn untrusted model/browser intents into server-owned, confirmable plans."""
+    now = _chat_now(current_time)
+    source = re.sub(r'[^a-z0-9_-]', '', str(source or 'local').lower())[:24] or 'local'
+    safe_actions, plans, rejected = [], [], []
+    raw_actions = actions if isinstance(actions, list) else []
+    # Resolve securities before taking the profile lock; upstream latency must not block profile writes.
+    resolved_securities = {}
+    for raw in raw_actions[:8]:
+        if not isinstance(raw, dict) or str(raw.get('type') or '').strip().lower() not in {
+                'watch_add', 'watch_remove'}:
+            continue
+        code = normalize_code(str(raw.get('code') or ''))
+        if code not in resolved_securities:
+            resolved_securities[code] = _resolve_chat_security(code, raw.get('name') or '')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        watchlist = _chat_watchlist(data.get('watchlist'))
+        watch_fingerprint = _chat_watch_fingerprint(watchlist)
+        stored = list(data.get('chat_action_plans') or [])
+        for raw in raw_actions[:8]:
+            action_type = str(raw.get('type') or '').strip().lower() if isinstance(raw, dict) else ''
+            if action_type in CHAT_ACTION_SAFE_TYPES:
+                clean, reason = _sanitize_chat_safe_action(raw)
+                if clean:
+                    safe_actions.append(clean)
+                else:
+                    rejected.append({'type': action_type or 'unknown', 'reason': reason})
+                continue
+            if action_type not in CHAT_ACTION_WRITE_TYPES:
+                rejected.append({'type': action_type or 'unknown', 'reason': 'action_not_allowed'})
+                continue
+
+            security = None
+            existing = None
+            existing_index = -1
+            if action_type in {'watch_add', 'watch_remove'}:
+                code = normalize_code(str(raw.get('code') or ''))
+                existing_index = next((index for index, item in enumerate(watchlist)
+                                       if item.get('code') == code), -1)
+                existing = watchlist[existing_index] if existing_index >= 0 else None
+                security = ({'code': code, 'name': str(existing.get('name') or code)[:40]}
+                            if action_type == 'watch_remove' and existing
+                            else resolved_securities.get(code))
+                if not security:
+                    rejected.append({'type': action_type, 'reason': 'security_not_resolved'})
+                    continue
+
+            created = now.isoformat(timespec='seconds')
+            expires = (now + timedelta(seconds=CHAT_ACTION_PLAN_TTL_SECONDS)).isoformat(timespec='seconds')
+            plan_id = 'cap_' + secrets.token_urlsafe(18)
+            if action_type == 'watch_add':
+                clean_action = {'type': action_type, **security}
+                no_change = existing is not None
+                title = ('无需重复加入自选' if no_change else '加入自选') + '：' + security['name']
+                detail = (f"{security['name']}（{security['code']}）已在自选中，不会重复写入。"
+                          if no_change else
+                          f"确认后将 {security['name']}（{security['code']}）加入默认自选分组；不会创建交易或提醒。")
+                reversible = not no_change
+            elif action_type == 'watch_remove':
+                clean_action = {'type': action_type, **security}
+                no_change = existing is None
+                title = ('无需移除' if no_change else '移出自选') + '：' + security['name']
+                detail = (f"{security['name']}（{security['code']}）当前不在自选中。"
+                          if no_change else
+                          f"确认后只移出 {security['name']}（{security['code']}）；不会删除提醒、研究流程或历史记录。")
+                reversible = not no_change
+            else:
+                clean_action = {'type': 'record'}
+                no_change = False
+                title = '记录当前情绪快照'
+                detail = '确认后将重新核对当前数据日并写入情绪历史；同一数据日不会重复记录。该操作不可撤销。'
+                reversible = False
+
+            status = 'no_change' if no_change else 'pending'
+            plan = {
+                'id': plan_id, 'schema': 1, 'modelVersion': 'chat-action-plan-v1',
+                'status': status, 'source': source,
+                'createdAt': created, 'expiresAt': expires,
+                'profileRevision': int(current.get('revision') or 0),
+                'scopeFingerprint': watch_fingerprint if action_type.startswith('watch_') else None,
+                'fingerprint': _chat_hash({'action': clean_action, 'scope': watch_fingerprint,
+                                           'revision': int(current.get('revision') or 0)}),
+                'title': title, 'detail': detail,
+                'scope': 'watchlist' if action_type.startswith('watch_') else 'emotion_history',
+                'reversible': reversible, 'undoUntil': None,
+                'requiresConfirmation': status == 'pending', 'action': clean_action,
+                'existingItem': existing, 'existingIndex': existing_index,
+                'contract': {
+                    'requiresExplicitConfirmation': status == 'pending',
+                    'automaticExecution': False,
+                    'tradingAllowed': False,
+                    'serverRevalidation': True,
+                },
+            }
+            stored.append(plan)
+            plans.append(_chat_plan_public(plan))
+        if plans:
+            data['chat_action_plans'] = stored[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+            _write_profile_unlocked(current)
+    return {'safeActions': safe_actions, 'actionPlans': plans, 'rejectedActions': rejected}
+
+
+def _chat_receipt_public(receipt):
+    return json.loads(json.dumps(receipt, ensure_ascii=False)) if isinstance(receipt, dict) else None
+
+
+def mutate_chat_action_plan(action, plan_id, current_time=None):
+    """Confirm, dismiss or undo a server-owned plan. Client-supplied action details are ignored."""
+    action = str(action or '').strip().lower()
+    plan_id = str(plan_id or '').strip()[:120]
+    if action not in {'confirm', 'dismiss', 'undo'} or not plan_id:
+        raise ValueError('invalid chat action mutation')
+    now = _chat_now(current_time)
+
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        plans = list(data.get('chat_action_plans') or [])
+        index = next((i for i, item in enumerate(plans)
+                      if isinstance(item, dict) and item.get('id') == plan_id), -1)
+        if index < 0:
+            raise ValueError('action plan not found')
+        plan = plans[index]
+        receipts = list(data.get('chat_action_receipts') or [])
+        latest_receipt = next((row for row in reversed(receipts)
+                               if row.get('planId') == plan_id), None)
+
+        if action == 'dismiss':
+            if plan.get('status') == 'pending':
+                plan['status'] = 'dismissed'
+                plan['requiresConfirmation'] = False
+                plan['dismissedAt'] = now.isoformat(timespec='seconds')
+                plans[index] = plan
+                data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+                _write_profile_unlocked(current)
+            return {'plan': _chat_plan_public(plan), 'receipt': _chat_receipt_public(latest_receipt),
+                    'watchlist': _chat_watchlist(data.get('watchlist'))}
+
+        if action == 'undo':
+            if plan.get('status') == 'undone' and latest_receipt:
+                return {'plan': _chat_plan_public(plan), 'receipt': _chat_receipt_public(latest_receipt),
+                        'watchlist': _chat_watchlist(data.get('watchlist'))}
+            if plan.get('status') != 'executed' or not plan.get('reversible'):
+                raise ValueError('action is not reversible')
+            undo_until = _chat_iso(plan.get('undoUntil'))
+            if not undo_until or now > undo_until:
+                raise ValueError('undo window expired')
+            watchlist = _chat_watchlist(data.get('watchlist'))
+            if _chat_watch_fingerprint(watchlist) != plan.get('afterFingerprint'):
+                plan['status'] = 'stale'
+                plan['failure'] = '自选已发生新变化，为避免覆盖现状，请手动处理。'
+                plans[index] = plan
+                data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+                _write_profile_unlocked(current)
+                raise ValueError(plan['failure'])
+            target = plan.get('existingItem')
+            action_type = (plan.get('action') or {}).get('type')
+            code = (plan.get('action') or {}).get('code')
+            if action_type == 'watch_add':
+                watchlist = [item for item in watchlist if item.get('code') != code]
+            elif action_type == 'watch_remove' and isinstance(target, dict):
+                insert_at = max(0, min(int(plan.get('existingIndex') or 0), len(watchlist)))
+                watchlist.insert(insert_at, target)
+            else:
+                raise ValueError('undo contract unavailable')
+            plan['status'] = 'undone'
+            plan['requiresConfirmation'] = False
+            plan['undoneAt'] = now.isoformat(timespec='seconds')
+            receipt = {
+                'id': 'car_' + secrets.token_urlsafe(14), 'planId': plan_id,
+                'kind': 'undo', 'status': 'undone', 'at': now.isoformat(timespec='seconds'),
+                'summary': '已撤销：' + plan.get('title', '工作台动作'),
+                'reversible': False,
+            }
+            plans[index] = plan
+            receipts.append(receipt)
+            data['watchlist'] = watchlist
+            data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+            data['chat_action_receipts'] = receipts[-PROFILE_LIST_LIMITS['chat_action_receipts']:]
+            _write_profile_unlocked(current)
+            return {'plan': _chat_plan_public(plan), 'receipt': receipt, 'watchlist': watchlist}
+
+        # confirm
+        if plan.get('status') == 'executed' and latest_receipt:
+            return {'plan': _chat_plan_public(plan), 'receipt': _chat_receipt_public(latest_receipt),
+                    'watchlist': _chat_watchlist(data.get('watchlist'))}
+        if plan.get('status') != 'pending':
+            raise ValueError('action plan is not pending')
+        expires = _chat_iso(plan.get('expiresAt'))
+        if not expires or now > expires:
+            plan['status'] = 'expired'
+            plan['requiresConfirmation'] = False
+            plans[index] = plan
+            data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+            _write_profile_unlocked(current)
+            raise ValueError('action plan expired')
+
+        action_type = (plan.get('action') or {}).get('type')
+        if action_type in {'watch_add', 'watch_remove'}:
+            watchlist = _chat_watchlist(data.get('watchlist'))
+            if _chat_watch_fingerprint(watchlist) != plan.get('scopeFingerprint'):
+                plan['status'] = 'stale'
+                plan['requiresConfirmation'] = False
+                plan['failure'] = '自选状态已变化，请重新生成行动单。'
+                plans[index] = plan
+                data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+                _write_profile_unlocked(current)
+                raise ValueError(plan['failure'])
+            code = plan['action']['code']
+            if action_type == 'watch_add':
+                if not any(item.get('code') == code for item in watchlist):
+                    watchlist.append({'code': code, 'name': plan['action']['name'],
+                                      'note': '', 'group': '默认',
+                                      'added': int(time.time() * 1000)})
+                summary = f"已加入自选：{plan['action']['name']}（{code}）"
+            else:
+                watchlist = [item for item in watchlist if item.get('code') != code]
+                summary = f"已移出自选：{plan['action']['name']}（{code}）"
+            plan['status'] = 'executed'
+            plan['requiresConfirmation'] = False
+            plan['executedAt'] = now.isoformat(timespec='seconds')
+            plan['undoUntil'] = (now + timedelta(seconds=CHAT_ACTION_UNDO_TTL_SECONDS)).isoformat(timespec='seconds')
+            plan['afterFingerprint'] = _chat_watch_fingerprint(watchlist)
+            receipt = {
+                'id': 'car_' + secrets.token_urlsafe(14), 'planId': plan_id,
+                'kind': 'execute', 'status': 'executed', 'at': plan['executedAt'],
+                'summary': summary, 'reversible': True, 'undoUntil': plan['undoUntil'],
+            }
+            plan['receiptId'] = receipt['id']
+            plans[index] = plan
+            receipts.append(receipt)
+            data['watchlist'] = watchlist
+            data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+            data['chat_action_receipts'] = receipts[-PROFILE_LIST_LIMITS['chat_action_receipts']:]
+            _write_profile_unlocked(current)
+            return {'plan': _chat_plan_public(plan), 'receipt': receipt, 'watchlist': watchlist}
+
+        if action_type != 'record':
+            raise ValueError('action type not allowed')
+        # Claim the idempotency key before the slow market read so a second confirm cannot race it.
+        plan['status'] = 'executing'
+        plan['requiresConfirmation'] = False
+        plan['executedAt'] = now.isoformat(timespec='seconds')
+        plans[index] = plan
+        data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+        _write_profile_unlocked(current)
+
+    try:
+        before_dates = {str(row.get('date')) for row in load_history() if isinstance(row, dict)}
+        emotion = assemble_emotion(True)
+        data_date = str(emotion.get('date') or '')
+        after_dates = {str(row.get('date')) for row in load_history() if isinstance(row, dict)}
+        recorded = bool(data_date and data_date in after_dates)
+        created = bool(recorded and data_date not in before_dates)
+        status = 'executed' if recorded else 'failed'
+        summary = (f"已记录 {data_date} 情绪快照" if created else
+                   f"{data_date} 情绪快照已存在，未重复写入" if recorded else
+                   '当前数据不足，未写入情绪快照')
+    except Exception as exc:
+        status, summary, data_date, created = 'failed', '记录失败：' + str(exc)[:160], '', False
+
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        plans = list(data.get('chat_action_plans') or [])
+        index = next((i for i, item in enumerate(plans) if item.get('id') == plan_id), -1)
+        if index < 0:
+            raise ValueError('action plan disappeared')
+        plan = plans[index]
+        plan['status'] = status
+        if status == 'failed':
+            plan['failure'] = summary
+        receipt = {
+            'id': 'car_' + secrets.token_urlsafe(14), 'planId': plan_id,
+            'kind': 'execute', 'status': status, 'at': now_bj().isoformat(timespec='seconds'),
+            'summary': summary, 'reversible': False, 'dataDate': data_date or None,
+            'created': created,
+        }
+        plan['receiptId'] = receipt['id']
+        plans[index] = plan
+        receipts = list(data.get('chat_action_receipts') or [])
+        receipts.append(receipt)
+        data['chat_action_plans'] = plans[-PROFILE_LIST_LIMITS['chat_action_plans']:]
+        data['chat_action_receipts'] = receipts[-PROFILE_LIST_LIMITS['chat_action_receipts']:]
+        _write_profile_unlocked(current)
+        return {'plan': _chat_plan_public(plan), 'receipt': receipt,
+                'watchlist': _chat_watchlist(data.get('watchlist'))}
 
 
 def update_brief_receipt(receipt, read=True):
@@ -6171,7 +6571,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.34.0'
+    server_version = 'DeepPulse/1.35.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -6293,7 +6693,9 @@ class Handler(BaseHTTPRequestHandler):
                           'attention_learning': 1,
                           'attention_triage': 1,
                           'attention_center_only_boundary': 1,
-                          'chat_answer_freshness': 1,
+                           'chat_answer_freshness': 1,
+                           'chat_action_plan': 1,
+                           'chat_action_receipts': 1,
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,
@@ -6566,10 +6968,23 @@ class Handler(BaseHTTPRequestHandler):
                     log('chat llm fail: %s' % e)
                     llm = {'mode': 'llm_error', 'reply': '', 'actions': []}
                 if llm and llm.get('mode') == 'llm':
+                    preview = preview_chat_actions(llm.get('actions') or [], 'cloud')
+                    llm['actions'] = preview['safeActions']
+                    llm['actionPlans'] = preview['actionPlans']
+                    llm['rejectedActions'] = preview['rejectedActions']
                     self.send_json({'ok': True, 'data': llm})
                 else:
                     # 未配置云端大脑 → 客户端使用本地智脑（内置金融意图引擎）
                     self.send_json({'ok': True, 'data': {'mode': 'local'}})
+            elif u.path == '/api/chat/actions':
+                body = self.read_json_body(32768)
+                mutation = str(body.get('action') or 'preview').strip().lower()
+                if mutation == 'preview':
+                    result = preview_chat_actions(body.get('actions') or [],
+                                                  body.get('source') or 'local')
+                else:
+                    result = mutate_chat_action_plan(mutation, body.get('planId'))
+                self.send_json({'ok': True, 'data': result})
             elif u.path == '/api/weights':
                 body = self.read_json_body()
                 saved = save_weights(body.get('weights') or {}) if compute_emotion else {}
@@ -6704,6 +7119,8 @@ class Handler(BaseHTTPRequestHandler):
                 }})
             else:
                 self.send_json({'ok': False, 'error': 'unknown api'}, 404)
+        except ValueError as e:
+            self.send_json({'ok': False, 'error': str(e)}, 409)
         except Exception as e:
             self.send_json({'ok': False, 'error': str(e)}, 502)
 

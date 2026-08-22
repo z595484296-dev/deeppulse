@@ -4,13 +4,13 @@
    配置 DeepSeek API Key（data/config.json）后自动升级为云端大脑。
    ============================================================ */
 
-import { api } from './api.js?v=1.34.0';
-import { addWatch, removeWatch, loadWatch, persistChatHistory, state, bus } from './store.js?v=1.34.0';
+import { api } from './api.js?v=1.35.0';
+import { applyServerWatchlist, loadWatch, persistChatHistory, state, bus } from './store.js?v=1.35.0';
 import {
   classifyMessageFreshness, historyForCurrentMarket, marketSensitiveQuestion, marketSnapshotFromState,
-} from './chat-freshness.js?v=1.34.0';
-import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.34.0';
-import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.34.0';
+} from './chat-freshness.js?v=1.35.0';
+import { esc, fmtPct, fmtPrice, fmtBig, pctClass, fmtSeal, toast, PHASE_COLORS } from './util.js?v=1.35.0';
+import { EMBEDDED, askDeepSeek } from './bridge.js?v=1.35.0';
 
 export const BOT_NAME = '蚂小财';
 const HISTORY_KEY = 'dp_chat_v1';
@@ -347,26 +347,26 @@ async function answerWatchShow() {
 async function answerWatchAdd(text) {
   const stk = await resolveStock(text);
   if (!stk) return { html: '要加哪只？试试：<b>“加自选 600519”</b> 或 <b>“加自选 贵州茅台”</b>。' };
-  const ok = addWatch({ code: stk.code, name: stk.name });
-  if (ok) return { html: `✅ 已把 <b>${esc(stk.name)}</b>（${stk.code}）加入自选，我会帮你盯着它。`, actions: [{ type: 'nav', page: 'watch' }], chipText: '打开自选页' };
-  return { html: `<b>${esc(stk.name)}</b> 早就在你的自选里啦～` };
+  return {
+    html: `我理解你想把 <b>${esc(stk.name)}</b>（${stk.code}）加入自选。我已准备好行动单，确认前不会改动你的工作台。`,
+    actions: [{ type: 'watch_add', code: stk.code, name: stk.name }],
+  };
 }
 
 async function answerWatchRemove(text) {
   const stk = await resolveStock(text);
   if (!stk) return { html: '要移除哪只？说说代码或名字。' };
-  removeWatch(stk.code);
-  return { html: `已把 <b>${esc(stk.name)}</b> 移出自选。` };
+  return {
+    html: `我理解你想把 <b>${esc(stk.name)}</b>（${stk.code}）移出自选。先请核对下面的行动单。`,
+    actions: [{ type: 'watch_remove', code: stk.code, name: stk.name }],
+  };
 }
 
 async function answerRecord() {
-  try {
-    const r = await api.recordSnapshot();
-    if (r && r.ok) return { html: '📝 已把今天的情绪快照写进历史记忆，周期曲线又长了一格。' };
-    return { html: '快照记录失败，稍后再试。' };
-  } catch (e) {
-    return { html: '快照记录失败（' + esc(e.message) + '）。' };
-  }
+  return {
+    html: '📝 我已准备“记录当前情绪快照”行动单。它会在确认后重新核对数据日，且同一数据日不会重复写入。',
+    actions: [{ type: 'record' }],
+  };
 }
 
 async function answerStockKline(text) {
@@ -414,11 +414,11 @@ async function answerCheer() {
 }
 
 const HELP_HTML = [
-  '我是 <b>蚂小财（DeepSeek 版）</b> 🧠 能读取工作台真实数据，也能直接<b>调度整个工作台</b>。标题下方会明确显示当前使用的是 DeepSeek 云端模型还是本地规则引擎。',
+  '我是 <b>蚂小财（DeepSeek 版）</b> 🧠 能读取工作台真实数据，也能<b>调度整个工作台</b>。标题下方会明确显示当前使用的是 DeepSeek 云端模型还是本地规则引擎。',
   '💬 <b>问数据</b>：今天情绪怎么样 / 涨停梯队如何 / 主力资金流向 / 题材主线是什么',
   '📈 <b>看个股</b>：帮我看看贵州茅台 / 600519 走势 / 宁德时代 K线',
   '🎯 <b>问策略</b>：模型风险暴露 / 有什么风险 / 当前数据质量',
-  '🕹️ <b>调度全局</b>：打开涨停梯队 / 加自选茅台 / 记录今日快照 / 刷新数据',
+  '🕹️ <b>调度全局</b>：打开涨停梯队 / 加自选茅台 / 记录今日快照 / 刷新数据；写操作会先给你行动单，确认后才执行',
   '🛟 网络异常或 API 不可用时，我会自动切换到内置本地智脑兜底，保证随时在线。',
 ].join('<br>');
 
@@ -469,21 +469,9 @@ export function runAction(a) {
         })), 80);
         break;
       }
-      case 'watch_add': {
-        const ok = addWatch({ code: a.code, name: a.name || a.code });
-        toast(ok ? `蚂小财：已加入自选 ${a.name || a.code}` : '该股票已在自选中', ok ? 'ok' : 'err');
-        break;
-      }
-      case 'watch_remove':
-        removeWatch(a.code);
-        toast('蚂小财：已移出自选 ' + (a.name || a.code));
-        break;
       case 'refresh':
         document.dispatchEvent(new CustomEvent('refresh-all'));
         toast('蚂小财：正在刷新全部数据…');
-        break;
-      case 'record':
-        api.recordSnapshot().then(r => toast(r && r.ok ? '情绪快照已记录' : '记录失败', r && r.ok ? 'ok' : 'err')).catch(() => {});
         break;
       default:
         break;
@@ -556,7 +544,7 @@ async function tryCloudBrain(history) {
    ============================================================ */
 
 export const chatStore = {
-  messages: [],   // {role, html, actions?, safe?, sourceQuestion?, createdAt?, marketSnapshot?}
+  messages: [],   // {role, html, actions?, actionPlans?, safe?, sourceQuestion?, createdAt?, marketSnapshot?}
   typing: false,
   listeners: new Set(),
   _load() {
@@ -575,6 +563,8 @@ export const chatStore = {
     this.messages.push({
       role, html, actions, safe: !!safe, sourceQuestion, createdAt,
       ...(metadata.marketSnapshot ? { marketSnapshot: metadata.marketSnapshot } : {}),
+      ...(Array.isArray(metadata.actionPlans) && metadata.actionPlans.length
+        ? { actionPlans: metadata.actionPlans } : {}),
     });
     this._save();
     this.notify();
@@ -599,6 +589,25 @@ export const chatStore = {
   reload() {
     this._load();
     this.notify();
+  },
+  updateActionPlan(planId, next) {
+    let changed = false;
+    this.messages = this.messages.map(message => {
+      if (!Array.isArray(message.actionPlans)) return message;
+      let messageChanged = false;
+      const actionPlans = message.actionPlans.map(plan => {
+        if (!plan || plan.id !== planId) return plan;
+        changed = true;
+        messageChanged = true;
+        return { ...plan, ...(next || {}) };
+      });
+      return messageChanged ? { ...message, actionPlans } : message;
+    });
+    if (changed) {
+      this._save();
+      this.notify();
+    }
+    return changed;
   },
 };
 
@@ -644,8 +653,35 @@ function freshnessMeta(message, currentSnapshot) {
   return { stale: false, text: parts.join(' · ') };
 }
 
+function actionPlanCard(plan) {
+  if (!plan || !plan.id) return '';
+  const status = String(plan.status || 'pending');
+  const statusLabels = {
+    pending: '待你确认', executed: '已执行', undone: '已撤销', dismissed: '已取消',
+    expired: '已过期', stale: '状态已变化', failed: '执行失败', no_change: '无需改动', executing: '执行中',
+  };
+  const receipt = plan.receipt || {};
+  const result = receipt.summary
+    ? `<div class="chat-plan-receipt">${esc(receipt.summary)}</div>`
+    : plan.failure ? `<div class="chat-plan-receipt error">${esc(plan.failure)}</div>` : '';
+  let buttons = '';
+  if (status === 'pending') {
+    buttons = `<button class="btn primary sm" data-plan-action="confirm" data-plan-id="${esc(plan.id)}">确认执行</button>
+      <button class="btn sm" data-plan-action="dismiss" data-plan-id="${esc(plan.id)}">取消</button>`;
+  } else if (status === 'executed' && plan.reversible && plan.undoUntil) {
+    buttons = `<button class="btn sm" data-plan-action="undo" data-plan-id="${esc(plan.id)}">撤销上一步</button>`;
+  }
+  return `<section class="chat-action-plan ${esc(status)}" data-plan-card="${esc(plan.id)}">
+    <div class="chat-plan-head"><b>${esc(plan.title || '工作台行动')}</b><span>${esc(statusLabels[status] || status)}</span></div>
+    <div class="chat-plan-detail">${esc(plan.detail || '')}</div>
+    <div class="chat-plan-contract">
+      <span>${plan.reversible ? '可撤销' : '不可撤销'}</span><span>不包含交易</span><span>服务端再校验</span>
+    </div>${result}<div class="chat-plan-actions">${buttons}</div>
+  </section>`;
+}
+
 function botBubble(message, currentSnapshot) {
-  const { html, actions, safe, sourceQuestion } = message;
+  const { html, actions, actionPlans, safe, sourceQuestion } = message;
   const acts = (actions || []).map(a => {
     let label = '';
     if (a.type === 'nav') {
@@ -671,9 +707,10 @@ function botBubble(message, currentSnapshot) {
     : '';
   const meta = freshness.text
     ? `<div class="chat-answer-meta ${freshness.stale ? 'stale' : ''}">${esc(freshness.text)}</div>` : '';
+  const plans = (actionPlans || []).map(actionPlanCard).join('');
   return `<div class="msg-row bot">
     <div class="bot-avatar">${ANT_SVG.replace('width:30px;height:30px', 'width:26px;height:26px')}</div>
-    <div><div class="bubble">${body}</div>${meta}<div class="chat-acts">${acts}${copyBtn}${askBtn}${retryBtn}</div></div>
+    <div class="chat-bot-content"><div class="bubble">${body}</div>${plans}${meta}<div class="chat-acts">${acts}${copyBtn}${askBtn}${retryBtn}</div></div>
   </div>`;
 }
 
@@ -730,10 +767,24 @@ export function createChatView(root) {
     let result = null;
     const cloud = await tryCloudBrain(history);
     if (cloud) {
-      result = { html: cloud.reply, actions: cloud.actions || [], safe: false };
+      result = {
+        html: cloud.reply, actions: cloud.actions || [], actionPlans: cloud.actionPlans || [],
+        rejectedActions: cloud.rejectedActions || [], safe: false,
+      };
     } else {
       const local = await answer(t);
-      result = { html: local.html, actions: local.actions || [], safe: true };
+      const preview = await api.previewChatActions(local.actions || [], 'local').catch(error => ({
+        safeActions: (local.actions || []).filter(action => ['nav', 'quote', 'refresh'].includes(action.type)),
+        actionPlans: [], rejectedActions: [{ reason: error.message || '行动单生成失败' }],
+      }));
+      result = {
+        html: local.html, actions: preview.safeActions || [], actionPlans: preview.actionPlans || [],
+        rejectedActions: preview.rejectedActions || [], safe: true,
+      };
+    }
+
+    if ((result.rejectedActions || []).length && !(result.actionPlans || []).length) {
+      result.html += `${result.safe ? '<br>' : '\n'}⚠️ 我没有执行未通过服务端校验的动作，请核对标的后重试。`;
     }
 
     const wait = Math.max(0, 650 - (Date.now() - started));
@@ -742,7 +793,9 @@ export function createChatView(root) {
     chatStore.push('bot', result.html, result.actions || [], result.safe, t, {
       createdAt: Date.now(),
       marketSnapshot: marketSensitiveQuestion(t) ? marketSnapshotFromState(state) : null,
+      actionPlans: result.actionPlans || [],
     });
+    // Only validated, non-persistent UI actions can run automatically.
     (result.actions || []).forEach(runAction);
   }
 
@@ -759,6 +812,25 @@ export function createChatView(root) {
     send(b.textContent);
   });
   msgsEl.addEventListener('click', e => {
+    const planButton = e.target.closest('[data-plan-action]');
+    if (planButton) {
+      const action = planButton.dataset.planAction;
+      const planId = planButton.dataset.planId;
+      planButton.disabled = true;
+      api.mutateChatAction(action, planId).then(result => {
+        if (Array.isArray(result.watchlist)) applyServerWatchlist(result.watchlist);
+        chatStore.updateActionPlan(planId, { ...(result.plan || {}), receipt: result.receipt || null });
+        const summary = result.receipt && result.receipt.summary;
+        toast(summary || (action === 'dismiss' ? '已取消行动单' : '行动单已更新'), 'ok');
+      }).catch(error => {
+        const message = error && error.message ? error.message : '操作失败';
+        if (/expired|过期/i.test(message)) chatStore.updateActionPlan(planId, { status: 'expired', failure: '行动单已过期，请重新提出需求。' });
+        else if (/stale|已变化|新变化/i.test(message)) chatStore.updateActionPlan(planId, { status: 'stale', failure: message });
+        toast(message, 'err');
+        planButton.disabled = false;
+      });
+      return;
+    }
     const regenerateBtn = e.target.closest('[data-regenerate]');
     if (regenerateBtn) {
       send(regenerateBtn.dataset.regenerate || '');
