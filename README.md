@@ -4,7 +4,15 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.39.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.40.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 限额可撤销的 AI 研判值班（v1.40）
+
+- 已建立基线的研究值守可另行授权 DeepSeek 值班；普通值守继续使用确定性规则，开启值守不会顺带开启 AI。
+- 首版只在官方披露集合出现新增项时生成草稿；首次基线、普通价格变化、来源故障、恢复与证据减少都不会调用模型。
+- 每条流程固定 1 次/北京时间日、单次最多 900 tokens、默认 7 天且不晚于研究值守到期；全局每天最多 3 次，可暂停或撤销。
+- 后台只使用独立版配置的 DeepSeek API，不借用 Harness 当前会话。草稿始终标为“未核验、不计入证据”，不会写结论、研究记忆、完成状态或交易动作。
+- 提供连接与格式测试；模型失败不会吞掉原始变化提醒，撤销期间返回的在途正文会被丢弃。API 密钥不会进入档案、日志、诊断包或分享包。
 
 ### 主动服务先试后开（v1.39）
 

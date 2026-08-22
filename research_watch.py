@@ -225,8 +225,12 @@ def material_change(previous_run, current_run):
         old_ids = _evidence_identity(source_id, old.get('evidence'))
         new_ids = _evidence_identity(source_id, new.get('evidence'))
         if old_ids != new_ids:
+            old_set = {repr(value) for value in old_ids}
+            new_set = {repr(value) for value in new_ids}
             changes.append({'sourceId': source_id, 'kind': 'evidence_set',
-                            'previousCount': len(old_ids), 'currentCount': len(new_ids)})
+                            'previousCount': len(old_ids), 'currentCount': len(new_ids),
+                            'addedCount': len(new_set - old_set),
+                            'removedCount': len(old_set - new_set)})
     canonical = json.dumps(changes, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     fingerprint = hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:20] if changes else ''
     return {

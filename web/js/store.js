@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.39.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.39.0';
+import { api } from './api.js?v=1.40.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.40.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据

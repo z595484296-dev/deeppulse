@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.39.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.39.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.39.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.39.0';
+import { api } from '../api.js?v=1.40.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.40.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.40.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.40.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -21,6 +21,8 @@ let pendingWorkflowFocus = '';
 let activeWorkflowAttention = null;
 let researchWatchPreview = null;
 let researchWatchTarget = null;
+let aiDutyPreview = null;
+let aiDutyTarget = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -164,6 +166,21 @@ export function init(container) {
           <div class="research-watch-preview" id="st-watch-preview"><div class="empty compact">先预览持续访问范围和到期时间，再逐项确认。</div></div>
         </div>
         <div class="research-watch-dialog-actions"><button type="button" class="btn ghost" data-watch-close>取消</button><button type="button" class="btn primary" id="st-watch-preview-btn">预览值守权限</button></div>
+      </dialog>
+
+      <dialog class="research-watch-dialog" id="st-ai-duty-dialog" aria-labelledby="st-ai-duty-title">
+        <div class="research-watch-dialog-head"><div><h2 id="st-ai-duty-title" tabindex="-1">开启 AI 研判值班</h2><p>这是研究值守之外的独立、限额、可撤销授权。</p></div><button type="button" class="icon-btn" data-ai-duty-close aria-label="关闭 AI 值班设置">×</button></div>
+        <div class="research-watch-dialog-body">
+          <div class="research-watch-scope" id="st-ai-duty-scope"></div>
+          <div class="research-watch-settings">
+            <label>每日最多调用<input value="1 次 / 北京时间日" disabled></label>
+            <label>单次输出上限<input value="900 tokens" disabled></label>
+            <label>自动结束日期<input type="date" id="st-ai-duty-expires"></label>
+          </div>
+          <p class="research-watch-boundary">只在新增官方披露后整理已冻结证据。不会使用 Harness 会话、增加来源、形成事实或结论、修改研究记忆、完成流程或执行交易。</p>
+          <div class="research-watch-preview" id="st-ai-duty-preview"><div class="empty compact">先预览模型、外发范围、预算和到期日，再逐项确认。</div></div>
+        </div>
+        <div class="research-watch-dialog-actions"><button type="button" class="btn ghost" data-ai-duty-close>取消</button><button type="button" class="btn primary" id="st-ai-duty-preview-btn">预览 AI 值班权限</button></div>
       </dialog>
 
       <section class="card span-12 hypothesis-lab" aria-labelledby="st-hyp-title">
@@ -615,6 +632,10 @@ export function init(container) {
       openResearchWatchDialog(container, workflow);
       return;
     }
+    if (action === 'ai-duty-setup') {
+      openAiDutyDialog(container, workflow);
+      return;
+    }
     if (action === 'watch-change') {
       const comparison = button.closest('.workflow-item')?.querySelector('.workflow-comparison');
       if (comparison) comparison.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -643,11 +664,34 @@ export function init(container) {
       toast('研究结果已填入复盘草稿；检查并点击保存后才会写入');
       return;
     }
+    if (action === 'ai_draft_evidence') {
+      const timeline = button.closest('.workflow-item')?.querySelector('.workflow-evidence-timeline');
+      if (timeline) { timeline.open = true; timeline.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' }); }
+      return;
+    }
+    if (action === 'ai_draft_review') {
+      const job = (workflow.aiDrafts || []).find(row => row.id === button.dataset.jobId);
+      const output = job?.output || {};
+      const lines = ['[AI 草稿，待人工核验；尚未保存为复盘结论]', output.summary || '', '',
+        '事实摘录（需核对原文）：', ...(output.facts || []).map(row => `- ${row}`), '',
+        'AI 推断：', ...(output.inferences || []).map(row => `- ${row}`), '',
+        '待补证与反证：', ...[...(output.gaps || []), ...(output.falsifiers || [])].map(row => `- ${row}`)];
+      const text = lines.join('\n').trim();
+      const calendarText = container.querySelector('#st-cal-text');
+      const journalText = container.querySelector('#st-jtext');
+      if (calendarText) calendarText.value = text;
+      if (journalText) journalText.value = text;
+      container.querySelector('#st-cal-panel')?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
+      toast('AI 内容仅填入未保存草稿；核验后由你决定是否保存');
+      return;
+    }
+    if (action === 'ai_duty_revoke' && !window.confirm('撤销后立即停止新调用；普通研究值守仍继续，历史草稿保留。确认撤销 AI 值班？')) return;
     button.disabled = true;
     const oldText = button.textContent;
     if (['run', 'watch_check'].includes(action)) button.textContent = '正在读取来源…';
+    if (action === 'ai_duty_test') button.textContent = '正在排队测试…';
     try {
-      const result = await api.mutateResearchWorkflow(action, { workflowId: workflow.id });
+      const result = await api.mutateResearchWorkflow(action, { workflowId: workflow.id, jobId: button.dataset.jobId });
       researchWorkflowData = result.workflows;
       state.researchWorkflows = researchWorkflowData;
       renderResearchWorkflows(container);
@@ -657,6 +701,10 @@ export function init(container) {
         watch_check: result.published ? '检查完成：发现实质变化，已写入提醒中心' : '检查完成：没有实质变化，不会打扰你',
         watch_pause: '研究值守已暂停，来源授权仍保留', watch_resume: '研究值守已恢复',
         watch_stop: '研究值守已结束；重新开启需要再次预览授权', complete: '流程已完成',
+        ai_duty_test: '连接与格式测试已排队；完成后会显示未核验草稿',
+        ai_duty_pause: 'AI 值班已暂停；普通研究值守仍继续', ai_duty_resume: 'AI 值班已恢复',
+        ai_duty_revoke: 'AI 值班已撤销；普通研究值守仍继续',
+        ai_draft_dismiss: '已标记为不采用；不会据此学习偏好',
       };
       toast(notices[action] || '研究流程已更新', result.published ? 'ok' : undefined);
     } catch (error) {
@@ -710,6 +758,47 @@ export function init(container) {
       watchDialog.close();
       toast('研究值守已开启；首次检查只建立基线，无变化不会提醒', 'ok');
     } catch (error) { button.disabled = false; toast(error.message || '开启研究值守失败', 'err'); }
+  });
+  const aiDutyDialog = container.querySelector('#st-ai-duty-dialog');
+  aiDutyDialog.addEventListener('click', e => {
+    if (e.target.closest('[data-ai-duty-close]')) aiDutyDialog.close();
+  });
+  aiDutyDialog.addEventListener('close', () => { aiDutyPreview = null; aiDutyTarget = null; });
+  container.querySelector('#st-ai-duty-expires').addEventListener('change', () => {
+    aiDutyPreview = null; renderAiDutyPreview(container);
+  });
+  container.querySelector('#st-ai-duty-preview-btn').addEventListener('click', async e => {
+    if (!aiDutyTarget) return;
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchWorkflow('ai_duty_preview', {
+        workflowId: aiDutyTarget.id, options: aiDutyOptions(container),
+      });
+      aiDutyPreview = result.preview;
+      renderAiDutyPreview(container);
+      container.querySelector('.research-watch-preview-head')?.focus?.({ preventScroll: true });
+    } catch (error) { toast(error.message || 'AI 值班权限预览失败', 'err'); }
+    finally { button.disabled = false; }
+  });
+  container.querySelector('#st-ai-duty-preview').addEventListener('change', () => updateAiDutyConfirm(container));
+  container.querySelector('#st-ai-duty-preview').addEventListener('click', async e => {
+    const button = e.target.closest('[data-ai-duty-confirm]');
+    if (!button || !aiDutyPreview || !aiDutyTarget) return;
+    const confirmations = [...container.querySelectorAll('[data-ai-duty-permission]:checked')].map(input => input.value);
+    if (container.querySelector('[data-ai-duty-final]:checked')) confirmations.push('confirm:ai-duty');
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchWorkflow('ai_duty_confirm', {
+        workflowId: aiDutyTarget.id, options: aiDutyOptions(container),
+        previewId: aiDutyPreview.previewId, expectedRevision: aiDutyPreview.profileRevision, confirmations,
+      });
+      researchWorkflowData = result.workflows;
+      state.researchWorkflows = researchWorkflowData;
+      renderResearchWorkflows(container);
+      aiDutyDialog.close();
+      toast('AI 研判值班已开启；仅新增官方披露会消耗额度', 'ok');
+    } catch (error) { button.disabled = false; toast(error.message || '开启 AI 值班失败', 'err'); }
   });
   bus.addEventListener('research-workflows', e => {
     researchWorkflowData = e.detail;
@@ -1238,6 +1327,57 @@ function renderResearchWatchPreview(container) {
   updateResearchWatchConfirm(container);
 }
 
+function aiDutyOptions(container) {
+  const date = container.querySelector('#st-ai-duty-expires').value;
+  return { maxRunsPerDay: 1, maxTokensPerRun: 900,
+    triggerKinds: ['new_official_evidence'], expiresAt: date ? `${date}T23:59:00+08:00` : '' };
+}
+
+function openAiDutyDialog(container, workflow) {
+  aiDutyTarget = workflow;
+  aiDutyPreview = null;
+  const target = workflow.target || {};
+  const watchDate = String(workflow.watch?.expiresAt || '').slice(0, 10);
+  const fallback = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  container.querySelector('#st-ai-duty-expires').value = watchDate || fallback;
+  container.querySelector('#st-ai-duty-scope').innerHTML = `<b>${esc(workflow.title || '研究流程')}</b><span>${esc(target.name || target.code || '研究对象')} · 仅新增官方披露</span><p>${esc(workflow.question || '')}</p>`;
+  renderAiDutyPreview(container);
+  const dialog = container.querySelector('#st-ai-duty-dialog');
+  dialog.showModal();
+  container.querySelector('#st-ai-duty-title').focus?.({ preventScroll: true });
+}
+
+function renderAiDutyPreview(container) {
+  const root = container.querySelector('#st-ai-duty-preview');
+  if (!aiDutyPreview) {
+    root.innerHTML = '<div class="empty compact">先预览模型、外发范围、预算和到期日，再逐项确认。</div>';
+    return;
+  }
+  const preview = aiDutyPreview;
+  if ((preview.blockers || []).length) {
+    root.innerHTML = `<div class="workflow-preview-title"><b>暂时不能开启</b><span>没有写入任何授权</span></div><ul class="workflow-blockers">${preview.blockers.map(text => `<li>${esc(text)}</li>`).join('')}</ul>`;
+    return;
+  }
+  const provider = preview.provider || {};
+  root.innerHTML = `<div class="research-watch-preview-head"><b>AI 值班授权预览</b><span>${esc(provider.model || 'DeepSeek')} · 已配置，待首次验证</span></div>
+    <dl><div><dt>触发</dt><dd>仅新增官方披露</dd></div><div><dt>预算</dt><dd>1 次/日 · 900 tokens/次</dd></div><div><dt>自动结束</dt><dd>${esc(formatHypothesisTime(preview.expiresAt))}</dd></div></dl>
+    <div class="workflow-ai-draft-guard" role="note">发送本流程问题、标的和当次冻结的必要公告片段；不发送 API 密钥、其他流程、复盘、账户或持仓。生成物是未核验草稿，不计入证据。</div>
+    <fieldset class="workflow-permissions"><legend>逐项确认 AI 值班范围</legend>
+      ${(preview.permissions || []).map(permission => `<label><input type="checkbox" data-ai-duty-permission value="${esc(permission.id)}"><span><b>${esc(permission.label)}</b><small>持续到到期、暂停或撤销；不会扩大来源与动作权限</small></span></label>`).join('')}
+      <label class="workflow-final-confirm"><input type="checkbox" data-ai-duty-final><span><b>我确认开启限额 AI 值班</b><small>撤销后普通研究值守仍继续；在途结果不会落库</small></span></label>
+    </fieldset><button type="button" class="btn primary workflow-confirm-btn" data-ai-duty-confirm disabled>确认开启 AI 值班</button>`;
+  updateAiDutyConfirm(container);
+}
+
+function updateAiDutyConfirm(container) {
+  const root = container.querySelector('#st-ai-duty-preview');
+  const button = root.querySelector('[data-ai-duty-confirm]');
+  if (!button || !aiDutyPreview?.ready) return;
+  const required = root.querySelectorAll('[data-ai-duty-permission]').length;
+  button.disabled = root.querySelectorAll('[data-ai-duty-permission]:checked').length !== required
+    || !root.querySelector('[data-ai-duty-final]:checked');
+}
+
 function updateResearchWatchConfirm(container) {
   const root = container.querySelector('#st-watch-preview');
   const button = root.querySelector('[data-watch-confirm]');
@@ -1261,7 +1401,8 @@ function renderResearchWorkflows(container) {
   const root = container.querySelector('#st-workflow-list');
   if (!root || !researchWorkflowData) return;
   const summary = researchWorkflowData.summary || {};
-  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 暂停 <b>${summary.paused || 0}</b> · 模板 <b>${summary.template || 0}</b>`;
+  const dutySummary = researchWorkflowData.aiDutySummary || {};
+  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 暂停 <b>${summary.paused || 0}</b> · AI 值班 <b>${dutySummary.active || 0}</b> · 待核验草稿 <b>${dutySummary.drafts || 0}</b>`;
   const items = researchWorkflowData.items || [];
   if (!items.length) {
     root.innerHTML = '<div class="empty">还没有研究流程。可以从一个具体问题开始，先预览再创建。</div>';
@@ -1338,6 +1479,41 @@ function renderResearchWorkflows(container) {
       ${watch.lastChangeAt ? `<button class="btn sm ghost" data-wf-action="watch-change" data-wf-id="${esc(item.id)}">查看 ${esc(formatHypothesisTime(watch.lastChangeAt))} 的变化</button>` : ''}
       <div class="workflow-watch-actions">${watchActions}</div>
     </section>` : '';
+    const duty = item.aiDuty || {};
+    const dutyState = duty.effectiveStatus || 'off';
+    const dutyLabels = { active: ['AI 研判值班中', 'violet'], paused: ['AI 值班已暂停', 'amber'],
+      expired: ['AI 值班已到期', 'gray'], revoked: ['AI 值班已撤销', 'gray'],
+      suspended_watch: ['随研究值守暂停', 'amber'], suspended_reconfirm: ['AI 值班需重新授权', 'amber'],
+      invalid: ['AI 值班需检查', 'red'], off: ['AI 值班未开启', 'gray'] };
+    const dutyLabel = dutyLabels[dutyState] || dutyLabels.invalid;
+    const providerReady = researchWorkflowData.aiDutyProvider?.ready === true;
+    const dutyActions = dutyState === 'active'
+      ? `<button class="btn sm" data-wf-action="ai_duty_test" data-wf-id="${esc(item.id)}">测试连接与格式</button><button class="btn sm" data-wf-action="ai_duty_pause" data-wf-id="${esc(item.id)}">暂停 AI 值班</button><button class="btn sm ghost" data-wf-action="ai_duty_revoke" data-wf-id="${esc(item.id)}">撤销 AI 值班</button>`
+      : dutyState === 'paused'
+        ? `<button class="btn sm" data-wf-action="ai_duty_resume" data-wf-id="${esc(item.id)}">恢复 AI 值班</button><button class="btn sm ghost" data-wf-action="ai_duty_revoke" data-wf-id="${esc(item.id)}">撤销 AI 值班</button>`
+        : `<button class="btn sm" data-wf-action="ai-duty-setup" data-wf-id="${esc(item.id)}">${dutyState === 'off' ? (providerReady ? '开启 AI 研判值班' : '查看 AI 值班要求') : '重新授权 AI 值班'}</button>`;
+    const dutyCard = item.kind !== 'template' && watchState !== 'off' ? `<section class="workflow-ai-duty" data-state="${esc(dutyState)}" aria-live="polite">
+      <div class="workflow-watch-head"><span class="badge ${dutyLabel[1]}">${dutyLabel[0]}</span><span>${duty.expiresAt ? `至 ${esc(formatHypothesisTime(duty.expiresAt))}` : (providerReady ? '默认关闭，需独立授权' : '独立版 DeepSeek API 未配置')}</span></div>
+      <p>${esc(duty.boundary || '只在新增官方披露后生成未核验草稿；首轮基线、无变化和来源故障均不调用。')}</p>
+      ${duty.lastBlockedReason ? `<small>最近未运行：${esc(duty.lastBlockedReason)}</small>` : ''}
+      <div class="workflow-watch-actions">${dutyActions}</div>
+    </section>` : '';
+    const aiDrafts = (item.aiDrafts || []).filter(row => row.status !== 'dismissed');
+    const aiDraftCards = aiDrafts.map(job => {
+      const output = job.output || {};
+      return `<article class="workflow-ai-draft" data-status="unverified_draft" data-ai-job-id="${esc(job.id)}">
+        <div class="workflow-ai-draft-head"><div><span class="badge violet">AI 研判草稿</span><b>${job.trigger === 'manual_test' ? '连接与格式测试草稿' : '新增官方披露研判草稿'}</b></div><span>未核验 · 不计入证据</span></div>
+        <div class="workflow-ai-draft-guard" role="note">以下内容由 DeepSeek 基于冻结公告片段生成，是待人工核验的草稿，不是市场事实、研究结论或投资建议。</div>
+        <p>${esc(output.summary || '')}</p>
+        <details><summary>查看事实摘录、推断、缺口与反证</summary>
+          <h4>事实摘录（仍需核对原文）</h4><ul>${(output.facts || []).map(row => `<li>${esc(row)}</li>`).join('') || '<li>无</li>'}</ul>
+          <h4>AI 推断</h4><ul>${(output.inferences || []).map(row => `<li>${esc(row)}</li>`).join('') || '<li>无</li>'}</ul>
+          <h4>待补证与反证</h4><ul>${[...(output.gaps || []), ...(output.falsifiers || [])].map(row => `<li>${esc(row)}</li>`).join('') || '<li>无</li>'}</ul>
+          <small>引用：${(output.citations || []).map(esc).join('；') || '模型未返回可验证引用，草稿已降级'}</small>
+        </details>
+        <div class="workflow-ai-draft-actions"><button class="btn sm primary" data-wf-action="ai_draft_evidence" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">核对原始证据</button><button class="btn sm" data-wf-action="ai_draft_review" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">填入复盘草稿</button><button class="btn sm ghost" data-wf-action="ai_draft_dismiss" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">不采用</button></div>
+      </article>`;
+    }).join('');
     const canRun = item.status === 'active';
     return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}" data-workflow-id="${esc(item.id)}">
       <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b class="workflow-title" tabindex="-1">${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
@@ -1346,9 +1522,11 @@ function renderResearchWorkflows(container) {
       <div class="workflow-source-tags">${sourceTags}</div>
       ${lineageCard}
       ${watchCard}
+      ${dutyCard}
       <details class="workflow-run" ${item.effectiveStatus === 'review_due' && latest ? 'open' : ''}><summary>${latest ? `最近执行 ${esc(formatHypothesisTime(latest.ranAt))} · 成功 ${Number(latest.summary?.ok || 0)} / ${Number(latest.summary?.selected || 0)}` : '尚未执行来源读取'}</summary>${runRows ? `<ul>${runRows}</ul>` : '<div class="empty compact">执行后会记录各来源的事实摘要、最终上游和失败原因，但不会自动下结论。</div>'}</details>
       ${resultCard}
       ${comparisonCard}
+      ${aiDraftCards}
       ${timelineCard}
       <div class="workflow-item-actions">
         ${canRun ? `<button class="btn sm primary" data-wf-action="run" data-wf-id="${esc(item.id)}">执行一次</button>` : ''}

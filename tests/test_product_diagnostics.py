@@ -79,7 +79,7 @@ class ProductDiagnosticsTests(unittest.TestCase):
                        'sk-private-value', '601138'):
             self.assertNotIn(secret, encoded)
         self.assertIn('API 密钥', report['privacy'])
-        self.assertEqual(report['version'], '1.39.0')
+        self.assertEqual(report['version'], '1.40.0')
 
     def test_desktop_heartbeat_changes_optional_desktop_state(self):
         before = self.report()

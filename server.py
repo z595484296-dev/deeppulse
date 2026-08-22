@@ -113,6 +113,22 @@ except Exception:
     RESEARCH_WATCH_MODEL_VERSION = 'research-watch-unavailable'
 
 try:
+    from ai_research_duty import (build_messages as build_ai_research_messages,
+                                 confirm_delegation as confirm_ai_research_delegation,
+                                 create_job as create_ai_research_job,
+                                 delegation_state as ai_research_delegation_state,
+                                 parse_draft as parse_ai_research_draft,
+                                 preview_delegation as preview_ai_research_delegation,
+                                 provider_status as ai_research_provider_status,
+                                 MODEL_VERSION as AI_RESEARCH_DUTY_MODEL_VERSION)
+except Exception:
+    build_ai_research_messages = confirm_ai_research_delegation = None
+    create_ai_research_job = ai_research_delegation_state = None
+    parse_ai_research_draft = preview_ai_research_delegation = None
+    ai_research_provider_status = None
+    AI_RESEARCH_DUTY_MODEL_VERSION = 'ai-research-duty-unavailable'
+
+try:
     from research_suggestions import (build_snapshot as build_research_suggestion_snapshot,
                                       draft_fingerprint as research_suggestion_draft_fingerprint,
                                       mutate_item as mutate_research_suggestion_item,
@@ -168,7 +184,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.39.0'
+VERSION = '1.40.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1622,6 +1638,37 @@ def chat_llm(messages):
     return {'mode': 'llm', 'reply': content, 'actions': actions, 'model': model}
 
 
+def ai_research_llm(messages, max_tokens=1000):
+    """Use the configured API without chat context, actions, or Harness state."""
+    cfg = load_config()
+    status = ai_research_provider_status(cfg) if ai_research_provider_status else {'ready': False}
+    if not status.get('ready'):
+        raise UpstreamError(status.get('reason') or 'DeepSeek API unavailable')
+    key = str(cfg.get('deepseek_api_key') or '').strip()
+    base = str(cfg.get('deepseek_base_url') or 'https://api.deepseek.com').rstrip('/')
+    model = str(cfg.get('deepseek_model') or 'deepseek-chat')
+    payload = {
+        'model': model, 'messages': list(messages or [])[-4:],
+        'temperature': 0.2, 'stream': False,
+        'max_tokens': max(400, min(2400, int(max_tokens or 1000))),
+        'response_format': {'type': 'json_object'},
+    }
+    req = urllib.request.Request(
+        base + '/chat/completions', data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key}, method='POST')
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        value = json.loads(resp.read().decode('utf-8'))
+    content = (value.get('choices') or [{}])[0].get('message', {}).get('content', '') or ''
+    if not content.strip():
+        raise UpstreamError('AI research draft returned empty content')
+    if len(content.encode('utf-8')) > 16 * 1024:
+        raise UpstreamError('AI research draft exceeds output limit')
+    usage = value.get('usage') if isinstance(value.get('usage'), dict) else {}
+    return {'content': content, 'model': model,
+            'usage': {name: int(usage.get(name) or 0)
+                      for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')}}
+
+
 # ---------------------------------------------------------------- 本机用户档案（各前端来源共享）
 
 _profile_lock = threading.Lock()
@@ -1643,6 +1690,8 @@ PROFILE_LIST_LIMITS = {
     'hypothesis_receipts': 500,
     'research_workflows': 200,
     'research_workflow_receipts': 500,
+    'ai_research_delegations': 200,
+    'ai_research_jobs': 40,
     'research_suggestions': 200,
     'delivery_receipts': 1000,
     'chat_action_plans': 120,
@@ -4274,6 +4323,9 @@ _event_service_lock = threading.Lock()
 _event_service_stop = threading.Event()
 _event_service_wake = threading.Event()
 _event_service_thread = None
+_ai_research_stop = threading.Event()
+_ai_research_wake = threading.Event()
+_ai_research_thread = None
 _event_service_runtime = {
     'thread_running': False,
     'state': 'disabled',
@@ -4710,6 +4762,13 @@ def research_workflows_status(current=None):
         }
     result = workflow_snapshot(data.get('research_workflows') or [], now_bj())
     watch_counts = {'active': 0, 'paused': 0, 'expired': 0, 'attention': 0}
+    provider = (ai_research_provider_status(load_config()) if ai_research_provider_status
+                else {'provider': 'deepseek_api', 'ready': False, 'reason': 'AI 值班模块不可用'})
+    delegations = [dict(row) for row in (data.get('ai_research_delegations') or [])
+                   if isinstance(row, dict) and row.get('workflowId')]
+    jobs = [dict(row) for row in (data.get('ai_research_jobs') or [])
+            if isinstance(row, dict) and row.get('workflowId')]
+    duty_counts = {'active': 0, 'drafts': 0, 'failed': 0, 'queued': 0}
     for item in result.get('items') or []:
         watch = item.get('watch') if isinstance(item.get('watch'), dict) else {}
         state_name = research_watch_state(item, now_bj()) if research_watch_state else 'unavailable'
@@ -4724,7 +4783,30 @@ def research_workflows_status(current=None):
             if watch.get('lastChangeAt'):
                 watch_counts['attention'] += 1
             item['watch'] = watch
+        delegation = next((row for row in reversed(delegations)
+                           if str(row.get('workflowId') or '') == str(item.get('id') or '')), None)
+        workflow_jobs = [row for row in jobs
+                         if str(row.get('workflowId') or '') == str(item.get('id') or '')]
+        if delegation:
+            delegation['effectiveStatus'] = (ai_research_delegation_state(delegation, item, now_bj(), provider)
+                                             if ai_research_delegation_state else 'unavailable')
+            if delegation['effectiveStatus'] == 'active':
+                duty_counts['active'] += 1
+            item['aiDuty'] = delegation
+        else:
+            item['aiDuty'] = {'effectiveStatus': 'off'}
+        item['aiDrafts'] = [row for row in workflow_jobs
+                            if row.get('status') in {'completed_draft', 'dismissed'}][-6:]
+        item['aiDutyJobs'] = [{key: row.get(key) for key in (
+            'id', 'status', 'createdAt', 'finishedAt', 'errorCode', 'triggerKinds')}
+            for row in workflow_jobs[-6:]]
+        duty_counts['drafts'] += sum(row.get('status') == 'completed_draft' for row in workflow_jobs)
+        duty_counts['failed'] += sum(row.get('status') == 'failed_provider' for row in workflow_jobs)
+        duty_counts['queued'] += sum(row.get('status') in {'queued', 'running'} for row in workflow_jobs)
     result['watchSummary'] = watch_counts
+    result['aiDutySummary'] = duty_counts
+    result['aiDutyProvider'] = provider
+    result['aiDutyModelVersion'] = AI_RESEARCH_DUTY_MODEL_VERSION
     result['watchModelVersion'] = RESEARCH_WATCH_MODEL_VERSION
     result['environment'] = research_workflow_environment()
     result['permissions'] = {
@@ -4733,6 +4815,8 @@ def research_workflows_status(current=None):
         'automaticExternalAuthorization': False,
         'automaticTradingAction': False,
         'watchPerWorkflowOptIn': True,
+        'aiDutySeparateOptIn': True,
+        'aiDutyHarnessSessionAllowed': False,
     }
     return result
 
@@ -4931,6 +5015,140 @@ def _research_watch_attention(workflow, change, timestamp, repair=False):
     }
 
 
+def _queue_ai_research_job_unlocked(current, workflow, run, change, current_time):
+    """Queue inside the watch commit; never performs network I/O."""
+    if not create_ai_research_job:
+        return None, 'unavailable'
+    data = current.get('data') if isinstance(current.get('data'), dict) else {}
+    delegations = [dict(row) for row in (data.get('ai_research_delegations') or [])
+                   if isinstance(row, dict) and row.get('workflowId')]
+    index = next((i for i, row in enumerate(delegations)
+                  if str(row.get('workflowId') or '') == str(workflow.get('id') or '')), -1)
+    if index < 0:
+        return None, 'not_authorized'
+    provider = ai_research_provider_status(load_config()) if ai_research_provider_status else {'ready': False}
+    if not provider.get('ready') or ai_research_delegation_state(
+            delegations[index], workflow, current_time, provider) != 'active':
+        delegations[index]['lastBlockedReason'] = 'provider_or_authorization_changed'
+        data['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
+        return None, 'delegation_inactive'
+    jobs = [dict(row) for row in (data.get('ai_research_jobs') or [])
+            if isinstance(row, dict) and row.get('id')]
+    job, reason = create_ai_research_job(delegations[index], workflow, run, change, jobs, current_time)
+    if job:
+        jobs.append(job)
+        delegations[index]['lastJobId'] = job['id']
+        delegations[index]['lastBlockedReason'] = None
+    elif reason not in {'ineligible_change', 'duplicate'}:
+        delegations[index]['lastBlockedReason'] = reason
+        delegations[index]['lastBlockedAt'] = current_time.isoformat(timespec='seconds')
+    data['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
+    data['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
+    return job, reason
+
+
+def _filter_ai_research_citations(draft, job):
+    allowed = {'official_disclosures'}
+    for source in job.get('frozenEvidence') or []:
+        allowed.add(str(source.get('sourceId') or ''))
+        for row in source.get('evidence') or []:
+            if isinstance(row, dict):
+                allowed.update(str(row.get(key) or '') for key in ('id', 'title') if row.get(key))
+    value = dict(draft or {})
+    value['citations'] = [row for row in (value.get('citations') or [])
+                          if any(token and token in str(row) for token in allowed)][:12]
+    return value
+
+
+def process_ai_research_jobs_once(now=None, provider=None):
+    """Claim under lock, call provider without lock, then conditionally commit."""
+    if not all((ai_research_delegation_state, build_ai_research_messages, parse_ai_research_draft)):
+        return {'state': 'unavailable', 'processed': 0}
+    current_time = now if isinstance(now, datetime) else now_bj()
+    caller = provider or ai_research_llm
+    lease = secrets.token_hex(12)
+    claimed = None
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        workflows = [row for row in (data.get('research_workflows') or []) if isinstance(row, dict)]
+        delegations = [dict(row) for row in (data.get('ai_research_delegations') or []) if isinstance(row, dict)]
+        jobs = [dict(row) for row in (data.get('ai_research_jobs') or []) if isinstance(row, dict)]
+        for index, job in enumerate(jobs):
+            if job.get('status') != 'queued':
+                continue
+            workflow = next((row for row in workflows if str(row.get('id') or '') == str(job.get('workflowId') or '')), None)
+            delegation = next((row for row in delegations if str(row.get('id') or '') == str(job.get('delegationId') or '')), None)
+            provider_state = ai_research_provider_status(load_config()) if ai_research_provider_status else {'ready': False}
+            if (not workflow or not delegation or not provider_state.get('ready') or
+                    ai_research_delegation_state(delegation, workflow, current_time, provider_state) != 'active'):
+                job.update(status='cancelled', finishedAt=current_time.isoformat(timespec='seconds'),
+                           errorCode='authorization_inactive')
+                jobs[index] = job
+                continue
+            job.update(status='running', startedAt=current_time.isoformat(timespec='seconds'),
+                       attempts=1, leaseToken=lease, delegationRevision=delegation.get('revision'))
+            jobs[index] = job
+            claimed = dict(job)
+            break
+        if claimed or any(row.get('status') == 'cancelled' and not row.get('_saved') for row in jobs):
+            data['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
+            _write_profile_unlocked(current)
+    if not claimed:
+        return {'state': 'idle', 'processed': 0}
+
+    response = None
+    draft = None
+    error_code = None
+    try:
+        response = caller(build_ai_research_messages(claimed), claimed.get('maxTokens') or 900)
+        draft = _filter_ai_research_citations(parse_ai_research_draft(response.get('content')), claimed)
+    except (ValueError, json.JSONDecodeError):
+        error_code = 'invalid_output'
+    except Exception:
+        error_code = 'provider_failed'
+
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        jobs = [dict(row) for row in (data.get('ai_research_jobs') or []) if isinstance(row, dict)]
+        index = next((i for i, row in enumerate(jobs)
+                      if row.get('id') == claimed.get('id') and row.get('leaseToken') == lease), -1)
+        if index < 0:
+            return {'state': 'superseded', 'processed': 1}
+        workflows = [row for row in (data.get('research_workflows') or []) if isinstance(row, dict)]
+        delegations = [dict(row) for row in (data.get('ai_research_delegations') or []) if isinstance(row, dict)]
+        workflow = next((row for row in workflows if str(row.get('id') or '') == str(claimed.get('workflowId') or '')), None)
+        delegation = next((row for row in delegations if str(row.get('id') or '') == str(claimed.get('delegationId') or '')), None)
+        provider_state = ai_research_provider_status(load_config()) if ai_research_provider_status else {'ready': False}
+        active = (workflow and delegation and provider_state.get('ready')
+                  and delegation.get('revision') == claimed.get('delegationRevision')
+                  and ai_research_delegation_state(delegation, workflow, current_time, provider_state) == 'active')
+        job = jobs[index]
+        job.pop('leaseToken', None)
+        job['finishedAt'] = current_time.isoformat(timespec='seconds')
+        if not active:
+            job.update(status='discarded_after_revocation', errorCode='authorization_changed')
+        elif error_code:
+            job.update(status='failed_provider', errorCode=error_code)
+        else:
+            job.update(status='completed_draft', errorCode=None,
+                       model=str(response.get('model') or '')[:120], usage=response.get('usage') or {},
+                       output=draft, notEvidence=True, automaticConclusion=False,
+                       automaticCompletion=False, automaticTradingAction=False)
+            delegation['lastVerifiedAt'] = current_time.isoformat(timespec='seconds')
+            delegation['lastJobId'] = job['id']
+            d_index = next((i for i, row in enumerate(delegations)
+                            if row.get('id') == delegation.get('id')), -1)
+            if d_index >= 0:
+                delegations[d_index] = delegation
+        jobs[index] = job
+        data['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
+        data['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
+        _write_profile_unlocked(current)
+    return {'state': job.get('status'), 'processed': 1, 'jobId': job.get('id')}
+
+
 def process_research_watches_once(now=None, collector=None, workflow_id='', force=False):
     """Run at most one due watch. No opt-in means no source access."""
     if not all((research_watch_is_due, research_watch_state, record_workflow_run,
@@ -5035,6 +5253,10 @@ def process_research_watches_once(now=None, collector=None, workflow_id='', forc
             if not any(row.get('id') == item['id'] for row in inbox):
                 inbox.append(item)
                 published += 1
+            ai_job, _ai_reason = _queue_ai_research_job_unlocked(
+                current, updated, run, change, current_time)
+            if ai_job:
+                _ai_research_wake.set()
         if newly_paused:
             repair_change = {
                 'modelVersion': RESEARCH_WATCH_MODEL_VERSION,
@@ -5113,6 +5335,113 @@ def mutate_research_workflow(action, payload=None):
     workflow_id = str(body.get('workflowId') or '').strip()[:180]
     if not workflow_id:
         raise ValueError('研究流程 ID 是必需的')
+    if clean_action in {'ai_duty_preview', 'ai_duty_confirm'}:
+        profile = load_profile()
+        source = next((row for row in (profile.get('data') or {}).get('research_workflows') or []
+                       if isinstance(row, dict) and str(row.get('id') or '') == workflow_id), None)
+        if not source:
+            raise ValueError('研究流程不存在')
+        provider = (ai_research_provider_status(load_config()) if ai_research_provider_status
+                    else {'ready': False, 'reason': 'AI 值班模块不可用'})
+        preview = preview_ai_research_delegation(source, body.get('options'), provider, now_bj())
+        preview['profileRevision'] = int(profile.get('revision') or 0)
+        if clean_action == 'ai_duty_preview':
+            return {'preview': preview, 'workflows': research_workflows_status(profile)}
+        if str(body.get('previewId') or '') != preview.get('previewId'):
+            raise ValueError('AI 值班范围已经变化，请重新预览后确认')
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            if int(body.get('expectedRevision') or -1) != int(current.get('revision') or 0):
+                raise ValueError('用户档案已经变化，请重新预览 AI 值班范围')
+            rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                    if isinstance(row, dict) and row.get('id')]
+            workflow = next((row for row in rows if str(row.get('id') or '') == workflow_id), None)
+            if not workflow:
+                raise ValueError('研究流程不存在')
+            live_provider = ai_research_provider_status(load_config())
+            live_preview = preview_ai_research_delegation(workflow, body.get('options'), live_provider, now_bj())
+            live_preview['profileRevision'] = int(current.get('revision') or 0)
+            if live_preview.get('previewId') != preview.get('previewId'):
+                raise ValueError('研究方法、来源或模型配置已经变化，请重新预览')
+            delegation = confirm_ai_research_delegation(
+                workflow, live_preview, body.get('confirmations'), now_bj())
+            delegations = [dict(row) for row in (current['data'].get('ai_research_delegations') or [])
+                           if isinstance(row, dict) and row.get('id') != delegation['id']]
+            previous = next((row for row in (current['data'].get('ai_research_delegations') or [])
+                             if isinstance(row, dict) and row.get('id') == delegation['id']), None)
+            delegation['revision'] = int((previous or {}).get('revision') or 0) + 1
+            delegations.append(delegation)
+            current['data']['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
+            saved = _write_profile_unlocked(current)
+        return {'delegation': delegation, 'workflows': research_workflows_status(saved)}
+    if clean_action in {'ai_duty_pause', 'ai_duty_resume', 'ai_duty_revoke'}:
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            delegations = [dict(row) for row in (current['data'].get('ai_research_delegations') or [])
+                           if isinstance(row, dict)]
+            index = next((i for i, row in enumerate(delegations)
+                          if str(row.get('workflowId') or '') == workflow_id), -1)
+            if index < 0:
+                raise ValueError('AI 值班授权不存在')
+            status = str(delegations[index].get('status') or '')
+            if clean_action == 'ai_duty_pause' and status != 'active':
+                raise ValueError('当前 AI 值班不能暂停')
+            if clean_action == 'ai_duty_resume' and status != 'paused':
+                raise ValueError('当前 AI 值班不能恢复，请重新预览授权')
+            next_status = {'ai_duty_pause': 'paused', 'ai_duty_resume': 'active',
+                           'ai_duty_revoke': 'revoked'}[clean_action]
+            delegations[index].update(status=next_status,
+                                      revision=int(delegations[index].get('revision') or 0) + 1,
+                                      updatedAt=now_bj().isoformat(timespec='seconds'))
+            if next_status == 'revoked':
+                delegations[index]['revokedAt'] = now_bj().isoformat(timespec='seconds')
+            current['data']['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
+            saved = _write_profile_unlocked(current)
+        _ai_research_wake.set()
+        return {'delegation': delegations[index], 'workflows': research_workflows_status(saved)}
+    if clean_action == 'ai_duty_test':
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            workflow = next((row for row in (current['data'].get('research_workflows') or [])
+                             if isinstance(row, dict) and str(row.get('id') or '') == workflow_id), None)
+            if not workflow or not (workflow.get('runs') or []):
+                raise ValueError('请先让研究值守完成首次基线检查')
+            run = (workflow.get('runs') or [])[-1]
+            official = next((row for row in (run.get('results') or [])
+                             if row.get('sourceId') == 'official_disclosures'), None)
+            if not official or not (official.get('evidence') or []):
+                raise ValueError('最近一次运行没有可用于格式测试的官方披露证据')
+            fingerprint = hashlib.sha256(('manual|' + str(run.get('id') or '')).encode()).hexdigest()[:20]
+            change = {'changed': True, 'fingerprint': fingerprint, 'changes': [{
+                'sourceId': 'official_disclosures', 'kind': 'evidence_set',
+                'previousCount': 0, 'currentCount': len(official.get('evidence') or []),
+            }]}
+            job, reason = _queue_ai_research_job_unlocked(current, workflow, run, change, now_bj())
+            if not job:
+                labels = {'duplicate': '这次基线已经完成过连接测试',
+                          'workflow_budget': '这条流程今日 AI 次数已用完',
+                          'global_budget': '今日全局 AI 值班次数已用完'}
+                raise ValueError(labels.get(reason, '当前不能执行 AI 连接与格式测试'))
+            jobs = current['data'].get('ai_research_jobs') or []
+            for row in jobs:
+                if row.get('id') == job.get('id'):
+                    row['trigger'] = 'manual_test'
+            saved = _write_profile_unlocked(current)
+        _ai_research_wake.set()
+        return {'job': job, 'workflows': research_workflows_status(saved)}
+    if clean_action == 'ai_draft_dismiss':
+        job_id = str(body.get('jobId') or '').strip()[:180]
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            jobs = [dict(row) for row in (current['data'].get('ai_research_jobs') or []) if isinstance(row, dict)]
+            index = next((i for i, row in enumerate(jobs)
+                          if row.get('id') == job_id and str(row.get('workflowId') or '') == workflow_id), -1)
+            if index < 0 or jobs[index].get('status') != 'completed_draft':
+                raise ValueError('AI 草稿已变化，请刷新后重试')
+            jobs[index].update(status='dismissed', dismissedAt=now_bj().isoformat(timespec='seconds'))
+            current['data']['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
+            saved = _write_profile_unlocked(current)
+        return {'job': jobs[index], 'workflows': research_workflows_status(saved)}
     if clean_action in {'watch_preview', 'watch_confirm'}:
         profile = load_profile()
         source = next((row for row in (profile.get('data') or {}).get('research_workflows') or []
@@ -5907,6 +6236,50 @@ def publish_due_research_workflow_reminders(now=None):
                 -PROFILE_LIST_LIMITS['research_workflow_receipts']:]
             _write_profile_unlocked(current)
         return published
+
+
+def _ai_research_loop():
+    while not _ai_research_stop.is_set():
+        try:
+            result = process_ai_research_jobs_once(now_bj())
+            if result.get('processed'):
+                continue
+        except Exception as exc:
+            log('ai research duty -> %s' % type(exc).__name__)
+        _ai_research_wake.wait(30)
+        _ai_research_wake.clear()
+
+
+def start_ai_research_worker():
+    global _ai_research_thread
+    if _ai_research_thread and _ai_research_thread.is_alive():
+        return
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        jobs = [dict(row) for row in (current['data'].get('ai_research_jobs') or [])
+                if isinstance(row, dict)]
+        changed = False
+        for job in jobs:
+            if job.get('status') == 'running':
+                job.pop('leaseToken', None)
+                job.update(status='interrupted', errorCode='service_restarted',
+                           finishedAt=now_bj().isoformat(timespec='seconds'))
+                changed = True
+        if changed:
+            current['data']['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
+            _write_profile_unlocked(current)
+    _ai_research_stop.clear()
+    _ai_research_thread = threading.Thread(target=_ai_research_loop,
+                                           name='deeppulse-ai-research-duty', daemon=True)
+    _ai_research_thread.start()
+
+
+def stop_ai_research_worker():
+    _ai_research_stop.set()
+    _ai_research_wake.set()
+    thread = _ai_research_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=2)
 
 
 def _event_service_loop():
@@ -7377,7 +7750,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.39.0'
+    server_version = 'DeepPulse/1.40.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -7554,6 +7927,9 @@ class Handler(BaseHTTPRequestHandler):
                            'research_workflow_lineage': 1,
                            'research_evidence_timeline': 1,
                             'research_watch': 1,
+                            'ai_research_duty': 1,
+                            'ai_research_job_receipts': 1,
+                            'ai_research_budget': 1,
                             'service_management_center': 1,
                             'proactive_target': 1,
                             'disposition_receipts': 1,
@@ -8198,6 +8574,7 @@ def main():
     start_background_monitor()
     start_market_routine()
     start_event_service()
+    start_ai_research_worker()
 
     # 预热线程：启动 2s 后后台装配一次情绪全景，让首个页面请求命中热缓存
     def warmup():
@@ -8216,6 +8593,7 @@ def main():
         log('server stopped')
         print('\n已退出。')
     finally:
+        stop_ai_research_worker()
         stop_event_service()
         stop_market_routine()
         stop_background_monitor()
