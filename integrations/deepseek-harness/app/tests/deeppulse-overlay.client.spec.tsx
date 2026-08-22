@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.25.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
+  data: { version: '1.26.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, research_workflow_lineage: 1, research_evidence_timeline: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -484,6 +484,18 @@ describe('DeepPulse Harness bridge', () => {
           currentStatus: 'ok', evidenceDelta: 2, staleDelta: 0, secret: 'drop change' }],
         changedSourceCount: 1, automaticConclusion: false, automaticTradingAction: false,
         boundary: 'collection change only', secret: 'drop comparison' },
+      lineage: { modelVersion: 'research-workflow-lineage-v1', familyId: 'workflow:root',
+        methodVersion: 2, originKind: 'copy', originWorkflowId: 'workflow:root', originMethodVersion: 1,
+        originCreatedAt: '2026-08-20T09:00:00+08:00', changeSummary: ['evidence sources changed'],
+        historyImmutable: true, automaticConclusion: false, secret: 'drop workflow lineage' },
+      evidenceTimeline: { modelVersion: 'research-evidence-timeline-v1',
+        summary: { runs: 2, items: 3, sources: 2, staleItems: 1, truncated: false, secret: 'drop timeline summary' },
+        items: [{ id: 'evidence-time:1', runId: 'workflow-run:1', sourceId: 'market_quote',
+          observedAt: '2026-08-22T09:00:00+08:00', fetchedAt: '2026-08-22T09:00:00+08:00',
+          dataAt: '2026-08-22', status: 'current', label: 'FII quote', upstream: 'Eastmoney',
+          independentGroup: 'eastmoney', secret: 'drop timeline item' }],
+        historyImmutable: true, automaticConclusion: false, boundary: 'observation history only',
+        secret: 'drop timeline' },
       runs: [{ id: 'workflow-run:1', ranAt: '2026-08-22T09:00:00+08:00',
         summary: { selected: 3, ok: 2, degraded: 1, injected: 'drop run summary' },
         resultCard: {
@@ -535,6 +547,11 @@ describe('DeepPulse Harness bridge', () => {
           templateSpec: { requiresFreshPreview: true, inheritsRuns: false, inheritsConclusion: false },
           runComparison: { deltas: { usableSources: 1, gapCount: -1 },
             sourceChanges: [{ sourceId: 'market_quote', currentStatus: 'ok' }], automaticConclusion: false },
+          lineage: { familyId: 'workflow:root', methodVersion: 2, originKind: 'copy',
+            changeSummary: ['evidence sources changed'], historyImmutable: true },
+          evidenceTimeline: { summary: { runs: 2, items: 3, staleItems: 1 },
+            items: [{ sourceId: 'market_quote', dataAt: '2026-08-22', independentGroup: 'eastmoney' }],
+            historyImmutable: true, automaticConclusion: false },
           latestRun: { summary: { ok: 2 },
             resultCard: { summary: { gapCount: 1, sameUpstreamGroups: 1 },
               sources: [{ lineageGroups: ['eastmoney'], freshness: { stale: 1 } }],

@@ -13,7 +13,7 @@ import json
 import re
 
 
-MODEL_VERSION = 'research-workflow-v3'
+MODEL_VERSION = 'research-workflow-v4'
 BJC = timezone(timedelta(hours=8))
 KINDS = {'one_off', 'template'}
 TARGET_TYPES = {'stock', 'market', 'theme', 'custom'}
@@ -46,6 +46,7 @@ OUTPUT_DEFINITIONS = {
     'deepseek_brief': 'DeepSeek 研究简报上下文',
 }
 MAX_RUNS = 20
+MAX_TIMELINE_ITEMS = 80
 
 
 def _template_text(value, target):
@@ -291,6 +292,132 @@ def compare_runs(previous, current):
         'automaticConclusion': False,
         'automaticTradingAction': False,
         'boundary': '本对比只说明两次收集结果的数量、状态、陈旧度和同源变化，不判断研究假设变好或变坏。',
+    }
+
+
+def _method_changes(previous, current, origin_kind):
+    before = previous if isinstance(previous, dict) else {}
+    after = current if isinstance(current, dict) else {}
+    changes = []
+    before_target = before.get('target') if isinstance(before.get('target'), dict) else {}
+    after_target = after.get('target') if isinstance(after.get('target'), dict) else {}
+    if before_target != after_target:
+        changes.append('研究对象已重新填写' if origin_kind == 'template_instance' else '研究对象已变更')
+    for key, label in (('question', '研究问题'), ('sources', '证据来源'), ('outputs', '输出方式'),
+                       ('reviewDays', '复盘周期'), ('reminderEnabled', '到期提醒')):
+        if before.get(key) != after.get(key):
+            changes.append(label + '已变更')
+    if before.get('title') != after.get('title') and not changes:
+        changes.append('流程标题已变更')
+    return changes[:8] or ['沿用原方法设置，仅创建新的独立流程记录']
+
+
+def attach_workflow_lineage(created, source=None, existing=None, origin_kind='new'):
+    """Attach immutable method ancestry from a server-resolved source workflow."""
+    result = deepcopy(created if isinstance(created, dict) else {})
+    parent = source if isinstance(source, dict) else None
+    rows = existing if isinstance(existing, list) else []
+    allowed_origin = origin_kind if origin_kind in {'copy', 'template_instance'} else 'new'
+    if not parent:
+        result['lineage'] = {
+            'modelVersion': 'research-workflow-lineage-v1',
+            'familyId': _text(result.get('id'), 180), 'methodVersion': 1,
+            'originKind': 'new', 'originWorkflowId': None, 'originMethodVersion': None,
+            'changeSummary': ['首次创建研究方法'], 'historyImmutable': True,
+            'automaticConclusion': False,
+        }
+        return result
+    parent_lineage = parent.get('lineage') if isinstance(parent.get('lineage'), dict) else {}
+    family_id = _text(parent_lineage.get('familyId'), 180) or _text(parent.get('id'), 180)
+    versions = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lineage = row.get('lineage') if isinstance(row.get('lineage'), dict) else {}
+        row_family = _text(lineage.get('familyId'), 180) or _text(row.get('id'), 180)
+        if row_family == family_id:
+            try:
+                versions.append(int(lineage.get('methodVersion') or 1))
+            except (TypeError, ValueError):
+                versions.append(1)
+    try:
+        parent_version = int(parent_lineage.get('methodVersion') or 1)
+    except (TypeError, ValueError):
+        parent_version = 1
+    result['lineage'] = {
+        'modelVersion': 'research-workflow-lineage-v1',
+        'familyId': family_id,
+        'methodVersion': max(versions + [parent_version]) + 1,
+        'originKind': allowed_origin,
+        'originWorkflowId': _text(parent.get('id'), 180),
+        'originMethodVersion': parent_version,
+        'originCreatedAt': _text(parent.get('createdAt'), 80),
+        'changeSummary': _method_changes(parent, result, allowed_origin),
+        'historyImmutable': True,
+        'automaticConclusion': False,
+    }
+    return result
+
+
+def build_evidence_timeline(item):
+    """Create a bounded observation timeline without rewriting stored evidence."""
+    workflow = item if isinstance(item, dict) else {}
+    entries = []
+    source_ids = set()
+    stale_count = 0
+    runs = workflow.get('runs') if isinstance(workflow.get('runs'), list) else []
+    for run in runs[-MAX_RUNS:]:
+        if not isinstance(run, dict):
+            continue
+        run_id = _text(run.get('id'), 180)
+        observed_at = _text(run.get('ranAt'), 80)
+        for result in run.get('results') if isinstance(run.get('results'), list) else []:
+            if not isinstance(result, dict):
+                continue
+            source_id = _text(result.get('sourceId'), 60)
+            if source_id:
+                source_ids.add(source_id)
+            fetched_at = _text(result.get('fetchedAt'), 80) or observed_at
+            evidence = result.get('evidence') if isinstance(result.get('evidence'), list) else []
+            visible = evidence[:20] or [None]
+            for index, evidence_item in enumerate(visible):
+                evidence_row = evidence_item if isinstance(evidence_item, dict) else {}
+                evidence_source = evidence_row.get('source') if isinstance(evidence_row.get('source'), dict) else {}
+                status = _text(evidence_row.get('status'), 30) or _text(result.get('status'), 30) or 'unavailable'
+                stale_count += int(status == 'stale')
+                data_at = ''
+                for key in ('asOf', 'dataDate', 'date', 'publishedAt', 'period'):
+                    data_at = _text(evidence_row.get(key), 80)
+                    if data_at:
+                        break
+                label = ''
+                for key in ('title', 'name', 'label', 'id'):
+                    label = _text(evidence_row.get(key), 180)
+                    if label:
+                        break
+                if not label:
+                    label = _text(result.get('summary'), 180) or '本次来源执行记录'
+                upstream = (_text(evidence_row.get('upstream'), 100) or
+                            _text(evidence_source.get('upstream'), 100) or
+                            _text(result.get('upstream'), 100))
+                seed = '|'.join((run_id, source_id, str(index), label, data_at, observed_at, fetched_at))
+                entries.append({
+                    'id': 'evidence-time:' + hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16],
+                    'runId': run_id, 'sourceId': source_id, 'observedAt': observed_at,
+                    'fetchedAt': fetched_at, 'dataAt': data_at, 'status': status,
+                    'label': label, 'upstream': upstream,
+                    'independentGroup': (_text(evidence_row.get('independentGroup'), 80) or
+                                         _text(evidence_source.get('independentGroup'), 80) or
+                                         _lineage_key(upstream)),
+                })
+    entries.sort(key=lambda row: (row.get('observedAt') or '', row.get('fetchedAt') or ''), reverse=True)
+    return {
+        'modelVersion': 'research-evidence-timeline-v1',
+        'items': entries[:MAX_TIMELINE_ITEMS],
+        'summary': {'runs': len(runs), 'items': len(entries), 'sources': len(source_ids),
+                    'staleItems': stale_count, 'truncated': len(entries) > MAX_TIMELINE_ITEMS},
+        'historyImmutable': True, 'automaticConclusion': False,
+        'boundary': '时间轴只记录证据何时被观察、对应的数据时点和最终上游；后续运行不会覆盖历史证据，也不据此自动判断方向。',
     }
 
 
@@ -585,6 +712,8 @@ def workflow_snapshot(items, now=None):
         if not isinstance(row, dict) or not row.get('id'):
             continue
         item = deepcopy(row)
+        if not isinstance(item.get('lineage'), dict):
+            item = attach_workflow_lineage(item)
         item['effectiveStatus'] = effective_status(item, now)
         runs = item.get('runs') if isinstance(item.get('runs'), list) else []
         if runs:
@@ -599,6 +728,7 @@ def workflow_snapshot(items, now=None):
                 comparison = compare_runs(runs[-2], runs[-1])
                 if comparison:
                     item['runComparison'] = comparison
+            item['evidenceTimeline'] = build_evidence_timeline(item)
         clean.append(item)
     clean.sort(key=lambda row: row.get('updatedAt') or row.get('createdAt') or '', reverse=True)
     states = ('active', 'review_due', 'paused', 'template', 'completed', 'invalid')

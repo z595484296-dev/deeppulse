@@ -1046,7 +1046,25 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .workflow-comparison li b { color: var(--text-2); }
 .workflow-comparison-steady { margin-top: 8px; color: var(--text-3); font-size: 9px; }
 .workflow-comparison > small { display: block; margin-top: 8px; color: var(--text-3); font-size: 8.5px; line-height: 1.5; }
-@media (max-width: 760px) { .workflow-comparison-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+.workflow-lineage { margin: 10px 0; padding: 9px 10px; border: 1px solid rgba(79,140,255,.22); border-radius: 9px; background: rgba(79,140,255,.035); }
+.workflow-lineage > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.workflow-lineage > div b { color: var(--accent); font-size: 10px; }
+.workflow-lineage > div span { padding: 2px 6px; border-radius: 999px; background: var(--bg-2); color: var(--text-3); font-size: 8.5px; }
+.workflow-lineage details { margin-top: 6px; }.workflow-lineage summary { cursor: pointer; color: var(--text-2); font-size: 9px; }
+.workflow-lineage ul { margin: 6px 0; padding-left: 17px; color: var(--text-2); font-size: 9px; line-height: 1.6; }
+.workflow-lineage small { color: var(--text-3); font-size: 8.5px; }
+.workflow-evidence-timeline { margin: 10px 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); }
+.workflow-evidence-timeline > summary { cursor: pointer; color: var(--accent); font-size: 9.5px; font-weight: 700; }
+.workflow-evidence-timeline > ol { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 8px; }
+.workflow-evidence-timeline li { display: grid; grid-template-columns: 118px 1fr; gap: 9px; padding-left: 9px; border-left: 2px solid rgba(79,140,255,.36); }
+.workflow-evidence-timeline time { color: var(--text-3); font-size: 8.5px; }
+.workflow-evidence-timeline li div { display: grid; gap: 2px; min-width: 0; }
+.workflow-evidence-timeline li b { color: var(--text-2); font-size: 9.5px; }.workflow-evidence-timeline li span { color: var(--text); font-size: 9px; }
+.workflow-evidence-timeline li small,.workflow-evidence-timeline > small { color: var(--text-3); font-size: 8.5px; line-height: 1.5; }
+@media (max-width: 760px) {
+  .workflow-comparison-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .workflow-evidence-timeline li { grid-template-columns: 1fr; gap: 2px; }
+}
 
 /* ---------------- 研究假设：创建时事实 + 预设反证 + 到期复盘 ---------------- */
 .hypothesis-lab { position: relative; overflow: hidden; }

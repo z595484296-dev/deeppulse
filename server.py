@@ -64,11 +64,11 @@ except Exception:
     RESEARCH_MEMORY_MODEL_VERSION = 'research-memory-unavailable'
 
 try:
-    from research_workflow import (create_workflow, mutate_workflow, preview_workflow,
+    from research_workflow import (attach_workflow_lineage, create_workflow, mutate_workflow, preview_workflow,
                                    record_run as record_workflow_run, workflow_snapshot,
                                    MODEL_VERSION as RESEARCH_WORKFLOW_MODEL_VERSION)
 except Exception:
-    create_workflow = mutate_workflow = preview_workflow = None
+    attach_workflow_lineage = create_workflow = mutate_workflow = preview_workflow = None
     record_workflow_run = workflow_snapshot = None
     RESEARCH_WORKFLOW_MODEL_VERSION = 'research-workflow-unavailable'
 
@@ -115,7 +115,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.25.0'
+VERSION = '1.26.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -3412,10 +3412,16 @@ def mutate_research_workflow(action, payload=None):
         if str(body.get('previewId') or '') != live_preview.get('previewId'):
             raise ValueError('研究草稿已变化，请重新预览后确认')
         created = create_workflow(live_preview, body.get('confirmations'), now_bj())
+        origin_id = str(body.get('originWorkflowId') or '').strip()[:180]
+        origin_kind = str(body.get('originKind') or '').strip()[:30]
         with _profile_lock:
             current = _read_profile_unlocked()
             rows = [row for row in (current['data'].get('research_workflows') or [])
                     if isinstance(row, dict) and row.get('id')]
+            origin = next((row for row in rows if str(row.get('id') or '') == origin_id), None)
+            if origin_id and not origin:
+                raise ValueError('来源研究流程已不存在，请重新载入后再创建')
+            created = attach_workflow_lineage(created, origin, rows, origin_kind)
             rows.append(created)
             current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
             saved = _write_profile_unlocked(current)
@@ -5494,7 +5500,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.25.0'
+    server_version = 'DeepPulse/1.26.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5655,6 +5661,8 @@ class Handler(BaseHTTPRequestHandler):
                            'research_result_cards': 1,
                            'research_template_parameters': 1,
                            'research_run_comparison': 1,
+                           'research_workflow_lineage': 1,
+                           'research_evidence_timeline': 1,
                            'epaper_gateway': 1,
                            'epaper_research_workflow': 1,
                           'epaper_frame': '800x480-1bpp',

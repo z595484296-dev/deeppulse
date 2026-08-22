@@ -5,7 +5,8 @@ import tempfile
 from unittest.mock import patch
 
 import server
-from research_workflow import (build_result_card, build_template_spec, compare_runs,
+from research_workflow import (attach_workflow_lineage, build_evidence_timeline,
+                               build_result_card, build_template_spec, compare_runs,
                                create_workflow, mutate_workflow, preview_workflow,
                                record_run, workflow_snapshot)
 
@@ -161,6 +162,43 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertFalse(comparison['automaticConclusion'])
         self.assertNotIn('direction', comparison)
 
+    def test_workflow_lineage_is_server_attached_and_keeps_history_immutable(self):
+        root_preview = preview_workflow(draft(), now=NOW)
+        root_confirmations = [row['id'] for row in root_preview['permissions']] + ['confirm:create']
+        root = create_workflow(root_preview, root_confirmations, NOW)
+        root = attach_workflow_lineage(root)
+        child_preview = preview_workflow(draft(
+            title='工业富联需求证据复核', sources=['official_disclosures', 'market_quote']), now=NOW)
+        child_confirmations = [row['id'] for row in child_preview['permissions']] + ['confirm:create']
+        child = create_workflow(child_preview, child_confirmations, NOW)
+        child = attach_workflow_lineage(child, root, [root], 'copy')
+        self.assertEqual(root['lineage']['methodVersion'], 1)
+        self.assertEqual(child['lineage']['methodVersion'], 2)
+        self.assertEqual(child['lineage']['originWorkflowId'], root['id'])
+        self.assertIn('证据来源已变更', child['lineage']['changeSummary'])
+        self.assertTrue(child['lineage']['historyImmutable'])
+        self.assertFalse(child['lineage']['automaticConclusion'])
+
+    def test_evidence_timeline_preserves_observation_and_data_times(self):
+        item = {'id': 'workflow:timeline', 'runs': [
+            {'id': 'run:1', 'ranAt': '2026-08-20T15:00:00+08:00', 'results': [{
+                'sourceId': 'market_quote', 'status': 'ok', 'fetchedAt': '2026-08-20T15:00:01+08:00',
+                'upstream': 'Eastmoney', 'evidence': [{'title': '收盘行情', 'asOf': '2026-08-20', 'status': 'current'}],
+            }]},
+            {'id': 'run:2', 'ranAt': '2026-08-21T15:00:00+08:00', 'results': [{
+                'sourceId': 'market_quote', 'status': 'ok', 'fetchedAt': '2026-08-21T15:00:01+08:00',
+                'upstream': 'Eastmoney', 'evidence': [{'title': '收盘行情', 'asOf': '2026-08-21', 'status': 'stale'}],
+            }]},
+        ]}
+        timeline = build_evidence_timeline(item)
+        self.assertEqual(timeline['summary']['runs'], 2)
+        self.assertEqual(timeline['summary']['items'], 2)
+        self.assertEqual(timeline['summary']['staleItems'], 1)
+        self.assertEqual(timeline['items'][0]['dataAt'], '2026-08-21')
+        self.assertEqual(timeline['items'][1]['observedAt'], '2026-08-20T15:00:00+08:00')
+        self.assertTrue(timeline['historyImmutable'])
+        self.assertFalse(timeline['automaticConclusion'])
+
     def test_snapshot_backfills_result_card_for_legacy_run_without_mutating_source(self):
         item = {
             'id': 'workflow:legacy', 'modelVersion': 'research-workflow-v1',
@@ -205,6 +243,36 @@ class ResearchWorkflowServerTests(unittest.TestCase):
             })
             self.assertEqual(result['workflows']['summary']['total'], 1)
             self.assertEqual(server.load_profile()['data']['research_workflows'][0]['status'], 'active')
+
+    def test_confirm_resolves_origin_from_profile_before_attaching_lineage(self):
+        environment = {source_id: {'status': 'available', 'available': True, 'detail': ''}
+                       for source_id in ('official_disclosures', 'market_quote', 'tdx_local',
+                                         'akshare_macro', 'event_news')}
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(server, 'PROFILE_FILE', os.path.join(folder, 'profile.json')), \
+                patch.object(server, 'research_workflow_environment', return_value=environment), \
+                patch.object(server, 'now_bj', return_value=NOW):
+            first_preview = server.mutate_research_workflow('preview', {'draft': draft()})['preview']
+            first = server.mutate_research_workflow('confirm', {
+                'draft': draft(), 'previewId': first_preview['previewId'],
+                'confirmations': [row['id'] for row in first_preview['permissions']] + ['confirm:create'],
+            })['created']
+            changed = draft(title='工业富联二次核对', sources=['official_disclosures', 'market_quote'])
+            second_preview = server.mutate_research_workflow('preview', {'draft': changed})['preview']
+            second = server.mutate_research_workflow('confirm', {
+                'draft': changed, 'previewId': second_preview['previewId'],
+                'confirmations': [row['id'] for row in second_preview['permissions']] + ['confirm:create'],
+                'originWorkflowId': first['id'], 'originKind': 'copy',
+            })['created']
+            self.assertEqual(second['lineage']['originWorkflowId'], first['id'])
+            self.assertEqual(second['lineage']['methodVersion'], 2)
+            self.assertEqual(second['lineage']['originKind'], 'copy')
+            with self.assertRaisesRegex(ValueError, '来源研究流程'):
+                server.mutate_research_workflow('confirm', {
+                    'draft': changed, 'previewId': second_preview['previewId'],
+                    'confirmations': [row['id'] for row in second_preview['permissions']] + ['confirm:create'],
+                    'originWorkflowId': 'workflow:missing', 'originKind': 'copy',
+                })
 
     def test_stale_preview_cannot_be_confirmed(self):
         with patch.object(server, 'research_workflow_environment', return_value={}):

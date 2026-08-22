@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.25.0';
+import { applyChartTheme } from './charts.js?v=1.26.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -83,6 +83,39 @@ function trimRunComparison(comparison) {
   };
 }
 
+function trimWorkflowLineage(lineage) {
+  if (!lineage || typeof lineage !== 'object') return null;
+  return {
+    modelVersion: lineage.modelVersion,
+    familyId: lineage.familyId,
+    methodVersion: lineage.methodVersion,
+    originKind: lineage.originKind,
+    originWorkflowId: lineage.originWorkflowId,
+    originMethodVersion: lineage.originMethodVersion,
+    originCreatedAt: lineage.originCreatedAt,
+    changeSummary: (lineage.changeSummary || []).slice(0, 8),
+    historyImmutable: lineage.historyImmutable === true,
+    automaticConclusion: false,
+  };
+}
+
+function trimEvidenceTimeline(timeline) {
+  if (!timeline || typeof timeline !== 'object') return null;
+  return {
+    modelVersion: timeline.modelVersion,
+    summary: timeline.summary,
+    items: (timeline.items || []).slice(0, 20).map(row => ({
+      id: row.id, runId: row.runId, sourceId: row.sourceId,
+      observedAt: row.observedAt, fetchedAt: row.fetchedAt, dataAt: row.dataAt,
+      status: row.status, label: row.label, upstream: row.upstream,
+      independentGroup: row.independentGroup,
+    })),
+    historyImmutable: timeline.historyImmutable === true,
+    automaticConclusion: false,
+    boundary: timeline.boundary,
+  };
+}
+
 function trimWorkflowEvidence(item, resultLimit = 5, evidenceLimit = 5) {
   if (!item) return item;
   const runs = (item.runs || (item.latestRun ? [item.latestRun] : [])).slice(-1).map(run => ({
@@ -107,6 +140,8 @@ function trimWorkflowEvidence(item, resultLimit = 5, evidenceLimit = 5) {
       boundary: item.templateSpec.boundary,
     } : null,
     runComparison: trimRunComparison(item.runComparison),
+    lineage: trimWorkflowLineage(item.lineage),
+    evidenceTimeline: trimEvidenceTimeline(item.evidenceTimeline),
     runs,
     latestRun: runs[0] || null,
   };

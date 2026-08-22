@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.25.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.25.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.25.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.25.0';
+import { api } from '../api.js?v=1.26.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.26.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.26.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.26.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -13,6 +13,7 @@ let researchMemoryData = null;
 let researchWorkflowData = null;
 let researchWorkflowPreview = null;
 let activeWorkflowTemplate = null;
+let activeWorkflowOrigin = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -426,6 +427,7 @@ export function init(container) {
     container.querySelector('#st-wf-kind').value = 'one_off';
     researchWorkflowPreview = null;
     activeWorkflowTemplate = null;
+    activeWorkflowOrigin = null;
     workflowPreviewPanel.innerHTML = '<div class="empty compact">草稿已清空。重新填写后再预览，不会影响已创建流程。</div>';
     container.querySelector('#st-wf-suggestion').hidden = true;
     syncWorkflowTargetFields();
@@ -441,10 +443,13 @@ export function init(container) {
       const result = await api.mutateResearchWorkflow('confirm', {
         draft: workflowDraft(container), previewId: researchWorkflowPreview.previewId,
         confirmations,
+        originWorkflowId: activeWorkflowOrigin?.workflowId || '',
+        originKind: activeWorkflowOrigin?.kind || '',
       });
       researchWorkflowData = result.workflows;
       state.researchWorkflows = researchWorkflowData;
       researchWorkflowPreview = null;
+      activeWorkflowOrigin = null;
       renderWorkflowPreview(container);
       renderResearchWorkflows(container);
       bus.dispatchEvent(new CustomEvent('research-workflows', { detail: researchWorkflowData }));
@@ -763,6 +768,10 @@ function renderWorkflowTemplateParameters(container) {
 function fillWorkflowDraft(container, workflow, fromTemplate = false) {
   const target = workflow.target || {};
   activeWorkflowTemplate = null;
+  activeWorkflowOrigin = {
+    workflowId: workflow.id,
+    kind: fromTemplate ? 'template_instance' : 'copy',
+  };
   container.querySelector('#st-wf-kind').value = fromTemplate ? 'one_off' : (workflow.kind || 'one_off');
   container.querySelector('#st-wf-target-type').value = target.type || 'stock';
   if (fromTemplate) {
@@ -886,15 +895,29 @@ function renderResearchWorkflows(container) {
       ${(comparison.sourceChanges || []).length ? `<details><summary>${Number(comparison.changedSourceCount || 0)} 个来源状态或数量发生变化</summary><ul>${comparison.sourceChanges.map(row => `<li><b>${esc(sources[row.sourceId]?.label || row.sourceId)}</b><span>${esc(row.previousStatus)} → ${esc(row.currentStatus)} · 证据 ${deltaText(row.evidenceDelta)} · 陈旧 ${deltaText(row.staleDelta)}</span></li>`).join('')}</ul></details>` : '<div class="workflow-comparison-steady">来源状态和证据数量没有变化。</div>'}
       <small>${esc(comparison.boundary || '数量变化不代表研究假设增强或减弱。')}</small>
     </section>` : '';
+    const lineage = item.lineage || {};
+    const originLabels = { new: '首次创建', copy: '复制形成', template_instance: '模板实例化' };
+    const lineageCard = lineage.modelVersion ? `<section class="workflow-lineage" aria-label="研究方法版本">
+      <div><b>方法 v${Number(lineage.methodVersion || 1)}</b><span>${esc(originLabels[lineage.originKind] || '历史方法')}</span>${lineage.originMethodVersion ? `<span>源自 v${Number(lineage.originMethodVersion)}</span>` : ''}</div>
+      <details><summary>查看方法变更</summary><ul>${(lineage.changeSummary || ['未记录变更摘要']).map(text => `<li>${esc(text)}</li>`).join('')}</ul><small>${lineage.historyImmutable === true ? '历史方法只读保留，新版本不会覆盖旧记录。' : '旧版流程的版本信息为兼容视图。'}</small></details>
+    </section>` : '';
+    const timeline = item.evidenceTimeline || {};
+    const timelineCard = (timeline.items || []).length ? `<details class="workflow-evidence-timeline">
+      <summary>证据时间轴 · ${Number(timeline.summary?.items || 0)} 条 / ${Number(timeline.summary?.runs || 0)} 次运行</summary>
+      <ol>${timeline.items.slice(0, 12).map(row => `<li><time>${esc(formatHypothesisTime(row.observedAt))}</time><div><b>${esc(sources[row.sourceId]?.label || row.sourceId || '未知来源')}</b><span>${esc(row.label || '来源执行记录')}</span><small>数据时点 ${esc(row.dataAt || '未披露')} · 状态 ${esc(row.status || '未知')}${row.upstream ? ` · 上游 ${esc(row.upstream)}` : ''}</small></div></li>`).join('')}</ol>
+      <small>${esc(timeline.boundary || '时间轴不自动形成方向结论。')}</small>
+    </details>` : '';
     const canRun = item.status === 'active';
     return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}">
       <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b>${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
       <div class="workflow-target"><b>${esc(target.name || target.code || target.type || '研究对象')}</b>${target.code ? `<span>${esc(target.code)}</span>` : ''}<span>${Number(item.reviewDays || 0)} 个工作日</span></div>
       <p>${esc(item.question || '')}</p>
       <div class="workflow-source-tags">${sourceTags}</div>
+      ${lineageCard}
       <details class="workflow-run" ${item.effectiveStatus === 'review_due' && latest ? 'open' : ''}><summary>${latest ? `最近执行 ${esc(formatHypothesisTime(latest.ranAt))} · 成功 ${Number(latest.summary?.ok || 0)} / ${Number(latest.summary?.selected || 0)}` : '尚未执行来源读取'}</summary>${runRows ? `<ul>${runRows}</ul>` : '<div class="empty compact">执行后会记录各来源的事实摘要、最终上游和失败原因，但不会自动下结论。</div>'}</details>
       ${resultCard}
       ${comparisonCard}
+      ${timelineCard}
       <div class="workflow-item-actions">
         ${canRun ? `<button class="btn sm primary" data-wf-action="run" data-wf-id="${esc(item.id)}">执行一次</button>` : ''}
         ${item.status === 'active' ? `<button class="btn sm" data-wf-action="pause" data-wf-id="${esc(item.id)}">暂停</button>` : ''}
