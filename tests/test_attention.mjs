@@ -25,6 +25,23 @@ test('system events go to digest instead of individual interruption', () => {
   assert.deepEqual(rules.attentionDecision(item, { quietEnabled: false }, now), { interrupt: false, reason: 'digest' });
 });
 
+test('item-level center-only is preserved and never interrupts', () => {
+  const now = new Date('2026-08-22T10:00:00+08:00');
+  const item = rules.makeAttentionItem({ kind: 'event', priority: 'high', delivery: 'center_only' }, now.getTime());
+  assert.equal(item.delivery, 'center_only');
+  assert.deepEqual(rules.attentionDecision(item, { quietEnabled: false }, now), {
+    interrupt: false, reason: 'item_center_only',
+  });
+});
+
+test('item-level center-only also overrides a user price interruption', () => {
+  const now = new Date('2026-08-22T10:00:00+08:00');
+  const item = rules.makeAttentionItem({ kind: 'price', priority: 'high', delivery: 'center_only' }, now.getTime());
+  assert.deepEqual(rules.attentionDecision(item, { quietEnabled: false }, now), {
+    interrupt: false, reason: 'item_center_only',
+  });
+});
+
 test('high-only and center-only modes preserve user control', () => {
   const now = new Date('2026-08-22T10:00:00+08:00');
   const medium = rules.makeAttentionItem({ kind: 'phase', priority: 'medium', delivery: 'immediate' }, now.getTime());

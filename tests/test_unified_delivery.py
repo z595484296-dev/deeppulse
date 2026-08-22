@@ -20,6 +20,7 @@ class UnifiedDeliveryTests(unittest.TestCase):
         self.temp.cleanup()
 
     def seed(self, **preferences):
+        item_delivery = preferences.pop('itemDelivery', 'immediate')
         prefs = {
             'mode': 'balanced', 'quietEnabled': False,
             'desktopSystemEnabled': False, 'epaperDeliveryEnabled': False,
@@ -29,7 +30,7 @@ class UnifiedDeliveryTests(unittest.TestCase):
             'id': 'event:601138:earnings', 'kind': 'event', 'priority': 'high',
             'title': '工业富联重要事件', 'detail': '601138 出现新的官方披露',
             'reason': '关注标的发生重要变化', 'page': 'watch',
-            'delivery': 'immediate', 'createdAt': self.now,
+            'delivery': item_delivery, 'createdAt': self.now,
             'expiresAt': self.now + 3600_000,
         }
         server.save_profile({'attention_preferences': prefs, 'attention_inbox': [item]})
@@ -92,6 +93,23 @@ class UnifiedDeliveryTests(unittest.TestCase):
         result = server.claim_attention_delivery('desktop', 'windows-app')
         self.assertIsNone(result['item'])
         self.assertEqual(result['reasons'].get('before_authorization'), 1)
+
+    def test_item_center_only_never_leaves_inbox_after_digest_wait(self):
+        self.seed(itemDelivery='center_only', desktopSystemEnabled=True,
+                  desktopSystemEnabledAt=self.now - 1,
+                  epaperDeliveryEnabled=True, epaperDeliveryEnabledAt=self.now - 1)
+        future = self.now + 59 * 60_000
+        with patch.object(server.time, 'time', return_value=future / 1000):
+            desktop = server.claim_attention_delivery('desktop', 'windows-app')
+            epaper = server.claim_attention_delivery('epaper', 'waveshare-esp32')
+            status = server.attention_delivery_status()
+        self.assertIsNone(desktop['item'])
+        self.assertIsNone(epaper['item'])
+        self.assertEqual(desktop['reasons'].get('item_center_only'), 1)
+        self.assertEqual(epaper['reasons'].get('item_center_only'), 1)
+        self.assertEqual(status['heldInCenter'], 1)
+        self.assertEqual(status['heldReasons'].get('item_center_only'), 1)
+        self.assertIn('center-only-never-leaves-inbox', status['policy'])
 
     def test_attention_delivery_item_forces_hardware_alert_scene(self):
         config = server.normalize_device_config({'mode': 'focus', 'focus_code': '601138'})

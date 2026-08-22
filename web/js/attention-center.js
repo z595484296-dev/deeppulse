@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.30.0';
-import { api } from './api.js?v=1.30.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.31.0';
+import { api } from './api.js?v=1.31.0';
 import {
   attentionLearningContext, bus, loadAttentionInbox, loadAttentionPreferences,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences, syncProfile,
-} from './store.js?v=1.30.0';
-import { esc, toast } from './util.js?v=1.30.0';
+} from './store.js?v=1.31.0';
+import { esc, toast } from './util.js?v=1.31.0';
 
 let navigate = () => {};
 let digestTimer = null;
@@ -143,7 +143,8 @@ async function renderDeliveryStatus() {
     deliverySnapshot = status || { channels: {}, recent: [] };
     const desktop = status.channels?.desktop || {};
     const epaper = status.channels?.epaper || {};
-    target.textContent = `Windows：${desktop.enabled ? `已开启 · 已送达 ${desktop.delivered || 0}` : '关闭'}；墨水屏：${epaper.enabled ? `已开启 · 已显示 ${epaper.delivered || 0}` : '关闭'}。每条提醒在每个已选终端最多一次。`;
+    const held = Number(status.heldInCenter) || 0;
+    target.textContent = `Windows：${desktop.enabled ? `已开启 · 已送达 ${desktop.delivered || 0}` : '关闭'}；墨水屏：${epaper.enabled ? `已开启 · 已显示 ${epaper.delivered || 0}` : '关闭'}。${held ? `${held} 项按你的设置只留在中心；` : ''}每条外部提醒在每个已选终端最多一次。`;
     if (initialized) render();
   } catch {
     target.textContent = '投递状态暂时不可用；设置仍会保存在本机。';

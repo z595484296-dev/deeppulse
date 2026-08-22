@@ -88,7 +88,8 @@ export function makeAttentionItem(input = {}, now = Date.now()) {
     detail: String(input.detail || '').trim().slice(0, 220),
     reason: String(input.reason || '市场状态发生变化').trim().slice(0, 160),
     page: String(input.page || 'overview').slice(0, 24),
-    delivery: input.delivery === 'immediate' ? 'immediate' : 'digest',
+    delivery: input.delivery === 'center_only' ? 'center_only'
+      : input.delivery === 'immediate' ? 'immediate' : 'digest',
     createdAt,
     expiresAt,
     readAt: Number(input.readAt) || null,
@@ -102,6 +103,7 @@ export function attentionDecision(item, preferences, now = new Date()) {
   const prefs = normalizeAttentionPreferences(preferences);
   const timestamp = now instanceof Date ? now.getTime() : Number(now);
   if (Number(item.expiresAt) > 0 && timestamp >= Number(item.expiresAt)) return { interrupt: false, reason: 'expired' };
+  if (item.delivery === 'center_only') return { interrupt: false, reason: 'item_center_only' };
   if (prefs.pausedUntil && timestamp < prefs.pausedUntil) return { interrupt: false, reason: 'paused' };
   if (prefs.mode === 'center_only') return { interrupt: false, reason: 'center_only' };
   if (prefs.mode === 'high_only' && item.priority !== 'high') return { interrupt: false, reason: 'priority' };

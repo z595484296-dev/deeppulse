@@ -135,7 +135,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.30.0'
+VERSION = '1.31.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1989,6 +1989,24 @@ def _delivery_quiet(preferences, current=None):
     return start <= minute < end if start < end else minute >= start or minute < end
 
 
+def _delivery_center_only_reason(item, preferences):
+    """Return the explicit policy that keeps an item inside the inbox.
+
+    Item-level ``center_only`` is a hard boundary, not a slow digest.  User-created
+    high-priority price conditions still override learned category controls, but
+    never override an explicit item or global center-only setting.
+    """
+    if preferences.get('mode') == 'center_only':
+        return 'center_only'
+    if item.get('delivery') == 'center_only':
+        return 'item_center_only'
+    is_user_price = item.get('kind') == 'price' and item.get('priority') == 'high'
+    learned = preferences.get('kindControls', {}).get(str(item.get('kind') or 'system')) or {}
+    if not is_user_price and learned.get('delivery') == 'center_only':
+        return 'learned_center_only'
+    return None
+
+
 def _delivery_eligible(item, preferences, channel, now_ms=None):
     now_ms = int(now_ms or time.time() * 1000)
     if channel not in DELIVERY_CHANNELS or not preferences.get(channel):
@@ -2001,15 +2019,14 @@ def _delivery_eligible(item, preferences, channel, now_ms=None):
         return False, 'expired'
     if preferences.get('pausedUntil') and now_ms < preferences['pausedUntil']:
         return False, 'paused'
-    if preferences.get('mode') == 'center_only':
-        return False, 'center_only'
+    center_only_reason = _delivery_center_only_reason(item, preferences)
+    if center_only_reason:
+        return False, center_only_reason
     if preferences.get('mode') == 'high_only' and item.get('priority') != 'high':
         return False, 'priority'
     if item.get('kind') == 'price' and item.get('priority') == 'high':
         return True, 'user_price_alert'
     learned = preferences.get('kindControls', {}).get(str(item.get('kind') or 'system')) or {}
-    if learned.get('delivery') == 'center_only':
-        return False, 'learned_center_only'
     if _delivery_quiet(preferences):
         return False, 'quiet'
     if learned.get('delivery') == 'digest' or item.get('delivery') != 'immediate':
@@ -2147,6 +2164,16 @@ def attention_delivery_status():
     data = load_profile().get('data') or {}
     prefs = _delivery_preferences(data)
     receipts = [row for row in (data.get('delivery_receipts') or []) if isinstance(row, dict)]
+    active_items = [row for row in (data.get('attention_inbox') or [])
+                    if isinstance(row, dict) and row.get('id') and not row.get('readAt')
+                    and not row.get('doneAt') and not (
+                        int(row.get('expiresAt') or 0) and
+                        int(time.time() * 1000) >= int(row.get('expiresAt') or 0))]
+    held_reasons = {}
+    for item in active_items:
+        reason = _delivery_center_only_reason(item, prefs)
+        if reason:
+            held_reasons[reason] = held_reasons.get(reason, 0) + 1
     summary = {}
     for channel in sorted(DELIVERY_CHANNELS):
         rows = [row for row in receipts if row.get('channel') == channel]
@@ -2171,8 +2198,11 @@ def attention_delivery_status():
         row['page'] = row.get('page') or str(item.get('page') or 'overview')[:24]
         row['kind'] = row.get('kind') or str(item.get('kind') or 'system')[:32]
         recent.append(row)
-    return {'channels': summary, 'recent': recent,
-            'policy': 'explicit-opt-in-per-channel-once'}
+    return {
+        'channels': summary, 'recent': recent,
+        'heldInCenter': sum(held_reasons.values()), 'heldReasons': held_reasons,
+        'policy': 'explicit-opt-in-per-channel-once-center-only-never-leaves-inbox',
+    }
 
 
 # ---------------------------------------------------------------- 后台主动监控（显式授权、仅本机、仅交易时段）
@@ -5890,7 +5920,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.30.0'
+    server_version = 'DeepPulse/1.31.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -6011,6 +6041,7 @@ class Handler(BaseHTTPRequestHandler):
                           'profile_attention': 1,
                           'attention_learning': 1,
                           'attention_triage': 1,
+                          'attention_center_only_boundary': 1,
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,

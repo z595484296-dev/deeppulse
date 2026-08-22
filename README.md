@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.30.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.31.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 主动服务硬边界（v1.31）
+
+- 单条事项选择“只收入提醒中心”后会被端到端保留，不再降级成摘要，也不会在等待一段时间后发送到 Windows 或墨水屏。
+- 该边界优先于高优先级和用户价格条件：明确要求留在中心的事项永不外发；全局模式与分类学习规则继续按原授权工作。
+- 提醒中心会直接显示当前有多少事项只留在中心，让“为什么没有外发”可见、可核验；原始事项仍保留在工作台内供用户处理。
+- 新增前后端双重门禁与跨端回归测试，防止旧版工作台或旧版 Harness 误把 `center_only` 当成摘要。
 
 ### 主动研究接力（v1.30）
 
