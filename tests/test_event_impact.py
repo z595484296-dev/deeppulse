@@ -58,6 +58,13 @@ class EventImpactModelTests(unittest.TestCase):
         self.assertEqual(match['match'], 'direct')
         self.assertIn('直接出现', match['basis'])
 
+    def test_one_broad_keyword_does_not_link_watchlist_indirectly(self):
+        broad = [dict(NEWS[0], title='某海外公司发布 AI 产品价格调整')]
+        result = event_impact.build_event_impact(
+            [], [], broad, WATCH, CATALOG,
+            data_date='2026-08-22', observed_at='2026-08-22T10:05:00+08:00')
+        self.assertEqual(result['items'][0]['watchlist'], [])
+
 
 class EventServiceTests(unittest.TestCase):
     def test_disabled_service_does_not_call_any_loader(self):

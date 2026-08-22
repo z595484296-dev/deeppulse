@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.28.0';
-import { state, bus, syncProfile } from '../store.js?v=1.28.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.28.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.28.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.28.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.28.0';
+import { api } from '../api.js?v=1.29.0';
+import { state, bus, syncProfile } from '../store.js?v=1.29.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.29.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.29.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.29.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.29.0';
 
 let built = false;
 let sparksAt = 0;
@@ -414,6 +414,11 @@ export function init(container) {
     const itemId = navigate?.dataset.cockpitId || ask?.dataset.cockpitAsk || control?.dataset.cockpitId;
     const item = (state.cockpit?.items || []).find(row => row.id === itemId);
     if (navigate) {
+      if (item?.sourceType === 'attention' && item.sourceId) {
+        e.stopPropagation();
+        document.dispatchEvent(new CustomEvent('attention-open', { detail: { id: item.sourceId } }));
+        return;
+      }
       document.querySelector(`.nav-item[data-page="${navigate.dataset.cockpitPage}"]`)?.click();
       return;
     }
@@ -542,7 +547,7 @@ function renderResearchCockpit(container, snapshot) {
     ['观察中', map.hypotheses?.observing || 0, `${map.hypotheses?.candidateEvidence || 0} 条候选证据`],
     ['待复盘', map.hypotheses?.reviewDue || 0, '到期后由你确认结论'],
     ['研究记忆', map.researchMemory?.visible || 0, map.researchMemory?.enabled === false ? '相似提醒已关闭' : '只含你确认的复盘'],
-    ['待处理提醒', map.pendingReminders || 0, '只计未完成事项'],
+    ['待处理提醒', map.pendingReminders || 0, '按未完成主题计数'],
     ['数据健康', map.healthAttention || 0, '仅显示影响研究的问题'],
   ].map(([label, count, note]) => `<div><b class="num">${Number(count)}</b><span>${esc(label)}</span><small>${esc(note)}</small></div>`).join('');
   const list = root.querySelector('#ov-cockpit-focus');

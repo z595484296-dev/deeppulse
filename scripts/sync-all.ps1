@@ -39,6 +39,7 @@ $runtimeFiles = @(
     'server.py',
     'emotion.py',
     'event_impact.py',
+    'attention_triage.py',
     'research_hypothesis.py',
     'research_memory.py',
     'research_workflow.py',

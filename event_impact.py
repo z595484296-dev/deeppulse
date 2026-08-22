@@ -13,7 +13,7 @@ import re
 from datetime import datetime
 
 
-MODEL_VERSION = 'event-impact-v1'
+MODEL_VERSION = 'event-impact-v2'
 
 
 IMPACT_RULES = (
@@ -306,13 +306,23 @@ def build_event_impact(calendar_rows=None, corroboration_rows=None, market_rows=
             sector_hits = _sector_matches(watch.get('industry'), sectors)
             context = _compact('%s %s' % (watch.get('group') or '', watch.get('note') or ''))
             context_hits = [sector for sector in sectors if _compact(sector) in context]
-            if direct or sector_hits or context_hits:
+            matched_keyword_count = max(
+                [len(rule.get('matchedKeywords') or []) for rule in event['rules']] or [0])
+            # A broad one-word headline (for example merely containing "AI" or
+            # "美元") is not enough to tie an industry to a watchlist company.
+            # Direct company mentions remain eligible; indirect headline links
+            # require at least two transparent rule hits from the same theme.
+            indirect_supported = bool(sector_hits or context_hits) and (
+                event.get('type') == 'macro' or matched_keyword_count >= 2)
+            if direct or indirect_supported:
                 matches.append({
                     **watch,
                     'match': 'direct' if direct else 'sector',
                     'matchedSectors': list(dict.fromkeys(sector_hits + context_hits)),
                     'basis': ('事件标题直接出现标的名称或代码' if direct
-                              else '自选行业、分组或备注与规则行业重合'),
+                              else '自选行业、分组或备注与规则行业重合，且标题包含至少两个同主题关键词'),
+                    'confidence': 'high' if direct else 'medium',
+                    'matchedKeywordCount': matched_keyword_count,
                 })
         surprise = None
         if event.get('actual') is not None and event.get('expected') is not None:

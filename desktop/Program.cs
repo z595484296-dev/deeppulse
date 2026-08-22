@@ -769,7 +769,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.28.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.29.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

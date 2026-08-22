@@ -48,6 +48,13 @@ except Exception:
     EVENT_IMPACT_MODEL_VERSION = 'event-impact-unavailable'
 
 try:
+    from attention_triage import (build_attention_triage,
+                                  MODEL_VERSION as ATTENTION_TRIAGE_MODEL_VERSION)
+except Exception:
+    build_attention_triage = None
+    ATTENTION_TRIAGE_MODEL_VERSION = 'attention-triage-unavailable'
+
+try:
     from research_hypothesis import (create_hypothesis, review_hypothesis,
                                      hypothesis_snapshot,
                                      MODEL_VERSION as HYPOTHESIS_MODEL_VERSION)
@@ -128,7 +135,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.28.0'
+VERSION = '1.29.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1785,6 +1792,87 @@ def attention_learning_status():
     return _attention_learning_status_from_data(load_profile().get('data') or {})
 
 
+def attention_triage_status():
+    """Group noisy event rows for review while retaining every raw item."""
+    data = load_profile().get('data') or {}
+    if build_attention_triage is None:
+        return {
+            'modelVersion': ATTENTION_TRIAGE_MODEL_VERSION, 'generatedAt': int(time.time() * 1000),
+            'rawCount': len(data.get('attention_inbox') or []), 'groupCount': 0,
+            'unreadRawCount': 0, 'unreadGroupCount': 0, 'groups': [],
+            'policy': {'groupingOnly': True, 'rawEvidencePreserved': True,
+                       'statement': '注意力分诊模块暂不可用；原始提醒未受影响。'},
+        }
+    return build_attention_triage(data.get('attention_inbox') or [])
+
+
+def update_attention_triage(group_id, action, signal=None, surface='web'):
+    """Apply one explicit action to the server-resolved members of a triage group."""
+    clean_id = str(group_id or '').strip()[:160]
+    clean_action = str(action or '').strip()
+    clean_signal = str(signal or '').strip()
+    if clean_action not in {'mark_read', 'mark_all_read', 'feedback'}:
+        raise ValueError('unsupported attention triage action')
+    if clean_action != 'mark_all_read' and not clean_id:
+        raise ValueError('attention triage group is required')
+    if clean_action == 'feedback' and clean_signal not in ATTENTION_FEEDBACK_SIGNALS:
+        raise ValueError('unsupported attention feedback signal')
+    timestamp = int(time.time() * 1000)
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        data = current['data']
+        snapshot = build_attention_triage(data.get('attention_inbox') or [], timestamp)
+        group = ({'id': 'all', 'kind': 'system', 'type': 'all',
+                  'memberIds': [row.get('id') for row in (data.get('attention_inbox') or [])]}
+                 if clean_action == 'mark_all_read' else next(
+                     (row for row in snapshot.get('groups') or []
+                      if str(row.get('id') or '') == clean_id), None))
+        if not group:
+            raise ValueError('attention triage group was not found')
+        member_ids = {str(value or '') for value in (group.get('memberIds') or [])}
+        items = [row for row in (data.get('attention_inbox') or []) if isinstance(row, dict)]
+        for item in items:
+            if str(item.get('id') or '') not in member_ids:
+                continue
+            if clean_action in {'mark_read', 'mark_all_read'}:
+                item['readAt'] = item.get('readAt') or timestamp
+            else:
+                item['feedback'] = clean_signal
+                item['feedbackAt'] = timestamp
+                if clean_signal == 'done':
+                    item['doneAt'] = timestamp
+                    item['readAt'] = item.get('readAt') or timestamp
+        if clean_action == 'feedback':
+            feedback_id = clean_id if group.get('type') == 'cluster' else next(iter(member_ids))
+            feedback = [row for row in (data.get('attention_feedback') or [])
+                        if isinstance(row, dict) and str(row.get('itemId') or '') != feedback_id]
+            feedback.append({
+                'itemId': feedback_id, 'kind': str(group.get('kind') or 'system')[:32],
+                'signal': clean_signal, 'at': timestamp,
+                'surface': str(surface or 'web').strip()[:40],
+                'memberCount': len(member_ids), 'triageGroup': group.get('type') == 'cluster',
+            })
+            data['attention_feedback'] = feedback[-PROFILE_LIST_LIMITS['attention_feedback']:]
+            kind = str(group.get('kind') or 'system')[:32]
+            preferences = json.loads(json.dumps(data.get('attention_preferences') or {}, ensure_ascii=False))
+            controls = preferences.get('kindControls') or {}
+            controls = controls if isinstance(controls, dict) else {}
+            if kind != 'price' and clean_signal in {'too_frequent', 'irrelevant'}:
+                controls[kind] = {
+                    'delivery': 'digest' if clean_signal == 'too_frequent' else 'center_only',
+                    'reason': clean_signal, 'updatedAt': timestamp,
+                }
+            preferences['kindControls'] = controls
+            data['attention_preferences'] = preferences
+        data['attention_inbox'] = items[-PROFILE_LIST_LIMITS['attention_inbox']:]
+        saved = _write_profile_unlocked(current)
+        return {
+            'profile': saved,
+            'triage': build_attention_triage(saved['data'].get('attention_inbox') or [], timestamp),
+            'learning': _attention_learning_status_from_data(saved['data']),
+        }
+
+
 def update_attention_feedback(item_id, signal, surface='web'):
     """Persist one explicit outcome and apply only the matching reversible noise control."""
     clean_id = str(item_id or '').strip()[:160]
@@ -3163,7 +3251,8 @@ def commit_event_attention(snapshot, limit=3):
     for row in impact.get('items') or []:
         event = row.get('event') or {}
         watches = row.get('watchlist') or []
-        if watches or (event.get('importance') or 0) >= 3:
+        has_market_basis = bool(row.get('sectors')) and (event.get('importance') or 0) >= 3
+        if watches or has_market_basis:
             candidates.append(row)
     published = 0
     timestamp = int(time.time() * 1000)
@@ -3203,6 +3292,10 @@ def commit_event_attention(snapshot, limit=3):
                 'eventImpact': {
                     'eventId': event.get('id'), 'scheduledAt': event.get('scheduledAt'),
                     'sectors': sectors, 'watchlist': [item.get('code') for item in watches[:6]],
+                    'watchlistLabels': [item.get('name') or item.get('code') for item in watches[:6]],
+                    'matchTypes': [item.get('match') for item in watches[:6]],
+                    'matchedKeywordCount': max(
+                        [len(rule.get('matchedKeywords') or []) for rule in (row.get('rules') or [])] or [0]),
                     'qualityScore': quality.get('score'), 'causal': False,
                 },
             }
@@ -3828,23 +3921,34 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
             'memoryHints': list(related_memories.get(hypothesis_id) or [])[:3],
         })
 
-    pending_attention = [row for row in (data.get('attention_inbox') or [])
-                         if isinstance(row, dict) and not row.get('doneAt')
-                         and not row.get('expired') and row.get('kind') in {'price', 'event'}]
-    for row in pending_attention[-3:]:
+    now_ms = int(now.timestamp() * 1000)
+    pending_raw_attention = [
+        row for row in (data.get('attention_inbox') or [])
+        if isinstance(row, dict) and not row.get('doneAt')
+        and row.get('kind') in {'price', 'event'}
+        and not (int(row.get('expiresAt') or 0) > 0 and now_ms >= int(row.get('expiresAt') or 0))
+    ]
+    triage = (build_attention_triage(pending_raw_attention, now_ms)
+              if build_attention_triage is not None else {'groups': []})
+    pending_attention = triage.get('groups') or []
+    for row in pending_attention[:3]:
         high = row.get('priority') == 'high'
+        grouped = row.get('type') == 'cluster'
         append_item({
             'id': 'attention:' + str(row.get('id') or ''), 'sourceType': 'attention',
             'sourceId': str(row.get('id') or ''),
             'title': _cockpit_readable(row.get('title'), '一条历史提醒需要核对'),
             'subtitle': _cockpit_readable(row.get('detail') or row.get('reason'), '提醒依据待核对'),
             'defaultScore': 72 if high else 58,
-            'reasons': [{'label': '你尚未明确完成这条%s提醒' % ('高优先级' if high else ''),
+            'reasons': [{'label': '你尚未明确完成这个%s%s' % (
+                             '高优先级' if high else '', '聚合主题' if grouped else '提醒'),
                          'points': 52 if high else 38, 'basis': 'explicit-pending-reminder'}],
-            'evidence': {'available': 1, 'status': '提醒事实待核对', 'missing': []},
+            'evidence': {'available': int(row.get('count') or 1),
+                         'status': '原始事件可展开核对' if grouped else '提醒事实待核对', 'missing': []},
             'nextAction': {'type': 'inspect', 'label': '查看提醒依据',
                            'page': str(row.get('page') or 'overview')[:30]},
             'origin': '你开启的提醒或事件服务',
+            'attentionMembers': list(row.get('memberIds') or [])[:24],
         })
 
     effect = routine_effectiveness_status(data)
@@ -5642,7 +5746,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.28.0'
+    server_version = 'DeepPulse/1.29.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5762,6 +5866,7 @@ class Handler(BaseHTTPRequestHandler):
                           'attention_center': 1,
                           'profile_attention': 1,
                           'attention_learning': 1,
+                          'attention_triage': 1,
                           'background_monitor': 1,
                           'market_routine': 1,
                           'akshare_enrichment': 1,
@@ -5769,7 +5874,7 @@ class Handler(BaseHTTPRequestHandler):
                           'akshare_research_packs': 1,
                           'akshare_interface_health': 1,
                           'source_lineage': 1,
-                          'event_impact': 1,
+                          'event_impact': 2,
                           'event_background_service': 1,
                           'research_hypotheses': 1,
                           'hypothesis_due_reminders': 1,
@@ -5869,6 +5974,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': load_profile()})
         elif path == '/api/attention/learning':
             self.send_json({'ok': True, 'data': attention_learning_status()})
+        elif path == '/api/attention/triage':
+            self.send_json({'ok': True, 'data': attention_triage_status()})
         elif path == '/api/delivery/status':
             self.send_json({'ok': True, 'data': attention_delivery_status()})
         elif path == '/api/monitor/status':
@@ -6062,6 +6169,11 @@ class Handler(BaseHTTPRequestHandler):
                 saved, learning = reset_attention_learning(
                     body.get('kind'), body.get('clearHistory') is True)
                 self.send_json({'ok': True, 'data': {'profile': saved, 'learning': learning}})
+            elif u.path == '/api/attention/triage':
+                body = self.read_json_body()
+                self.send_json({'ok': True, 'data': update_attention_triage(
+                    body.get('groupId'), body.get('action'), body.get('signal'),
+                    body.get('surface') or 'web')})
             elif u.path == '/api/delivery/pull':
                 body = self.read_json_body()
                 self.send_json({'ok': True, 'data': claim_attention_delivery(

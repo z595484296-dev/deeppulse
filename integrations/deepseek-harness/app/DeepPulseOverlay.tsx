@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.28.0'
+const MIN_BACKEND_VERSION = '1.29.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -64,6 +64,7 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['attention_center'] === 1
       && capabilities['profile_attention'] === 1
       && capabilities['attention_learning'] === 1
+      && capabilities['attention_triage'] === 1
       && capabilities['background_monitor'] === 1
       && capabilities['market_routine'] === 1
       && capabilities['akshare_enrichment'] === 1
@@ -71,7 +72,7 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['akshare_research_packs'] === 1
       && capabilities['akshare_interface_health'] === 1
       && capabilities['source_lineage'] === 1
-      && capabilities['event_impact'] === 1
+      && capabilities['event_impact'] === 2
       && capabilities['event_background_service'] === 1
       && capabilities['research_hypotheses'] === 1
       && capabilities['hypothesis_due_reminders'] === 1
@@ -813,6 +814,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     : []
   const hasProactiveBrief = Boolean(short(proactive['id'], 160) || short(proactive['headline'], 300))
   const attentionPreferences = recordOf(attention['preferences'])
+  const attentionTriagePolicy = recordOf(attention['triagePolicy'])
   const attentionLearning = recordOf(attention['learning'])
   const attentionLearningCounts = recordOf(attentionLearning['counts'])
   const attentionLearningControls = Array.isArray(attentionLearning['controls'])
@@ -859,6 +861,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
         detail: short(row['detail'], 260), reason: short(row['reason'], 180), createdAt: finite(row['createdAt']),
         expiresAt: finite(row['expiresAt']), read: row['read'] === true, done: row['done'] === true,
         expired: row['expired'] === true, feedback: short(row['feedback'], 24),
+        rawCount: Math.max(1, Math.min(200, finite(row['rawCount']) ?? 1)),
       }
     })
     : []
@@ -908,6 +911,12 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       } : null,
       attention: {
         unread: Math.max(0, Math.min(200, finite(attention['unread']) ?? 0)),
+        unreadRaw: Math.max(0, Math.min(200, finite(attention['unreadRaw']) ?? 0)),
+        triagePolicy: {
+          groupingOnly: attentionTriagePolicy['groupingOnly'] === true,
+          rawEvidencePreserved: attentionTriagePolicy['rawEvidencePreserved'] === true,
+          statement: short(attentionTriagePolicy['statement'], 240),
+        },
         preferences: {
           mode: short(attentionPreferences['mode'], 24), quietEnabled: attentionPreferences['quietEnabled'] !== false,
           quietStart: short(attentionPreferences['quietStart'], 8), quietEnd: short(attentionPreferences['quietEnd'], 8),
@@ -1253,7 +1262,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '6. officialDisclosuresScope=not-applicable-no-security-selected 表示当前页面没有选中个股，不代表官方公告源缺失。',
     '7. transitionCalibrated=false 时只能称为启发式状态倾向，不得称为经过校准的预测概率。',
     '8. proactiveBrief 是深脉规则层整理的优先级与研究任务，不是新的市场事实；展开时仍需用 market、emotionAnalysis 和来源字段复核。',
-    '9. attention 是用户提醒中心状态；可用它解释最近提醒、未读事项、后台价格监控和主动服务日程，但不要替用户更改偏好或授权，也不要把提醒本身当成市场事实。',
+    '9. attention 是用户提醒中心状态；unread 按可处理主题计数，unreadRaw 是其包含的原始提醒数。聚合只整理展示，必须保留原始证据边界；不要替用户更改偏好或授权，也不要把提醒本身当成市场事实。',
     '10. attention.learning 只来自用户明确反馈，可解释当前降噪设置和完成情况；不得推断未记录的偏好，也不得据此触发交易。',
     '10.1 attention.marketRoutine.effectiveness 也只来自用户明确反馈；未反馈不等于无效，不得据此推断偏好、自动应用节奏建议或触发交易。',
     '11. eventImpact 按“事件事实→透明规则→行业/自选敏感性→质量”组织；它不是因果证明或方向预测。先核对事件原始来源和时点，再解释关联与反证条件。',

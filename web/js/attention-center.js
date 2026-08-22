@@ -1,18 +1,20 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.28.0';
-import { api } from './api.js?v=1.28.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.29.0';
+import { api } from './api.js?v=1.29.0';
 import {
-  attentionLearningContext, bus, feedbackAttentionItem, loadAttentionInbox, loadAttentionPreferences, markAttentionRead,
-  pushAttentionItem, resetAttentionLearning, saveAttentionPreferences,
-} from './store.js?v=1.28.0';
-import { esc, toast } from './util.js?v=1.28.0';
+  attentionLearningContext, bus, loadAttentionInbox, loadAttentionPreferences,
+  pushAttentionItem, resetAttentionLearning, saveAttentionPreferences, syncProfile,
+} from './store.js?v=1.29.0';
+import { esc, toast } from './util.js?v=1.29.0';
 
 let navigate = () => {};
 let digestTimer = null;
 let initialized = false;
 let knownIds = new Set();
 let deliverySnapshot = { channels: {}, recent: [] };
+let triageSnapshot = null;
+let triageRequest = null;
 const $ = selector => document.querySelector(selector);
 const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', event: '事件影响', hypothesis_review: '假设复盘', system: '系统更新' };
 const FEEDBACK_LABELS = { helpful: '有用', done: '已完成', too_frequent: '少一点', irrelevant: '不相关' };
@@ -45,28 +47,63 @@ function deliveryTrace(itemId) {
   }).join('')}</div>`;
 }
 
+function rawFallbackGroups() {
+  return loadAttentionInbox().slice().reverse().map(item => ({
+    ...item, type: 'item', memberIds: [item.id], count: 1,
+    unreadCount: item.readAt || isExpired(item) ? 0 : 1, items: [item],
+  }));
+}
+
+function clusterEvidence(group) {
+  if (group.type !== 'cluster') return '';
+  return `<details class="attention-cluster-evidence">
+    <summary>展开 ${Number(group.count) || 0} 条原始事件</summary>
+    <div>${(group.items || []).map(item => `<article>
+      <b>${esc(item.title || '市场事件')}</b>
+      <time>${timeLabel(item.createdAt)}</time>
+      <p>${esc(item.detail || '')}</p>
+      <small>${esc(item.reason || '')}</small>
+    </article>`).join('')}</div>
+    <small class="attention-cluster-boundary">聚合只整理信息，不代表这些来源相互独立，也不构成因果或交易判断。</small>
+  </details>`;
+}
+
+async function refreshTriage() {
+  if (triageRequest) return triageRequest;
+  triageRequest = api.attentionTriage().then(snapshot => {
+    triageSnapshot = snapshot;
+    render();
+    return snapshot;
+  }).catch(() => null).finally(() => { triageRequest = null; });
+  return triageRequest;
+}
+
 function render() {
   if (!initialized) return;
-  const items = loadAttentionInbox().slice().reverse();
-  const unread = items.filter(item => !item.readAt && !isExpired(item)).length;
+  const groups = triageSnapshot?.groups || rawFallbackGroups();
+  const unread = triageSnapshot?.unreadGroupCount ?? groups.filter(group => group.unreadCount).length;
   const badge = $('#attention-badge');
   badge.textContent = unread > 99 ? '99+' : String(unread);
   badge.hidden = unread === 0;
-  $('#attention-count').textContent = unread ? `${unread} 条未读` : '已全部读完';
+  const rawUnread = triageSnapshot?.unreadRawCount;
+  $('#attention-count').textContent = unread
+    ? `${unread} 个待处理主题${Number(rawUnread) > unread ? ` · 含 ${rawUnread} 条原始事件` : ''}`
+    : '已全部读完';
   const list = $('#attention-list');
-  list.innerHTML = items.length ? items.map(item => `
-    <article class="attention-item ${item.readAt || isExpired(item) ? '' : 'unread'} ${isExpired(item) ? 'expired' : ''}" data-id="${esc(item.id)}">
-      <div class="attention-item-head"><b>${esc(item.title)}</b><time>${isExpired(item) ? '已过期 · ' : ''}${timeLabel(item.createdAt)}</time></div>
-      <p>${esc(item.detail)}</p>
-      <small>为什么提醒我：${esc(item.reason)}</small>
-      ${deliveryTrace(item.id)}
+  list.innerHTML = groups.length ? groups.map(group => `
+    <article class="attention-item ${group.unreadCount ? 'unread' : ''} ${isExpired(group) ? 'expired' : ''} ${group.type === 'cluster' ? 'cluster' : ''}" data-id="${esc(group.id)}" data-members="${esc((group.memberIds || []).join(','))}">
+      <div class="attention-item-head"><b>${esc(group.title)}</b><time>${isExpired(group) ? '已过期 · ' : ''}${timeLabel(group.createdAt)}</time></div>
+      <p>${esc(group.detail)}</p>
+      <small>为什么提醒我：${esc(group.reason)}</small>
+      ${group.type === 'item' ? deliveryTrace(group.id) : ''}
+      ${clusterEvidence(group)}
       <div class="attention-item-actions">
-        ${item.page ? `<button class="btn sm" data-attention-page="${esc(item.page)}">查看</button>` : ''}
-        ${item.readAt || isExpired(item) ? '' : '<button class="btn sm ghost" data-attention-read>已读</button>'}
+        ${group.page ? `<button class="btn sm" data-attention-page="${esc(group.page)}">查看</button>` : ''}
+        ${group.unreadCount && !isExpired(group) ? `<button class="btn sm ghost" data-attention-read>${group.type === 'cluster' ? '整组已读' : '已读'}</button>` : ''}
       </div>
       <div class="attention-item-feedback" aria-label="告诉深脉这条提醒是否有用">
-        ${['helpful', 'done', ...(item.kind === 'price' ? [] : ['too_frequent', 'irrelevant'])].map(signal => `
-          <button class="attention-feedback-btn ${item.feedback === signal ? 'selected' : ''}" data-attention-feedback="${signal}" aria-pressed="${item.feedback === signal}">${FEEDBACK_LABELS[signal]}</button>
+        ${['helpful', 'done', ...(group.kind === 'price' ? [] : ['too_frequent', 'irrelevant'])].map(signal => `
+          <button class="attention-feedback-btn ${group.feedback === signal ? 'selected' : ''}" data-attention-feedback="${signal}" aria-pressed="${group.feedback === signal}">${FEEDBACK_LABELS[signal]}</button>
         `).join('')}
       </div>
     </article>`).join('') : '<div class="attention-empty"><b>现在很安静</b><span>价格到达、阶段变化和重要异动会统一出现在这里。</span></div>';
@@ -163,13 +200,15 @@ export function publishAttention(input) {
 export function attentionContext() {
   const inbox = loadAttentionInbox();
   return {
-    unread: inbox.filter(item => !item.readAt && !isExpired(item)).length,
+    unread: triageSnapshot?.unreadGroupCount ?? inbox.filter(item => !item.readAt && !isExpired(item)).length,
+    unreadRaw: triageSnapshot?.unreadRawCount ?? null,
+    triagePolicy: triageSnapshot?.policy || null,
     preferences: loadAttentionPreferences(),
     learning: attentionLearningContext(),
-    recent: inbox.slice(-8).reverse().map(item => ({
+    recent: (triageSnapshot?.groups || rawFallbackGroups()).slice(0, 8).map(item => ({
       kind: item.kind, priority: item.priority, title: item.title, detail: item.detail,
-      reason: item.reason, createdAt: item.createdAt, expiresAt: item.expiresAt,
-      read: !!item.readAt, done: !!item.doneAt, expired: isExpired(item), feedback: item.feedback || null,
+      reason: item.reason, createdAt: item.createdAt, expiresAt: item.expiresAt, rawCount: item.count,
+      read: !item.unreadCount, expired: isExpired(item), feedback: item.feedback || null,
     })),
   };
 }
@@ -184,11 +223,17 @@ export function initAttentionCenter(options = {}) {
     panel.classList.toggle('open', open);
     panel.setAttribute('aria-hidden', String(!open));
     $('#btn-attention').setAttribute('aria-expanded', String(open));
-    if (open) { render(); renderDeliveryStatus(); }
+    if (open) { render(); renderDeliveryStatus(); refreshTriage(); }
   };
   $('#btn-attention').addEventListener('click', () => toggle(!panel.classList.contains('open')));
   $('#attention-close').addEventListener('click', () => toggle(false));
-  $('#attention-read-all').addEventListener('click', () => markAttentionRead());
+  $('#attention-read-all').addEventListener('click', () => {
+    api.mutateAttentionTriage(null, 'mark_all_read', null, 'web').then(async result => {
+      triageSnapshot = result.triage;
+      await syncProfile();
+      render();
+    }).catch(error => toast(`未能全部标记已读：${error.message}`, 'err'));
+  });
   $('#attention-list').addEventListener('click', event => {
     const card = event.target.closest('.attention-item');
     if (!card) return;
@@ -204,10 +249,19 @@ export function initAttentionCenter(options = {}) {
         .catch(error => { button.disabled = false; toast(`重试失败：${error.message}`, 'err'); });
       return;
     }
-    if (event.target.closest('[data-attention-read]')) markAttentionRead(card.dataset.id);
+    if (event.target.closest('[data-attention-read]')) {
+      api.mutateAttentionTriage(card.dataset.id, 'mark_read', null, 'web').then(async result => {
+        triageSnapshot = result.triage;
+        await syncProfile();
+        render();
+      }).catch(error => toast(`未能标记已读：${error.message}`, 'err'));
+      return;
+    }
     const signal = event.target.closest('[data-attention-feedback]')?.dataset.attentionFeedback;
     if (signal) {
-      feedbackAttentionItem(card.dataset.id, signal).then(() => {
+      api.mutateAttentionTriage(card.dataset.id, 'feedback', signal, 'web').then(async result => {
+        triageSnapshot = result.triage;
+        await syncProfile();
         const message = signal === 'too_frequent' ? '同类提醒以后合并为摘要，可随时恢复'
           : signal === 'irrelevant' ? '同类提醒以后只收入中心，可随时恢复'
             : signal === 'done' ? '已记为完成' : '已记住这类提醒对你有用';
@@ -215,7 +269,10 @@ export function initAttentionCenter(options = {}) {
       }).catch(error => toast(`反馈未保存：${error.message}`, 'err'));
     }
     const page = event.target.closest('[data-attention-page]')?.dataset.attentionPage;
-    if (page) { markAttentionRead(card.dataset.id); navigate(page); toggle(false); }
+    if (page) {
+      api.mutateAttentionTriage(card.dataset.id, 'mark_read', null, 'web').then(syncProfile).catch(() => {});
+      navigate(page); toggle(false);
+    }
   });
   ['attention-mode', 'attention-quiet', 'attention-quiet-start', 'attention-quiet-end',
     'attention-desktop-system', 'attention-epaper-delivery']
@@ -248,6 +305,7 @@ export function initAttentionCenter(options = {}) {
     items.forEach(item => { if (item && item.id) knownIds.add(item.id); });
     fresh.forEach(deliverItem);
     render();
+    refreshTriage();
   });
   bus.addEventListener('attention-preferences', () => { renderPreferences(); renderDeliveryStatus(); });
   bus.addEventListener('attention-learning', renderLearning);
@@ -257,7 +315,7 @@ export function initAttentionCenter(options = {}) {
     toggle(true);
     window.setTimeout(() => {
       const card = [...document.querySelectorAll('.attention-item')]
-        .find(row => row.dataset.id === id);
+        .find(row => row.dataset.id === id || (row.dataset.members || '').split(',').includes(id));
       if (!card) { toast('这条提醒已不在最近记录中', 'err'); return; }
       card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       card.classList.add('attention-target');
@@ -270,4 +328,5 @@ export function initAttentionCenter(options = {}) {
   renderPreferences();
   renderDeliveryStatus();
   render();
+  refreshTriage();
 }

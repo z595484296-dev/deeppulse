@@ -194,6 +194,7 @@ a { color: var(--accent); text-decoration: none; }
 .attention-list { flex: 1; min-height: 80px; overflow-y: auto; padding: 0 14px 14px; }
 .attention-item { margin-top: 8px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
 .attention-item.unread { border-color: rgba(79, 140, 255, .42); box-shadow: inset 3px 0 0 var(--blue); }
+.attention-item.cluster { background: linear-gradient(145deg, rgba(79, 140, 255, .08), var(--panel-2) 44%); }
 .attention-item.expired { opacity: .68; }
 .attention-item.attention-target { animation: attentionTarget 2.4s ease; }
 @keyframes attentionTarget {
@@ -206,6 +207,15 @@ a { color: var(--accent); text-decoration: none; }
 .attention-item p { margin: 5px 0; color: var(--text-2); font-size: 11px; line-height: 1.5; }
 .attention-item small { display: block; color: var(--text-3); line-height: 1.45; }
 .attention-item-actions { display: flex; gap: 6px; margin-top: 8px; }
+.attention-cluster-evidence { margin-top: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(148, 163, 184, .04); }
+.attention-cluster-evidence > summary { padding: 7px 9px; cursor: pointer; color: var(--blue); font-size: 10.5px; font-weight: 600; }
+.attention-cluster-evidence > div { max-height: 250px; overflow-y: auto; border-top: 1px solid var(--line); }
+.attention-cluster-evidence article { padding: 8px 9px; border-bottom: 1px dashed var(--line); }
+.attention-cluster-evidence article:last-child { border-bottom: 0; }
+.attention-cluster-evidence article b { display: block; font-size: 10.5px; line-height: 1.4; }
+.attention-cluster-evidence article time { color: var(--text-3); font-size: 9px; }
+.attention-cluster-evidence article p { margin: 4px 0; font-size: 10px; }
+.attention-cluster-evidence .attention-cluster-boundary { padding: 7px 9px; border-top: 1px solid var(--line); color: var(--amber); }
 .attention-delivery-trace { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .attention-delivery-chip { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 25px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 7px; background: rgba(148, 163, 184, .05); color: var(--text-3); font-size: 9.5px; }
 .attention-delivery-chip.delivered { border-color: rgba(46, 189, 133, .28); color: var(--down); }

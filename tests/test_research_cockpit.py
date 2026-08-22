@@ -109,6 +109,25 @@ class ResearchCockpitTests(unittest.TestCase):
         self.assertTrue(focus['subtitle'].startswith('创建于 '))
         self.assertNotIn('???', focus['title'] + focus['subtitle'])
 
+    def test_event_noise_uses_same_grouped_attention_unit_as_center(self):
+        created = int(NOW.timestamp() * 1000) - 1000
+        base = {
+            'kind': 'event', 'priority': 'medium', 'page': 'overview',
+            'detail': '命中自选：工业富联；质量分 75。', 'reason': '来源 公开快讯',
+            'createdAt': created, 'expiresAt': created + 8 * 3600 * 1000,
+            'eventImpact': {'watchlist': ['601138'], 'sectors': ['消费电子'], 'causal': False},
+        }
+        server.save_profile({'attention_inbox': [
+            dict(base, id='event:1', title='AI算力服务器需求更新'),
+            dict(base, id='event:2', title='数据中心服务器订单更新', createdAt=created - 500),
+        ]})
+        cockpit = server.research_cockpit_status()
+        reminders = [row for row in cockpit['items'] if row['sourceType'] == 'attention']
+        self.assertEqual(len(reminders), 1)
+        self.assertEqual(cockpit['map']['pendingReminders'], 1)
+        self.assertEqual(reminders[0]['evidence']['available'], 2)
+        self.assertEqual(set(reminders[0]['attentionMembers']), {'event:1', 'event:2'})
+
 
 if __name__ == '__main__':
     unittest.main()

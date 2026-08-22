@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.28.0",
-  "minimumDesktopVersion": "1.28.0",
+  "version": "1.29.0",
+  "minimumDesktopVersion": "1.29.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -15,6 +15,7 @@
     "attention-center-v1",
     "profile-attention-v1",
     "attention-learning-v1",
+    "attention-triage-v1",
     "background-monitor-v1",
     "market-routine-v1",
     "akshare-enrichment-v1",
@@ -22,7 +23,7 @@
     "akshare-research-packs-v1",
     "akshare-interface-health-v1",
     "source-lineage-v1",
-    "event-impact-v1",
+    "event-impact-v2",
     "event-background-service-v1",
     "research-hypothesis-v1",
     "hypothesis-due-reminders-v1",
