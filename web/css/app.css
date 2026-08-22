@@ -876,7 +876,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .research-cockpit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .research-cockpit-head h2 { margin: 3px 0 0; font-size: 20px; }
 .research-cockpit-head p { margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
-.research-map { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.research-map { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .research-map > div { padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); min-width: 0; }
 .research-map b { display: block; font-size: 20px; line-height: 1.1; }
 .research-map span { display: block; margin-top: 3px; color: var(--text-2); font-size: 11px; font-weight: 700; }
@@ -1971,6 +1971,7 @@ body.light .proactive-fact { background: rgba(255, 255, 255, .58); }
 .research-suggestion-list{display:grid;gap:7px;max-height:480px;overflow:auto}
 .research-suggestion-row{display:grid;gap:6px;width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);color:var(--text);font:inherit;text-align:left;cursor:pointer}
 .research-suggestion-row:hover,.research-suggestion-row[aria-current="true"]{border-color:rgba(79,140,255,.55);background:rgba(79,140,255,.08)}
+.research-suggestion-row[data-state="accepted"]{border-color:rgba(48,201,148,.3)}
 .research-suggestion-row em{color:var(--violet);font-size:10px;font-style:normal}.research-suggestion-row time,.research-suggestion-row small{color:var(--text-3);font-size:10px}.research-suggestion-row i{color:var(--amber);font-size:9px;font-style:normal}
 .research-suggestion-detail{min-height:300px;padding:14px;border:1px solid var(--line);border-radius:11px;background:var(--panel-2);outline:none}
 .research-suggestion-detail:focus-visible{box-shadow:0 0 0 2px rgba(79,140,255,.28)}
@@ -1979,3 +1980,4 @@ body.light .proactive-fact { background: rgba(255, 255, 255, .58); }
 .workflow-origin-banner{margin:0 0 12px;padding:9px 10px;border:1px solid rgba(168,85,247,.28);border-radius:9px;background:rgba(168,85,247,.06)}.workflow-origin-banner>div{display:grid;gap:2px}.workflow-origin-banner b{color:var(--violet);font-size:11px}.workflow-origin-banner span{color:var(--text-3);font-size:9px}
 @media(max-width:860px){.research-suggestion-layout{grid-template-columns:1fr}.research-suggestion-list{max-height:280px}}
 @media(max-width:640px){.research-suggestion-actions .btn{flex:1 1 calc(50% - 4px);min-height:40px}.workflow-origin-banner{align-items:flex-start;flex-direction:column}}
+.workflow-item.workflow-focus{border-color:rgba(79,140,255,.78);box-shadow:0 0 0 3px rgba(79,140,255,.14);transition:border-color .2s,box-shadow .2s}

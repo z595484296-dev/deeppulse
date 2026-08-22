@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.29.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.30.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 主动研究接力（v1.30）
+
+- 首页发现的研究缺口和策略页建议现在是同一条事项，不再跨页面重复提醒；忽略后也不会换一个名称重新出现。
+- 点击才会载入可编辑草稿，并依次显示“草稿已载入 → 已预览范围 → 已创建流程 → 已手动运行”；每一步都必须由用户明确触发。
+- 流程创建后会继续回到研究驾驶舱，提示检查后运行、查看结果或到期复盘，不会因为创建成功而从日常视野中消失。
+- 编辑后的草稿自动脱离原建议，避免错误推进状态；DeepSeek 只帮助解释与拆解，不能授权来源、创建流程或运行研究。
 
 ### 可信注意力分诊（v1.29）
 

@@ -135,7 +135,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.29.0'
+VERSION = '1.30.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -3485,6 +3485,23 @@ def research_suggestions_status(current=None):
         data, hypotheses, data.get('research_suggestions') or [], now_bj())
 
 
+def _record_research_suggestion_progress(current, suggestion_id, action, draft=None):
+    """Persist an explicit handoff step without accepting or executing it."""
+    snapshot = research_suggestions_status(current)
+    rows = [dict(row) for row in (snapshot.get('items') or []) if isinstance(row, dict)]
+    index = next((i for i, row in enumerate(rows)
+                  if str(row.get('id') or '') == suggestion_id), -1)
+    if index < 0:
+        raise ValueError('这条研究建议已经变化，请刷新后重试')
+    proposed = rows[index].get('proposedDraft') or {}
+    if draft is not None and (research_suggestion_draft_fingerprint(proposed) !=
+                              research_suggestion_draft_fingerprint(draft)):
+        raise ValueError('研究草稿已编辑；后续将作为独立流程，不再更新原建议阶段')
+    rows[index] = mutate_research_suggestion_item(rows[index], action, now_bj())
+    current['data']['research_suggestions'] = rows[-PROFILE_LIST_LIMITS['research_suggestions']:]
+    return rows[index]
+
+
 def mutate_research_suggestion(action, payload=None):
     body = payload if isinstance(payload, dict) else {}
     clean_action = str(action or '').strip()
@@ -3504,8 +3521,13 @@ def mutate_research_suggestion(action, payload=None):
     if clean_action == 'prepare':
         if item.get('state') not in {'pending', 'dismissed'}:
             raise ValueError('这条研究建议当前不能载入')
-        draft = item.get('proposedDraft') or {}
-        return {'suggestion': item, 'draft': draft, 'previewRequired': True,
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            updated = _record_research_suggestion_progress(
+                current, suggestion_id, 'prepare')
+            saved = _write_profile_unlocked(current)
+        return {'suggestion': updated, 'draft': updated.get('proposedDraft') or {},
+                'suggestions': research_suggestions_status(saved), 'previewRequired': True,
                 'automaticPreview': False, 'automaticExternalAccess': False}
     if clean_action not in {'dismiss', 'restore'}:
         raise ValueError('不支持的研究建议操作')
@@ -3623,7 +3645,17 @@ def mutate_research_workflow(action, payload=None):
     body = payload if isinstance(payload, dict) else {}
     clean_action = str(action or '').strip()
     if clean_action == 'preview':
-        return {'preview': preview_research_workflow(body.get('draft'))}
+        preview = preview_research_workflow(body.get('draft'))
+        suggestion_id = str(body.get('suggestionId') or '').strip()[:180]
+        suggestions = None
+        if suggestion_id:
+            with _profile_lock:
+                current = _read_profile_unlocked()
+                _record_research_suggestion_progress(
+                    current, suggestion_id, 'preview', body.get('draft'))
+                saved = _write_profile_unlocked(current)
+            suggestions = research_suggestions_status(saved)
+        return {'preview': preview, 'suggestions': suggestions}
     if clean_action == 'confirm':
         live_preview = preview_research_workflow(body.get('draft'))
         if str(body.get('previewId') or '') != live_preview.get('previewId'):
@@ -3846,6 +3878,22 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
                             'items': [], 'summary': {'observing': 0, 'review_due': 0,
                                                      'completed': 0, 'archived': 0}})
     hypotheses = hypothesis_state.get('items') or []
+    suggestion_state = (build_research_suggestion_snapshot(
+        data, hypotheses, data.get('research_suggestions') or [], now)
+        if build_research_suggestion_snapshot is not None else {
+            'items': [], 'summary': {'pending': 0, 'accepted': 0}})
+    suggestions = suggestion_state.get('items') or []
+    pending_suggestions_by_watch = {
+        str(row.get('sourceId') or ''): row for row in suggestions
+        if row.get('sourceType') == 'watchlist' and row.get('state') == 'pending'
+    }
+    dismissed_suggestion_codes = {
+        str(row.get('sourceId') or '') for row in suggestions
+        if row.get('sourceType') == 'watchlist' and row.get('state') == 'dismissed'
+    }
+    workflow_state = (workflow_snapshot(data.get('research_workflows') or [], now)
+                      if workflow_snapshot is not None else {'items': [], 'summary': {}})
+    workflows = workflow_state.get('items') or []
     memory_state = (build_research_memory_snapshot(
         data.get('research_hypotheses') or [], data.get('research_memory_preferences'))
                     if build_research_memory_snapshot is not None else {
@@ -3858,6 +3906,11 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
         for row in open_hypotheses
         for watch in ((row.get('baseline') or {}).get('watchlist') or [])
         if isinstance(watch, dict) and watch.get('code')
+    }
+    active_workflow_codes = {
+        str((row.get('target') or {}).get('code') or '')
+        for row in workflows if row.get('effectiveStatus') in {'active', 'review_due', 'paused'}
+        and isinstance(row.get('target'), dict) and (row.get('target') or {}).get('code')
     }
     items = []
 
@@ -3919,6 +3972,62 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
                            'page': 'strategy'},
             'origin': '用户明确保存的研究假设',
             'memoryHints': list(related_memories.get(hypothesis_id) or [])[:3],
+        })
+
+    for row in workflows:
+        status = row.get('effectiveStatus')
+        if status not in {'active', 'review_due', 'paused'}:
+            continue
+        runs = list(row.get('runs') or [])
+        latest = row.get('latestRun') if isinstance(row.get('latestRun'), dict) else (
+            runs[-1] if runs else {})
+        card = latest.get('resultCard') if isinstance(latest, dict) else {}
+        card = card if isinstance(card, dict) else {}
+        card_summary = card.get('summary') if isinstance(card.get('summary'), dict) else {}
+        due = status == 'review_due'
+        never_run = not runs
+        paused = status == 'paused'
+        if due:
+            score, label, action_type = 86, '填写研究复盘', 'review_workflow'
+            evidence_status = '观察窗口已到期'
+        elif never_run:
+            score, label, action_type = 66, '检查后手动运行', 'open_workflow'
+            evidence_status = '已创建，尚未读取来源'
+        elif paused:
+            score, label, action_type = 48, '查看已暂停流程', 'open_workflow'
+            evidence_status = '已暂停'
+        else:
+            score, label, action_type = 58, '查看最新研究结果', 'open_workflow'
+            evidence_status = '已运行，等待后续复盘'
+        reasons = [{'label': '这是你明确创建的研究流程', 'points': 35,
+                    'basis': 'explicit-user-created-workflow'}]
+        if due:
+            reasons.append({'label': '预设复盘窗口已经结束', 'points': 36,
+                            'basis': 'registered-review-window'})
+        elif never_run:
+            reasons.append({'label': '尚未手动读取已确认来源', 'points': 16,
+                            'basis': 'explicit-workflow-state'})
+        elif runs:
+            reasons.append({'label': '已有 %d 次手动运行记录' % len(runs), 'points': 8,
+                            'basis': 'explicit-workflow-run'})
+        gaps = [str(item.get('message') or '')[:120] for item in (card.get('gaps') or [])
+                if isinstance(item, dict) and item.get('message')][:3]
+        append_item({
+            'id': 'workflow:' + str(row.get('id') or ''), 'sourceType': 'workflow',
+            'sourceId': str(row.get('id') or ''),
+            'title': str(row.get('title') or '研究流程')[:180],
+            'subtitle': str(row.get('question') or '等待你继续研究')[:180],
+            'defaultScore': score, 'reasons': reasons,
+            'evidence': {
+                'available': int(card_summary.get('evidenceItems') or 0),
+                'status': evidence_status, 'missing': gaps,
+            },
+            'nextAction': {'type': action_type, 'label': label, 'page': 'strategy',
+                           'workflowId': str(row.get('id') or '')},
+            'origin': '你明确创建的研究流程',
+            'handoff': {'stage': ('review_due' if due else 'created' if never_run else
+                                  'paused' if paused else 'ran'),
+                        'runCount': len(runs), 'workflowId': str(row.get('id') or '')},
         })
 
     now_ms = int(now.timestamp() * 1000)
@@ -3985,13 +4094,46 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
         })
 
     watches = [row for row in (data.get('watchlist') or []) if isinstance(row, dict)]
-    unmatched = [row for row in watches if str(row.get('code') or '') not in active_watch_codes]
+    unmatched = [row for row in watches
+                 if str(row.get('code') or '') not in active_watch_codes
+                 and str(row.get('code') or '') not in active_workflow_codes
+                 and str(row.get('code') or '') not in dismissed_suggestion_codes]
     unmatched.sort(key=lambda row: int(row.get('added') or 0), reverse=True)
     for row in unmatched[:5]:
         note = str(row.get('note') or '').strip()
+        code = str(row.get('code') or '')
+        suggestion = pending_suggestions_by_watch.get(code)
+        journey = (suggestion or {}).get('journey') or {}
+        if suggestion:
+            append_item({
+                'id': 'watch:' + code, 'sourceType': 'research_suggestion',
+                'sourceId': str(suggestion.get('id') or ''),
+                'title': str(suggestion.get('title') or '研究建议')[:180],
+                'subtitle': str(suggestion.get('reason') or '')[:180],
+                'defaultScore': 54 if journey.get('stage') in {'drafted', 'previewed'} else 46,
+                'reasons': [
+                    {'label': '来自你的自选列表', 'points': 25,
+                     'basis': 'explicit-watchlist'},
+                    {'label': '系统已按明确记录准备可编辑问题草稿', 'points': 16,
+                     'basis': 'deterministic-research-suggestion'},
+                ],
+                'evidence': {
+                    'available': 0, 'status': str(journey.get('label') or '待你决定'),
+                    'missing': list(suggestion.get('evidenceGaps') or [])[:3],
+                },
+                'nextAction': {
+                    'type': 'load_suggestion',
+                    'label': ('继续研究草稿' if journey.get('stage') in {'drafted', 'previewed'}
+                              else '载入研究草稿'),
+                    'page': 'strategy', 'suggestionId': str(suggestion.get('id') or ''),
+                },
+                'origin': '你的自选与主动研究建议',
+                'handoff': journey,
+            })
+            continue
         append_item({
-            'id': 'watch:' + str(row.get('code') or ''), 'sourceType': 'watchlist',
-            'sourceId': str(row.get('code') or ''),
+            'id': 'watch:' + code, 'sourceType': 'watchlist',
+            'sourceId': code,
             'title': '%s（%s）尚无研究假设' % (str(row.get('name') or row.get('code') or '自选'),
                                              str(row.get('code') or '--')),
             'subtitle': note[:180] or '这是明确关注项，但当前没有事件假设或观察窗口。',
@@ -4028,6 +4170,8 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
             'researchMemory': {'enabled': (memory_state.get('preferences') or {}).get('enabled') is not False,
                                'visible': int((memory_state.get('summary') or {}).get('visible') or 0)},
             'pendingReminders': len(pending_attention),
+            'researchSuggestions': int((suggestion_state.get('summary') or {}).get('pending') or 0),
+            'researchWorkflows': int((workflow_state.get('summary') or {}).get('total') or 0),
             'serviceSuggestions': len(effect.get('recommendations') or []),
             'healthAttention': len(health_rows),
         },
@@ -5746,7 +5890,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.29.0'
+    server_version = 'DeepPulse/1.30.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5914,6 +6058,8 @@ class Handler(BaseHTTPRequestHandler):
                            'research_evidence_timeline': 1,
                            'research_suggestion_inbox': 1,
                            'research_suggestion_preview': 1,
+                           'research_handoff': 1,
+                           'research_journey': 1,
                            'epaper_gateway': 1,
                            'epaper_research_workflow': 1,
                           'epaper_frame': '800x480-1bpp',

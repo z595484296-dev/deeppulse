@@ -93,11 +93,42 @@ class ResearchCockpitTests(unittest.TestCase):
             {'code': '601138', 'name': '工业富联', 'note': '跟踪订单兑现', 'added': 1},
         ]})
         cockpit = server.research_cockpit_status()
-        item = next(row for row in cockpit['items'] if row['sourceType'] == 'watchlist')
-        self.assertIn('尚无研究假设', item['title'])
-        self.assertEqual(item['origin'], '你的自选列表')
-        self.assertEqual(item['nextAction']['type'], 'define_question')
+        item = next(row for row in cockpit['items'] if row['sourceType'] == 'research_suggestion')
+        self.assertIn('基础研究', item['title'])
+        self.assertEqual(item['origin'], '你的自选与主动研究建议')
+        self.assertEqual(item['nextAction']['type'], 'load_suggestion')
+        self.assertTrue(item['nextAction']['suggestionId'])
+        self.assertEqual(len([row for row in cockpit['items']
+                              if row['id'] == 'watch:601138']), 1)
         self.assertIn('不会推断未记录目标', cockpit['boundary'])
+
+    def test_dismissed_suggestion_does_not_reappear_as_duplicate_watch_task(self):
+        server.save_profile({'watchlist': [
+            {'code': '601138', 'name': '工业富联', 'note': '', 'added': 1},
+        ]})
+        suggestion = server.research_suggestions_status()['visible'][0]
+        server.mutate_research_suggestion('dismiss', {'suggestionId': suggestion['id']})
+        cockpit = server.research_cockpit_status()
+        self.assertFalse(any(row['id'] == 'watch:601138' for row in cockpit['items']))
+
+    def test_created_workflow_continues_as_next_research_handoff_stage(self):
+        server.save_profile({'watchlist': [
+            {'code': '601138', 'name': '工业富联', 'note': '', 'added': 1},
+        ]})
+        suggestion = server.research_suggestions_status()['visible'][0]
+        prepared = server.mutate_research_suggestion('prepare', {'suggestionId': suggestion['id']})
+        preview = server.preview_research_workflow(prepared['draft'])
+        confirmations = [row['id'] for row in preview['permissions']] + ['confirm:create']
+        created = server.mutate_research_workflow('confirm', {
+            'draft': prepared['draft'], 'previewId': preview['previewId'],
+            'confirmations': confirmations, 'suggestionId': suggestion['id'],
+        })['created']
+        cockpit = server.research_cockpit_status()
+        item = next(row for row in cockpit['items'] if row['sourceType'] == 'workflow')
+        self.assertEqual(item['sourceId'], created['id'])
+        self.assertEqual(item['handoff']['stage'], 'created')
+        self.assertEqual(item['nextAction']['label'], '检查后手动运行')
+        self.assertFalse(any(row['id'] == 'watch:601138' for row in cockpit['items']))
 
     def test_damaged_legacy_hypothesis_text_gets_a_readable_fallback(self):
         item = saved_hypothesis()

@@ -1,11 +1,11 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.29.0';
-import { state, bus, syncProfile } from '../store.js?v=1.29.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.29.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.29.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.29.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.29.0';
+import { api } from '../api.js?v=1.30.0';
+import { state, bus, syncProfile } from '../store.js?v=1.30.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.30.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.30.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.30.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.30.0';
 
 let built = false;
 let sparksAt = 0;
@@ -414,6 +414,32 @@ export function init(container) {
     const itemId = navigate?.dataset.cockpitId || ask?.dataset.cockpitAsk || control?.dataset.cockpitId;
     const item = (state.cockpit?.items || []).find(row => row.id === itemId);
     if (navigate) {
+      if (item?.nextAction?.type === 'load_suggestion' && item.nextAction.suggestionId) {
+        navigate.disabled = true;
+        try {
+          const prepared = await api.mutateResearchSuggestion('prepare', {
+            suggestionId: item.nextAction.suggestionId,
+          });
+          if (prepared.suggestions) {
+            state.researchSuggestions = prepared.suggestions;
+            bus.dispatchEvent(new CustomEvent('research-suggestions', { detail: prepared.suggestions }));
+          }
+          document.querySelector('.nav-item[data-page="strategy"]')?.click();
+          document.dispatchEvent(new CustomEvent('research-suggestion-prepare', { detail: prepared }));
+          await refreshResearchCockpit(container);
+          toast('研究草稿已载入；下一步仍由你检查并预览');
+        } catch (error) {
+          toast(error.message || '研究草稿载入失败', 'err');
+        } finally { navigate.disabled = false; }
+        return;
+      }
+      if (item?.sourceType === 'workflow' && item.nextAction?.workflowId) {
+        document.querySelector('.nav-item[data-page="strategy"]')?.click();
+        document.dispatchEvent(new CustomEvent('research-workflow-open', {
+          detail: { workflowId: item.nextAction.workflowId },
+        }));
+        return;
+      }
       if (item?.sourceType === 'attention' && item.sourceId) {
         e.stopPropagation();
         document.dispatchEvent(new CustomEvent('attention-open', { detail: { id: item.sourceId } }));
@@ -548,6 +574,8 @@ function renderResearchCockpit(container, snapshot) {
     ['待复盘', map.hypotheses?.reviewDue || 0, '到期后由你确认结论'],
     ['研究记忆', map.researchMemory?.visible || 0, map.researchMemory?.enabled === false ? '相似提醒已关闭' : '只含你确认的复盘'],
     ['待处理提醒', map.pendingReminders || 0, '按未完成主题计数'],
+    ['研究建议', map.researchSuggestions || 0, '只在你点击后载入草稿'],
+    ['研究流程', map.researchWorkflows || 0, '创建与运行分开确认'],
     ['数据健康', map.healthAttention || 0, '仅显示影响研究的问题'],
   ].map(([label, count, note]) => `<div><b class="num">${Number(count)}</b><span>${esc(label)}</span><small>${esc(note)}</small></div>`).join('');
   const list = root.querySelector('#ov-cockpit-focus');

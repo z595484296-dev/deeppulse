@@ -11,7 +11,7 @@ import hashlib
 import json
 
 
-MODEL_VERSION = 'research-suggestions-v1'
+MODEL_VERSION = 'research-suggestions-v2'
 BJC = timezone(timedelta(hours=8))
 MAX_ITEMS = 200
 TTL_DAYS = 7
@@ -80,6 +80,63 @@ def _candidate(kind, source_id, title, reason, gaps, draft, now, role):
     }
 
 
+def _journey(row, workflows):
+    """Describe only explicit progress; never infer that passive viewing is adoption."""
+    state = row.get('state')
+    workflow_id = _text(row.get('workflowId'), 180)
+    workflow = next((item for item in workflows
+                     if _text(item.get('id'), 180) == workflow_id), None)
+    runs = list((workflow or {}).get('runs') or [])
+    if state == 'accepted' and workflow:
+        if runs:
+            return {
+                'stage': 'ran', 'label': '已手动运行', 'nextLabel': '查看结果并复盘',
+                'workflowId': workflow_id, 'runCount': len(runs),
+                'lastChangedAt': _text((runs[-1] or {}).get('ranAt'), 80)
+                    or _text(row.get('acceptedAt'), 80),
+            }
+        return {
+            'stage': 'created', 'label': '已创建流程', 'nextLabel': '检查后手动运行',
+            'workflowId': workflow_id, 'runCount': 0,
+            'lastChangedAt': _text(row.get('acceptedAt'), 80),
+        }
+    if state == 'accepted':
+        return {
+            'stage': 'created', 'label': '已转为流程', 'nextLabel': '查看流程状态',
+            'workflowId': workflow_id, 'runCount': 0,
+            'lastChangedAt': _text(row.get('acceptedAt'), 80),
+        }
+    if state == 'dismissed':
+        return {
+            'stage': 'dismissed', 'label': '已忽略', 'nextLabel': '需要时恢复',
+            'workflowId': '', 'runCount': 0,
+            'lastChangedAt': _text(row.get('dismissedAt'), 80),
+        }
+    if state == 'expired':
+        return {
+            'stage': 'expired', 'label': '已失效', 'nextLabel': '等待新的明确依据',
+            'workflowId': '', 'runCount': 0,
+            'lastChangedAt': _text(row.get('expiresAt'), 80),
+        }
+    if row.get('previewedAt'):
+        return {
+            'stage': 'previewed', 'label': '已预览范围', 'nextLabel': '逐项确认后创建',
+            'workflowId': '', 'runCount': 0,
+            'lastChangedAt': _text(row.get('previewedAt'), 80),
+        }
+    if row.get('preparedAt'):
+        return {
+            'stage': 'drafted', 'label': '草稿已载入', 'nextLabel': '继续检查并预览',
+            'workflowId': '', 'runCount': 0,
+            'lastChangedAt': _text(row.get('preparedAt'), 80),
+        }
+    return {
+        'stage': 'suggested', 'label': '待你决定', 'nextLabel': '查看并载入草稿',
+        'workflowId': '', 'runCount': 0,
+        'lastChangedAt': _text(row.get('generatedAt'), 80),
+    }
+
+
 def generate_candidates(profile_data, hypothesis_items, now=None):
     """Build bounded candidates from watchlist and saved hypotheses only."""
     current = (now or datetime.now(BJC)).astimezone(BJC)
@@ -144,6 +201,8 @@ def generate_candidates(profile_data, hypothesis_items, now=None):
 def build_snapshot(profile_data, hypothesis_items, stored=None, now=None):
     current = (now or datetime.now(BJC)).astimezone(BJC)
     candidates = {row['id']: row for row in generate_candidates(profile_data, hypothesis_items, current)}
+    workflows = [row for row in (profile_data or {}).get('research_workflows') or []
+                 if isinstance(row, dict)]
     previous = {str(row.get('id')): deepcopy(row) for row in (stored or [])
                 if isinstance(row, dict) and row.get('id')}
     merged = []
@@ -151,12 +210,18 @@ def build_snapshot(profile_data, hypothesis_items, stored=None, now=None):
         old = previous.get(suggestion_id) or {}
         expires = _parse_time(old.get('expiresAt'))
         state = old.get('state') if old.get('state') in {'pending', 'dismissed', 'accepted'} else 'pending'
-        if expires and expires <= current:
+        reopened = bool(expires and expires <= current)
+        if reopened:
             state = 'pending'
         candidate['state'] = state
         candidate['dismissedAt'] = old.get('dismissedAt') if state == 'dismissed' else None
         candidate['acceptedAt'] = old.get('acceptedAt') if state == 'accepted' else None
         candidate['workflowId'] = old.get('workflowId') if state == 'accepted' else None
+        candidate['preparedAt'] = (old.get('preparedAt')
+                                   if not reopened and state in {'pending', 'dismissed', 'accepted'} else None)
+        candidate['previewedAt'] = (old.get('previewedAt')
+                                    if not reopened and state in {'pending', 'accepted'} else None)
+        candidate['journey'] = _journey(candidate, workflows)
         merged.append(candidate)
     for suggestion_id, old in previous.items():
         if suggestion_id in candidates:
@@ -164,6 +229,7 @@ def build_snapshot(profile_data, hypothesis_items, stored=None, now=None):
         row = deepcopy(old)
         if row.get('state') not in {'accepted', 'dismissed'}:
             row['state'] = 'expired'
+        row['journey'] = _journey(row, workflows)
         merged.append(row)
     rank = {'pending': 0, 'dismissed': 1, 'accepted': 2, 'expired': 3}
     merged.sort(key=lambda row: (rank.get(row.get('state'), 4), row.get('generatedAt') or ''), reverse=False)
@@ -203,6 +269,15 @@ def mutate_item(item, action, now=None, workflow_id=''):
         row['state'] = 'accepted'
         row['acceptedAt'] = _iso(current)
         row['workflowId'] = _text(workflow_id, 180)
+    elif action == 'prepare':
+        if row.get('state') not in {'pending', 'dismissed'}:
+            raise ValueError('这条研究建议当前不能载入')
+        row['preparedAt'] = _iso(current)
+    elif action == 'preview':
+        if row.get('state') != 'pending':
+            raise ValueError('这条研究建议当前不能记录预览')
+        row['preparedAt'] = row.get('preparedAt') or _iso(current)
+        row['previewedAt'] = _iso(current)
     else:
         raise ValueError('不支持的研究建议操作')
     return row

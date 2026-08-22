@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — ECharts 图表构建器（深色金融终端主题）
    涨=红 #f6465d  跌=绿 #2ebd85（A股惯例） */
 
-import { UP, DOWN, FLAT, ACCENT, PHASE_COLORS } from './util.js?v=1.29.0';
+import { UP, DOWN, FLAT, ACCENT, PHASE_COLORS } from './util.js?v=1.30.0';
 
 const registry = [];
 if (typeof window !== 'undefined') {
