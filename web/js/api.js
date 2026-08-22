@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.37.0';
+const MIN_VERSION = '1.38.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -63,6 +63,9 @@ async function probeBase(base, signal) {
       && capabilities.source_lineage === 1
       && capabilities.event_impact === 2
       && capabilities.event_background_service === 1
+      && capabilities.event_relevance_learning === 1
+      && capabilities.event_relevance_preview === 1
+      && capabilities.event_relevance_delivery_filter === 1
       && capabilities.research_hypotheses === 1
       && capabilities.hypothesis_due_reminders === 1
       && capabilities.hypothesis_evidence_candidates === 1
@@ -118,7 +121,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.37.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.38.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -194,6 +197,13 @@ export const api = {
   attentionTriage: () => request('/api/attention/triage', 5000),
   mutateAttentionTriage: (groupId, action, signal = null, surface = 'web', targetFingerprint = '') => post(
     '/api/attention/triage', { groupId, action, signal, surface, targetFingerprint }, 5000),
+  eventRelevance: () => request('/api/event-relevance', 5000),
+  previewEventRelevance: (groupId, signal, targetFingerprint = '') => post(
+    '/api/event-relevance/preview', { groupId, signal, targetFingerprint }, 5000),
+  confirmEventRelevance: (previewId, expectedRevision, surface = 'web') => post(
+    '/api/event-relevance/confirm', { previewId, expectedRevision, confirmed: true, surface }, 5000),
+  mutateEventRelevance: (controlId, action, expectedRevision = null) => post(
+    '/api/event-relevance/action', { controlId, action, expectedRevision }, 5000),
   saveAttentionFeedback: (itemId, signal, surface = 'web') => post('/api/profile/attention-feedback', { itemId, signal, surface }, 5000),
   resetAttentionLearning: (kind = null, clearHistory = false) => post('/api/attention/learning/reset', { kind, clearHistory }, 5000),
   deliveryStatus: () => request('/api/delivery/status', 5000),

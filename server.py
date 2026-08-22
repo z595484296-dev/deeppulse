@@ -49,9 +49,14 @@ except Exception:
 
 try:
     from attention_triage import (build_attention_triage,
+                                  attention_relevance_scope,
+                                  classify_attention_topic,
+                                  TOPIC_TAXONOMY_FINGERPRINT,
                                   MODEL_VERSION as ATTENTION_TRIAGE_MODEL_VERSION)
 except Exception:
     build_attention_triage = None
+    attention_relevance_scope = classify_attention_topic = None
+    TOPIC_TAXONOMY_FINGERPRINT = 'attention-topic-unavailable'
     ATTENTION_TRIAGE_MODEL_VERSION = 'attention-triage-unavailable'
 
 try:
@@ -163,7 +168,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.37.0'
+VERSION = '1.38.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -2181,6 +2186,30 @@ def update_attention_item(item, remove=False):
 
 
 ATTENTION_FEEDBACK_SIGNALS = {'helpful', 'done', 'too_frequent', 'irrelevant'}
+EVENT_RELEVANCE_SIGNALS = {'too_frequent', 'irrelevant'}
+EVENT_RELEVANCE_MODES = {'center_only', 'mute_indirect'}
+_event_relevance_preview_lock = threading.Lock()
+_event_relevance_previews = {}
+
+
+def _event_relevance_controls(data, include_inactive=False, now_ms=None):
+    now_ms = int(now_ms or time.time() * 1000)
+    preferences = data.get('attention_preferences') or {}
+    rows = preferences.get('relevanceControls') or []
+    result = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get('mode') not in EVENT_RELEVANCE_MODES:
+            continue
+        item = dict(row)
+        if item.get('status') == 'active' and int(item.get('expiresAt') or 0) <= now_ms:
+            item['effectiveStatus'] = 'expired'
+        elif item.get('taxonomyFingerprint') != TOPIC_TAXONOMY_FINGERPRINT:
+            item['effectiveStatus'] = 'paused_taxonomy_changed'
+        else:
+            item['effectiveStatus'] = item.get('status') or 'active'
+        if include_inactive or item['effectiveStatus'] == 'active':
+            result.append(item)
+    return result
 
 
 def _attention_learning_status_from_data(data):
@@ -2209,11 +2238,15 @@ def _attention_learning_status_from_data(data):
         }
     counts = {signal: sum(1 for row in feedback if row.get('signal') == signal)
               for signal in ATTENTION_FEEDBACK_SIGNALS}
+    relevance_controls = _event_relevance_controls(data, include_inactive=True)
+    active_relevance = [row for row in relevance_controls if row.get('effectiveStatus') == 'active']
     return {
         'feedbackCount': len(feedback),
         'counts': counts,
         'kinds': sorted(kinds.values(), key=lambda row: row['kind']),
         'activeControls': sum(1 for row in kinds.values() if row.get('control')),
+        'activeRelevanceControls': len(active_relevance),
+        'relevanceControls': relevance_controls,
         'basis': 'explicit-user-feedback-only',
         'automaticTradingActions': False,
     }
@@ -2221,6 +2254,164 @@ def _attention_learning_status_from_data(data):
 
 def attention_learning_status():
     return _attention_learning_status_from_data(load_profile().get('data') or {})
+
+
+def preview_event_relevance(group_id, signal, target_fingerprint=''):
+    """Create a zero-write proposal for one exact security and stable event topic."""
+    clean_id = str(group_id or '').strip()[:160]
+    clean_signal = str(signal or '').strip()
+    if not clean_id or clean_signal not in EVENT_RELEVANCE_SIGNALS:
+        raise ValueError('需要选择可降噪的事件提醒')
+    profile = load_profile()
+    snapshot = build_attention_triage((profile.get('data') or {}).get('attention_inbox') or [])
+    group = next((row for row in snapshot.get('groups') or []
+                  if str(row.get('id') or '') == clean_id), None)
+    if not group or group.get('kind') != 'event':
+        raise ValueError('事件提醒已变化，请重新打开')
+    server_fingerprint = str((group.get('target') or {}).get('fingerprint') or '')
+    if target_fingerprint and not hmac.compare_digest(str(target_fingerprint), server_fingerprint):
+        raise ValueError('事件提醒已变化，请重新预览')
+    scope = group.get('relevanceScope') or {}
+    if not scope.get('eligible'):
+        raise ValueError(scope.get('reason') or '当前事件无法建立精确降噪规则，只能记录本次反馈')
+    now_ms = int(time.time() * 1000)
+    days = 7 if clean_signal == 'too_frequent' else 30
+    mode = 'center_only' if clean_signal == 'too_frequent' else 'mute_indirect'
+    existing = next((row for row in _event_relevance_controls(profile.get('data') or {})
+                     if row.get('targetCode') == scope.get('targetCode')
+                     and row.get('topicId') == scope.get('topicId')), None)
+    preview_id = 'event-relevance-preview:' + secrets.token_urlsafe(18)
+    proposal = {
+        'previewId': preview_id,
+        'profileRevision': int(profile.get('revision') or 0),
+        'groupId': clean_id,
+        'targetFingerprint': server_fingerprint,
+        'signal': clean_signal,
+        'mode': mode,
+        'scope': scope,
+        'createdAt': now_ms,
+        'expiresAt': now_ms + days * 24 * 60 * 60 * 1000,
+        'previewExpiresAt': now_ms + 10 * 60 * 1000,
+        'durationDays': days,
+        'existingControl': existing,
+        'requiresConfirmation': True,
+        'effect': ('以后这只股票与该主题的间接事件只留在提醒中心，直接提及公司或代码的事件不受影响。'
+                   if mode == 'center_only' else
+                   '以后不再把这只股票与该主题的间接关联放入提醒中心；原始事件仍保留在事件雷达。'),
+        'boundary': '只影响未来提醒；不影响其他股票、其他主题、价格提醒、原始事件或研究证据。',
+    }
+    with _event_relevance_preview_lock:
+        cutoff = now_ms - 10 * 60 * 1000
+        for key in [key for key, row in _event_relevance_previews.items()
+                    if int(row.get('createdAt') or 0) < cutoff]:
+            _event_relevance_previews.pop(key, None)
+        if len(_event_relevance_previews) >= 100:
+            _event_relevance_previews.clear()
+        _event_relevance_previews[preview_id] = proposal
+    return proposal
+
+
+def confirm_event_relevance(preview_id, expected_revision=None, confirmed=False, surface='web'):
+    if confirmed is not True:
+        raise ValueError('必须由用户明确确认后才能改变未来提醒')
+    with _event_relevance_preview_lock:
+        preview = _event_relevance_previews.pop(str(preview_id or ''), None)
+    now_ms = int(time.time() * 1000)
+    if not preview or now_ms >= int(preview.get('previewExpiresAt') or 0):
+        raise ValueError('降噪预览已过期，请重新预览')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        expected = preview.get('profileRevision') if expected_revision is None else int(expected_revision)
+        if int(current.get('revision') or 0) != int(expected):
+            raise ValueError('用户档案已变化，请重新预览后确认')
+        snapshot = build_attention_triage(current['data'].get('attention_inbox') or [], now_ms)
+        group = next((row for row in snapshot.get('groups') or []
+                      if str(row.get('id') or '') == preview.get('groupId')), None)
+        fingerprint = str(((group or {}).get('target') or {}).get('fingerprint') or '')
+        if not group or not hmac.compare_digest(fingerprint, str(preview.get('targetFingerprint') or '')):
+            raise ValueError('事件提醒已变化，请重新预览')
+        scope = group.get('relevanceScope') or {}
+        expected_scope = preview.get('scope') or {}
+        if (not scope.get('eligible') or scope.get('targetCode') != expected_scope.get('targetCode')
+                or scope.get('topicId') != expected_scope.get('topicId')
+                or scope.get('taxonomyFingerprint') != TOPIC_TAXONOMY_FINGERPRINT):
+            raise ValueError('事件关联范围已变化，请重新预览')
+        preferences = json.loads(json.dumps(current['data'].get('attention_preferences') or {}, ensure_ascii=False))
+        rows = [row for row in (preferences.get('relevanceControls') or []) if isinstance(row, dict)]
+        for row in rows:
+            if (row.get('status') == 'active' and row.get('targetCode') == scope.get('targetCode')
+                    and row.get('topicId') == scope.get('topicId')):
+                row['status'] = 'superseded'
+                row['updatedAt'] = now_ms
+        control_id = 'event-relevance:' + secrets.token_hex(10)
+        control = {
+            'id': control_id, 'targetCode': scope.get('targetCode'),
+            'targetLabel': scope.get('targetLabel'), 'topicId': scope.get('topicId'),
+            'topicLabel': scope.get('topicLabel'), 'mode': preview.get('mode'),
+            'signal': preview.get('signal'), 'status': 'active',
+            'createdAt': now_ms, 'updatedAt': now_ms, 'expiresAt': int(preview.get('expiresAt') or 0),
+            'sourceGroupId': preview.get('groupId'), 'taxonomyFingerprint': TOPIC_TAXONOMY_FINGERPRINT,
+            'basis': 'explicit_user_feedback', 'surface': str(surface or 'web')[:40],
+        }
+        rows.append(control)
+        preferences['relevanceControls'] = rows[-40:]
+        current['data']['attention_preferences'] = preferences
+        member_ids = {str(value or '') for value in (group.get('memberIds') or [])}
+        for item in current['data'].get('attention_inbox') or []:
+            if isinstance(item, dict) and str(item.get('id') or '') in member_ids:
+                item['feedback'] = preview.get('signal')
+                item['feedbackAt'] = now_ms
+        feedback_id = str(preview.get('groupId') or '')
+        feedback = [row for row in (current['data'].get('attention_feedback') or [])
+                    if isinstance(row, dict) and str(row.get('itemId') or '') != feedback_id]
+        feedback.append({
+            'itemId': feedback_id, 'kind': 'event', 'signal': preview.get('signal'),
+            'at': now_ms, 'surface': str(surface or 'web')[:40],
+            'memberCount': len(member_ids), 'triageGroup': group.get('type') == 'cluster',
+            'relevanceControlId': control_id,
+            'scope': {'targetCode': scope.get('targetCode'), 'topicId': scope.get('topicId')},
+        })
+        current['data']['attention_feedback'] = feedback[-PROFILE_LIST_LIMITS['attention_feedback']:]
+        saved = _write_profile_unlocked(current)
+    return {
+        'profile': saved,
+        'control': control,
+        'triage': build_attention_triage(saved['data'].get('attention_inbox') or [], now_ms),
+        'learning': _attention_learning_status_from_data(saved['data']),
+        'receipt': {'status': 'applied', 'controlId': control_id, 'at': now_ms,
+                    'onlyFutureAttention': True, 'originalEvidencePreserved': True},
+    }
+
+
+def mutate_event_relevance_control(control_id, action, expected_revision=None):
+    clean_id = str(control_id or '').strip()[:160]
+    clean_action = str(action or '').strip()
+    if not clean_id or clean_action not in {'pause', 'resume', 'restore'}:
+        raise ValueError('不支持的相关性设置操作')
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        if expected_revision is not None and int(current.get('revision') or 0) != int(expected_revision):
+            raise ValueError('设置已变化，请刷新后重试')
+        preferences = json.loads(json.dumps(current['data'].get('attention_preferences') or {}, ensure_ascii=False))
+        rows = [row for row in (preferences.get('relevanceControls') or []) if isinstance(row, dict)]
+        target = next((row for row in rows if str(row.get('id') or '') == clean_id), None)
+        if not target:
+            raise ValueError('相关性设置不存在')
+        now_ms = int(time.time() * 1000)
+        if clean_action == 'resume':
+            if int(target.get('expiresAt') or 0) <= now_ms:
+                raise ValueError('设置已到期，请从新的事件反馈重新建立')
+            if target.get('taxonomyFingerprint') != TOPIC_TAXONOMY_FINGERPRINT:
+                raise ValueError('主题分类已变化，请从新的事件反馈重新确认')
+            target['status'] = 'active'
+        else:
+            target['status'] = 'paused' if clean_action == 'pause' else 'undone'
+        target['updatedAt'] = now_ms
+        preferences['relevanceControls'] = rows[-40:]
+        current['data']['attention_preferences'] = preferences
+        saved = _write_profile_unlocked(current)
+    return {'profile': saved, 'control': target,
+            'learning': _attention_learning_status_from_data(saved['data'])}
 
 
 def attention_triage_status():
@@ -2334,7 +2525,9 @@ def update_attention_triage(group_id, action, signal=None, surface='web', target
             preferences = json.loads(json.dumps(data.get('attention_preferences') or {}, ensure_ascii=False))
             controls = preferences.get('kindControls') or {}
             controls = controls if isinstance(controls, dict) else {}
-            if kind != 'price' and clean_signal in {'too_frequent', 'irrelevant'}:
+            # Event noise learning must go through the scoped preview/confirm flow.
+            # A one-off event feedback must never downgrade every event reminder.
+            if kind not in {'price', 'event'} and clean_signal in {'too_frequent', 'irrelevant'}:
                 controls[kind] = {
                     'delivery': 'digest' if clean_signal == 'too_frequent' else 'center_only',
                     'reason': clean_signal, 'updatedAt': timestamp,
@@ -2400,7 +2593,7 @@ def update_attention_feedback(item_id, signal, surface='web'):
         controls = preferences.get('kindControls') or {}
         controls = controls if isinstance(controls, dict) else {}
         # A user-created price condition stays high priority. Global pause/mode still remains available.
-        if kind != 'price' and clean_signal in {'too_frequent', 'irrelevant'}:
+        if kind not in {'price', 'event'} and clean_signal in {'too_frequent', 'irrelevant'}:
             controls[kind] = {
                 'delivery': 'digest' if clean_signal == 'too_frequent' else 'center_only',
                 'reason': clean_signal,
@@ -2426,6 +2619,15 @@ def reset_attention_learning(kind=None, clear_history=False):
         else:
             controls = {}
         preferences['kindControls'] = controls
+        if not clean_kind or clean_kind == 'event':
+            timestamp = int(time.time() * 1000)
+            relevance_rows = [row for row in (preferences.get('relevanceControls') or [])
+                              if isinstance(row, dict)]
+            for row in relevance_rows:
+                if row.get('status') == 'active':
+                    row['status'] = 'undone'
+                    row['updatedAt'] = timestamp
+            preferences['relevanceControls'] = relevance_rows[-40:]
         current['data']['attention_preferences'] = preferences
         if clear_history:
             current['data']['attention_feedback'] = []
@@ -4093,9 +4295,11 @@ def commit_event_attention(snapshot, limit=3):
         if watches or has_market_basis:
             candidates.append(row)
     published = 0
+    changed = False
     timestamp = int(time.time() * 1000)
     with _profile_lock:
         current = _read_profile_unlocked()
+        relevance_controls = _event_relevance_controls(current['data'], now_ms=timestamp)
         receipts = [row for row in (current['data'].get('event_receipts') or [])
                     if isinstance(row, dict)]
         receipt_ids = {str(row.get('id') or '') for row in receipts}
@@ -4109,17 +4313,65 @@ def commit_event_attention(snapshot, limit=3):
             item_id = 'event:' + str(event.get('id') or '')[:40]
             if item_id in receipt_ids:
                 continue
-            watches = row.get('watchlist') or []
+            original_watches = [item for item in (row.get('watchlist') or []) if isinstance(item, dict)]
+            topic_id, topic_label = (classify_attention_topic(
+                event.get('title'), row.get('sectors') or [])
+                if classify_attention_topic is not None else ('market', '市场动态'))
+            watches = []
+            relevance_decisions = []
+            center_only_codes = set()
+            for watch in original_watches:
+                code = str(watch.get('code') or '')
+                match_type = str(watch.get('match') or '')
+                control = next((item for item in relevance_controls
+                                if str(item.get('targetCode') or '') == code
+                                and item.get('topicId') == topic_id), None)
+                # Direct company/code mentions remain visible regardless of a past
+                # indirect-association preference.
+                if not control or match_type == 'direct':
+                    watches.append(watch)
+                    continue
+                decision = {
+                    'controlId': control.get('id'), 'targetCode': code,
+                    'topicId': topic_id, 'topicLabel': topic_label,
+                    'mode': control.get('mode'), 'matchType': match_type,
+                    'expiresAt': control.get('expiresAt'),
+                }
+                if control.get('mode') == 'mute_indirect':
+                    decision['effect'] = 'suppressed_from_attention'
+                    relevance_decisions.append(decision)
+                    continue
+                decision['effect'] = 'center_only'
+                relevance_decisions.append(decision)
+                center_only_codes.add(code)
+                watches.append(watch)
+            market_basis = bool(row.get('sectors')) and (event.get('importance') or 0) >= 3
+            if original_watches and not watches and not market_basis:
+                receipts.append({
+                    'id': item_id, 'eventId': event.get('id'), 'createdAt': timestamp,
+                    'dataDate': impact.get('dataDate'), 'status': 'suppressed',
+                    'reason': 'explicit_event_relevance_control',
+                    'relevanceDecisions': relevance_decisions,
+                    'originalEvidencePreserved': True,
+                })
+                receipt_ids.add(item_id)
+                changed = True
+                continue
             names = [str(item.get('name') or item.get('code') or '') for item in watches[:3]]
             sectors = [str(value) for value in (row.get('sectors') or [])[:3]]
             link = ('命中自选：%s' % '、'.join(names)) if names else ('敏感行业：%s' % '、'.join(sectors))
             quality = row.get('quality') or {}
             sources = event.get('sources') or []
             source_names = ' / '.join(str(source.get('name') or '') for source in sources[:2])
+            all_kept_center_only = bool(watches) and all(
+                str(watch.get('match') or '') != 'direct'
+                and str(watch.get('code') or '') in center_only_codes
+                for watch in watches)
             item = {
                 'id': item_id, 'fingerprint': item_id, 'kind': 'event',
                 'priority': 'high' if any(item.get('match') == 'direct' for item in watches) else 'medium',
-                'delivery': cfg['delivery'], 'title': str(event.get('title') or '新的市场事件')[:160],
+                'delivery': 'center_only' if all_kept_center_only else cfg['delivery'],
+                'title': str(event.get('title') or '新的市场事件')[:160],
                 'detail': ('%s；质量分 %s。规则只表示敏感性，相关性不等于因果。'
                            % (link or '尚未命中自选', quality.get('score', '--'))),
                 'reason': '你已授权事件影响雷达；来源 %s，观测时间 %s' % (
@@ -4136,6 +4388,13 @@ def commit_event_attention(snapshot, limit=3):
                         [len(rule.get('matchedKeywords') or []) for rule in (row.get('rules') or [])] or [0]),
                     'qualityScore': quality.get('score'), 'causal': False,
                 },
+                'relevanceDecision': {
+                    'topicId': topic_id, 'topicLabel': topic_label,
+                    'applied': relevance_decisions,
+                    'defaultDelivery': cfg['delivery'],
+                    'effectiveDelivery': 'center_only' if all_kept_center_only else cfg['delivery'],
+                    'originalEvidencePreserved': True,
+                },
             }
             inbox = [old for old in inbox if old.get('id') != item_id]
             inbox.append(item)
@@ -4143,7 +4402,8 @@ def commit_event_attention(snapshot, limit=3):
                              'createdAt': timestamp, 'dataDate': impact.get('dataDate')})
             receipt_ids.add(item_id)
             published += 1
-        if published:
+            changed = True
+        if changed:
             current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
             current['data']['event_receipts'] = receipts[-PROFILE_LIST_LIMITS['event_receipts']:]
             _write_profile_unlocked(current)
@@ -6966,7 +7226,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.37.0'
+    server_version = 'DeepPulse/1.38.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -7100,6 +7360,9 @@ class Handler(BaseHTTPRequestHandler):
                           'source_lineage': 1,
                           'event_impact': 2,
                           'event_background_service': 1,
+                          'event_relevance_learning': 1,
+                          'event_relevance_preview': 1,
+                          'event_relevance_delivery_filter': 1,
                           'research_hypotheses': 1,
                           'hypothesis_due_reminders': 1,
                           'hypothesis_evidence_candidates': 1,
@@ -7209,6 +7472,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': attention_learning_status()})
         elif path == '/api/attention/triage':
             self.send_json({'ok': True, 'data': attention_triage_status()})
+        elif path == '/api/event-relevance':
+            profile = load_profile()
+            self.send_json({'ok': True, 'data': {
+                'profileRevision': int(profile.get('revision') or 0),
+                'controls': _event_relevance_controls(profile.get('data') or {}, include_inactive=True),
+                'taxonomyFingerprint': TOPIC_TAXONOMY_FINGERPRINT,
+                'policy': {'explicitConfirmation': True, 'directMentionsAlwaysVisible': True,
+                           'originalEvidencePreserved': True, 'automaticTradingActions': False},
+            }})
         elif path == '/api/delivery/status':
             self.send_json({'ok': True, 'data': attention_delivery_status()})
         elif path == '/api/monitor/status':
@@ -7422,6 +7694,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'ok': True, 'data': update_attention_triage(
                     body.get('groupId'), body.get('action'), body.get('signal'),
                     body.get('surface') or 'web', body.get('targetFingerprint'))})
+            elif u.path == '/api/event-relevance/preview':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': preview_event_relevance(
+                    body.get('groupId'), body.get('signal'), body.get('targetFingerprint'))})
+            elif u.path == '/api/event-relevance/confirm':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': confirm_event_relevance(
+                    body.get('previewId'), body.get('expectedRevision'),
+                    body.get('confirmed') is True, body.get('surface') or 'web')})
+            elif u.path == '/api/event-relevance/action':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': mutate_event_relevance_control(
+                    body.get('controlId'), body.get('action'), body.get('expectedRevision'))})
             elif u.path == '/api/delivery/pull':
                 body = self.read_json_body()
                 self.send_json({'ok': True, 'data': claim_attention_delivery(

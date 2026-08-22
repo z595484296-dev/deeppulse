@@ -1,7 +1,7 @@
 /* 深脉 DeepPulse — 状态存储：会话状态 + 本机统一档案（各运行端共享） */
 
-import { api } from './api.js?v=1.37.0';
-import { normalizeAttentionPreferences } from './attention.js?v=1.37.0';
+import { api } from './api.js?v=1.38.0';
+import { normalizeAttentionPreferences } from './attention.js?v=1.38.0';
 
 export const state = {
   emotion: null,      // /api/emotion 数据
@@ -333,7 +333,10 @@ export function loadAttentionFeedback() {
 
 export function attentionLearningContext() {
   const feedback = loadAttentionFeedback();
-  const controls = loadAttentionPreferences().kindControls || {};
+  const preferences = loadAttentionPreferences();
+  const controls = preferences.kindControls || {};
+  const relevanceControls = Array.isArray(preferences.relevanceControls)
+    ? preferences.relevanceControls : [];
   const counts = { helpful: 0, done: 0, too_frequent: 0, irrelevant: 0 };
   feedback.forEach(row => { if (row && Object.prototype.hasOwnProperty.call(counts, row.signal)) counts[row.signal] += 1; });
   return {
@@ -341,6 +344,9 @@ export function attentionLearningContext() {
     counts,
     activeControls: Object.keys(controls).length,
     controls: Object.entries(controls).slice(0, 24).map(([kind, control]) => ({ kind, ...control })),
+    activeRelevanceControls: relevanceControls.filter(row => row?.status === 'active'
+      && Number(row.expiresAt || 0) > Date.now()).length,
+    relevanceControls: relevanceControls.slice(-40),
     basis: 'explicit-user-feedback-only',
   };
 }
@@ -362,9 +368,9 @@ export function feedbackAttentionItem(id, signal) {
     surface: typeof location !== 'undefined' && location.pathname.startsWith('/deeppulse/') ? 'harness' : 'local-web',
   }].slice(-500);
   const nextPreferences = { ...previousPreferences, kindControls: { ...(previousPreferences.kindControls || {}) } };
-  if (target.kind !== 'price' && signal === 'too_frequent') {
+  if (!['price', 'event'].includes(target.kind) && signal === 'too_frequent') {
     nextPreferences.kindControls[target.kind || 'system'] = { delivery: 'digest', reason: signal, updatedAt: timestamp };
-  } else if (target.kind !== 'price' && signal === 'irrelevant') {
+  } else if (!['price', 'event'].includes(target.kind) && signal === 'irrelevant') {
     nextPreferences.kindControls[target.kind || 'system'] = { delivery: 'center_only', reason: signal, updatedAt: timestamp };
   }
   localStorage.setItem(ATTENTION_INBOX_KEY, JSON.stringify(nextInbox));

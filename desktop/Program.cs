@@ -558,6 +558,18 @@ internal sealed class HarnessForm : Form
                 || eventBackgroundService.ValueKind != JsonValueKind.Number
                 || !eventBackgroundService.TryGetInt32(out var eventBackgroundServiceVersion)
                 || eventBackgroundServiceVersion != 1
+                || !capabilities.TryGetProperty("event_relevance_learning", out var eventRelevanceLearning)
+                || eventRelevanceLearning.ValueKind != JsonValueKind.Number
+                || !eventRelevanceLearning.TryGetInt32(out var eventRelevanceLearningVersion)
+                || eventRelevanceLearningVersion != 1
+                || !capabilities.TryGetProperty("event_relevance_preview", out var eventRelevancePreview)
+                || eventRelevancePreview.ValueKind != JsonValueKind.Number
+                || !eventRelevancePreview.TryGetInt32(out var eventRelevancePreviewVersion)
+                || eventRelevancePreviewVersion != 1
+                || !capabilities.TryGetProperty("event_relevance_delivery_filter", out var eventRelevanceDeliveryFilter)
+                || eventRelevanceDeliveryFilter.ValueKind != JsonValueKind.Number
+                || !eventRelevanceDeliveryFilter.TryGetInt32(out var eventRelevanceDeliveryFilterVersion)
+                || eventRelevanceDeliveryFilterVersion != 1
                 || !capabilities.TryGetProperty("research_hypotheses", out var researchHypotheses)
                 || researchHypotheses.ValueKind != JsonValueKind.Number
                 || !researchHypotheses.TryGetInt32(out var researchHypothesesVersion)
@@ -790,7 +802,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.37.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.38.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

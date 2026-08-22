@@ -17,7 +17,8 @@ def event(item_id, title, created, read_at=None):
         'reason': '来源 东方财富快讯，观测时间 2026-08-22T10:00:00+08:00',
         'page': 'overview', 'createdAt': created, 'expiresAt': created + 8 * 3600 * 1000,
         'readAt': read_at,
-        'eventImpact': {'watchlist': ['601138'], 'sectors': ['消费电子'], 'causal': False},
+        'eventImpact': {'watchlist': ['601138'], 'watchlistLabels': ['工业富联'],
+                        'matchTypes': ['sector'], 'sectors': ['消费电子'], 'causal': False},
     }
 
 
@@ -42,6 +43,9 @@ class AttentionTriageTests(unittest.TestCase):
         self.assertEqual(cluster['target']['entityId'], '601138')
         self.assertEqual(cluster['disposition']['status'], 'pending')
         self.assertTrue(cluster['target']['fingerprint'])
+        self.assertTrue(cluster['relevanceScope']['eligible'])
+        self.assertEqual(cluster['relevanceScope']['targetCode'], '601138')
+        self.assertEqual(cluster['relevanceScope']['topicId'], 'ai_compute')
         self.assertTrue(any(row['kind'] == 'price' and row['type'] == 'item'
                             for row in result['groups']))
 
@@ -106,7 +110,8 @@ class AttentionTriageTests(unittest.TestCase):
                 data = result['profile']['data']
                 self.assertEqual(len(data['attention_feedback']), 1)
                 self.assertEqual(data['attention_feedback'][0]['memberCount'], 2)
-                self.assertEqual(data['attention_preferences']['kindControls']['event']['delivery'], 'digest')
+                self.assertEqual(data['attention_preferences']['kindControls'], {})
+                self.assertEqual(data['attention_feedback'][0]['signal'], 'too_frequent')
             finally:
                 server.PROFILE_FILE = old_profile
 

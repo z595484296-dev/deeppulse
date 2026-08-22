@@ -237,6 +237,23 @@ a { color: var(--accent); text-decoration: none; }
 .attention-learning-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .attention-learning-actions .danger { color: var(--down); }
 .attention-learning button:disabled { opacity: .45; cursor: not-allowed; }
+.attention-noise-draft { margin-top: 9px; padding: 10px; border: 1px solid rgba(79, 140, 255, .42); border-radius: 10px; background: rgba(79, 140, 255, .08); }
+.attention-noise-draft > b { display: block; color: var(--text); font-size: 12px; outline: none; }
+.attention-noise-draft > p { margin: 5px 0 8px; color: var(--text-2); }
+.attention-noise-impact { display: grid; gap: 3px; padding: 8px; border-radius: 8px; background: var(--panel-3); }
+.attention-noise-impact span { color: var(--text-2); font-size: 11px; line-height: 1.5; }
+.attention-noise-impact small, .attention-noise-warning { color: var(--text-3); font-size: 10px; line-height: 1.45; }
+.attention-noise-warning { display: block; margin-top: 7px; color: var(--warn); }
+.attention-noise-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.attention-noise-receipt { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 8px; border-radius: 8px; background: rgba(52, 211, 153, .08); border: 1px solid rgba(52, 211, 153, .25); }
+.attention-noise-receipt > span { display: grid; gap: 2px; color: var(--text-2); font-size: 10px; line-height: 1.45; }
+.attention-noise-receipt b { color: var(--ok); }
+.attention-learning-row.precise { border: 1px solid rgba(79, 140, 255, .18); }
+@media (max-width: 640px) {
+  .attention-noise-actions { display: grid; grid-template-columns: 1fr; }
+  .attention-noise-actions .btn, .attention-noise-receipt .btn { min-height: 44px; }
+  .attention-noise-receipt { align-items: stretch; flex-direction: column; }
+}
 .attention-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 22px; text-align: center; color: var(--text-3); }
 .attention-empty b { color: var(--text-2); }
 body.light .attention-panel { background: rgba(249, 251, 255, .98); }

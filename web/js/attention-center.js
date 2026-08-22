@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.37.0';
-import { api } from './api.js?v=1.37.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.38.0';
+import { api } from './api.js?v=1.38.0';
 import {
   attentionLearningContext, bus, loadAttentionInbox, loadAttentionPreferences,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences, syncProfile,
-} from './store.js?v=1.37.0';
-import { esc, toast } from './util.js?v=1.37.0';
+} from './store.js?v=1.38.0';
+import { esc, toast } from './util.js?v=1.38.0';
 
 let navigate = async () => false;
 let digestTimer = null;
@@ -15,6 +15,7 @@ let knownIds = new Set();
 let deliverySnapshot = { channels: {}, recent: [] };
 let triageSnapshot = null;
 let triageRequest = null;
+const relevanceDrafts = new Map();
 const $ = selector => document.querySelector(selector);
 const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', event: '事件影响', hypothesis_review: '假设复盘', research_watch: '研究值守', research_workflow_review: '研究流程复盘', system: '系统更新' };
 const FEEDBACK_LABELS = { helpful: '有用', too_frequent: '少一点', irrelevant: '不相关' };
@@ -95,6 +96,46 @@ function dispositionActions(group, status) {
     <button class="btn sm ghost" data-attention-disposition="resolve">标记已处理</button>`;
 }
 
+function activeRelevanceControl(group) {
+  const scope = group?.relevanceScope;
+  if (!scope?.targetCode || !scope?.topicId) return null;
+  return (attentionLearningContext().relevanceControls || []).find(row => row?.status === 'active'
+    && Number(row.expiresAt || 0) > Date.now()
+    && row.targetCode === scope.targetCode && row.topicId === scope.topicId) || null;
+}
+
+function relevanceReceipt(group) {
+  const control = activeRelevanceControl(group);
+  if (!control) return '';
+  const effect = control.mode === 'mute_indirect' ? '间接关联不再进入提醒中心' : '间接关联只留在提醒中心';
+  return `<div class="attention-noise-receipt" aria-live="polite">
+    <span><b>精准降噪已生效</b>${esc(group.relevanceScope.targetLabel)} · ${esc(group.relevanceScope.topicLabel)}：${effect}，${timeLabel(control.expiresAt)} 自动恢复。直接提及公司或代码的事件仍会保留。</span>
+    <button class="btn sm ghost" data-relevance-restore="${esc(control.id)}">撤销</button>
+  </div>`;
+}
+
+function relevanceDraft(group) {
+  const preview = relevanceDrafts.get(String(group.id));
+  if (!preview) return '';
+  const scope = preview.scope || {};
+  const effect = preview.mode === 'mute_indirect'
+    ? '未来不再把间接关联放入提醒中心；事件仍保留在事件雷达。'
+    : '未来间接关联只留在提醒中心，不再主动推送到 Windows 或墨水屏。';
+  return `<section class="attention-noise-draft" aria-labelledby="noise-title-${esc(group.id)}">
+    <b id="noise-title-${esc(group.id)}">确认精准降噪</b>
+    <p>仅调整 <strong>${esc(scope.targetLabel)} · ${esc(scope.topicLabel)}</strong></p>
+    <div class="attention-noise-impact"><b>确认后</b><span>${effect}</span>
+      <small>持续 ${Number(preview.durationDays) || 30} 天；不影响其他股票、其他主题、价格提醒和原始证据。直接提及公司或代码的事件不会被隐藏。</small>
+    </div>
+    ${preview.existingControl ? '<small class="attention-noise-warning">已有相同范围的设置，确认后将以本次选择替换。</small>' : ''}
+    <div class="attention-noise-actions">
+      <button class="btn sm primary" data-relevance-confirm="${esc(preview.previewId)}">确认降噪</button>
+      <button class="btn sm ghost" data-relevance-once>只记录这一次</button>
+      <button class="btn sm ghost" data-relevance-cancel>取消</button>
+    </div>
+  </section>`;
+}
+
 async function refreshTriage() {
   if (triageRequest) return triageRequest;
   triageRequest = api.attentionTriage().then(snapshot => {
@@ -129,6 +170,7 @@ function render() {
       <small>为什么提醒我：${esc(group.reason)}</small>
       ${group.type === 'item' ? deliveryTrace(group.id) : ''}
       ${clusterEvidence(group)}
+      ${relevanceReceipt(group)}
       <div class="attention-item-actions">
         ${target ? `<button class="btn sm primary" data-attention-open>${openLabel(group)}</button>` : '<button class="btn sm" disabled>正在生成落点…</button>'}
         ${dispositionActions(group, status)}
@@ -138,6 +180,7 @@ function render() {
           <button class="attention-feedback-btn ${group.feedback === signal ? 'selected' : ''}" data-attention-feedback="${signal}" aria-pressed="${group.feedback === signal}">${FEEDBACK_LABELS[signal]}</button>
         `).join('')}
       </div>
+      ${relevanceDraft(group)}
     </article>`;
   }).join('') : '<div class="attention-empty"><b>现在很安静</b><span>价格到达、阶段变化和重要异动会统一出现在这里。</span></div>';
   renderLearning();
@@ -146,15 +189,24 @@ function render() {
 function renderLearning() {
   const learning = attentionLearningContext();
   const controls = learning.controls || [];
+  const relevanceControls = (learning.relevanceControls || []).filter(row => row?.status === 'active'
+    && Number(row.expiresAt || 0) > Date.now());
   $('#attention-learning-summary').textContent = learning.feedbackCount
-    ? `已根据 ${learning.feedbackCount} 次明确反馈调整；当前 ${learning.activeControls} 类提醒已降噪。`
+    ? `已根据 ${learning.feedbackCount} 次明确反馈调整；当前 ${learning.activeControls + relevanceControls.length} 项降噪设置生效。`
     : '还没有学习记录。你的明确反馈才会改变提醒方式。';
-  $('#attention-learning-controls').innerHTML = controls.length ? controls.map(control => `
+  const kindRows = controls.map(control => `
     <div class="attention-learning-row">
       <span><b>${esc(KIND_LABELS[control.kind] || control.kind)}</b><small>${control.delivery === 'center_only' ? '仅收入中心' : '合并为摘要'}</small></span>
       <button class="btn sm ghost" data-learning-reset="${esc(control.kind)}">恢复</button>
-    </div>`).join('') : '<span class="attention-learning-empty">没有生效中的分类调整</span>';
-  $('#attention-learning-reset').disabled = controls.length === 0;
+    </div>`).join('');
+  const relevanceRows = relevanceControls.map(control => `<div class="attention-learning-row precise">
+    <span><b>${esc(control.targetLabel || control.targetCode)} · ${esc(control.topicLabel || control.topicId)}</b>
+      <small>${control.mode === 'mute_indirect' ? '间接关联不提醒' : '间接关联只收入中心'} · ${timeLabel(control.expiresAt)} 自动恢复</small></span>
+    <button class="btn sm ghost" data-relevance-restore="${esc(control.id)}">恢复</button>
+  </div>`).join('');
+  $('#attention-learning-controls').innerHTML = kindRows + relevanceRows
+    || '<span class="attention-learning-empty">没有生效中的降噪调整</span>';
+  $('#attention-learning-reset').disabled = controls.length === 0 && relevanceControls.length === 0;
   $('#attention-learning-clear').disabled = learning.feedbackCount === 0;
 }
 
@@ -274,6 +326,49 @@ export function initAttentionCenter(options = {}) {
     if (!card) return;
     const group = (triageSnapshot?.groups || rawFallbackGroups())
       .find(row => String(row.id) === String(card.dataset.id));
+    const restoreControl = event.target.closest('[data-relevance-restore]')?.dataset.relevanceRestore;
+    if (restoreControl) {
+      const button = event.target.closest('[data-relevance-restore]');
+      button.disabled = true;
+      api.mutateEventRelevance(restoreControl, 'restore').then(async () => {
+        await syncProfile();
+        render();
+        toast('这组事件已恢复默认提醒方式；历史反馈和原始事件仍保留。', 'ok');
+      }).catch(error => { button.disabled = false; toast(`恢复失败：${error.message}`, 'err'); });
+      return;
+    }
+    if (event.target.closest('[data-relevance-cancel]')) {
+      relevanceDrafts.delete(String(card.dataset.id));
+      render();
+      return;
+    }
+    if (event.target.closest('[data-relevance-once]')) {
+      const preview = relevanceDrafts.get(String(card.dataset.id));
+      if (!preview) return;
+      api.mutateAttentionTriage(card.dataset.id, 'feedback', preview.signal, 'web').then(async result => {
+        relevanceDrafts.delete(String(card.dataset.id));
+        triageSnapshot = result.triage;
+        await syncProfile();
+        render();
+        toast('已记录本次反馈，没有改变未来提醒。', 'ok');
+      }).catch(error => toast(`反馈未保存：${error.message}`, 'err'));
+      return;
+    }
+    const confirmPreview = event.target.closest('[data-relevance-confirm]')?.dataset.relevanceConfirm;
+    if (confirmPreview) {
+      const preview = relevanceDrafts.get(String(card.dataset.id));
+      const button = event.target.closest('[data-relevance-confirm]');
+      if (!preview || preview.previewId !== confirmPreview) return;
+      button.disabled = true;
+      api.confirmEventRelevance(preview.previewId, preview.profileRevision, 'web').then(async result => {
+        relevanceDrafts.delete(String(card.dataset.id));
+        triageSnapshot = result.triage;
+        await syncProfile();
+        render();
+        toast(`已只调整 ${preview.scope.targetLabel} · ${preview.scope.topicLabel}，可随时撤销。`, 'ok', 5500);
+      }).catch(error => { button.disabled = false; toast(`降噪未生效：${error.message}`, 'err', 6000); });
+      return;
+    }
     const retryChannel = event.target.closest('[data-delivery-retry]')?.dataset.deliveryRetry;
     if (retryChannel) {
       const button = event.target.closest('[data-delivery-retry]');
@@ -315,6 +410,20 @@ export function initAttentionCenter(options = {}) {
     }
     const signal = event.target.closest('[data-attention-feedback]')?.dataset.attentionFeedback;
     if (signal) {
+      if (group?.kind === 'event' && ['too_frequent', 'irrelevant'].includes(signal)) {
+        const button = event.target.closest('[data-attention-feedback]');
+        button.disabled = true;
+        api.previewEventRelevance(card.dataset.id, signal, group?.target?.fingerprint || '').then(preview => {
+          relevanceDrafts.set(String(card.dataset.id), preview);
+          render();
+          const title = card.querySelector('.attention-noise-draft > b');
+          if (title) title.setAttribute('tabindex', '-1'), title.focus();
+        }).catch(error => {
+          button.disabled = false;
+          toast(`${error.message}；未修改未来提醒。`, 'err', 6500);
+        });
+        return;
+      }
       api.mutateAttentionTriage(card.dataset.id, 'feedback', signal, 'web').then(async result => {
         triageSnapshot = result.triage;
         await syncProfile();
@@ -360,6 +469,17 @@ export function initAttentionCenter(options = {}) {
     saveAttentionPreferences({ ...prefs, pausedUntil: prefs.pausedUntil && Date.now() < prefs.pausedUntil ? null : nextMorning() });
   });
   $('#attention-learning-controls').addEventListener('click', event => {
+    const relevanceId = event.target.closest('[data-relevance-restore]')?.dataset.relevanceRestore;
+    if (relevanceId) {
+      const button = event.target.closest('[data-relevance-restore]');
+      button.disabled = true;
+      api.mutateEventRelevance(relevanceId, 'restore').then(async () => {
+        await syncProfile();
+        render();
+        toast('精准降噪已撤销，未来提醒恢复默认方式。', 'ok');
+      }).catch(error => { button.disabled = false; toast(`恢复失败：${error.message}`, 'err'); });
+      return;
+    }
     const kind = event.target.closest('[data-learning-reset]')?.dataset.learningReset;
     if (!kind) return;
     resetAttentionLearning(kind).then(() => toast(`${KIND_LABELS[kind] || kind}已恢复默认提醒方式`, 'ok'))

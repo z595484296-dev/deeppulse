@@ -138,18 +138,28 @@ TOPICS = (
     ('company', '公司动态', ('公告', '业绩', '订单', '中标', '回购', '增持', '减持', '分红')),
 )
 
+TOPIC_TAXONOMY_FINGERPRINT = hashlib.sha256(
+    json.dumps(TOPICS, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+).hexdigest()[:20]
+
 
 def _text(value):
     return str(value or '').strip()
 
 
-def _topic(item):
-    title = _text(item.get('title')).lower()
+def classify_attention_topic(title, sectors=None):
+    """Return a stable, server-owned topic identity for an event."""
+    title = _text(title).lower()
     for topic_id, label, words in TOPICS:
         if any(word in title for word in words):
             return topic_id, label
-    sectors = ' '.join(_text(value) for value in ((item.get('eventImpact') or {}).get('sectors') or []))
-    return ('industry', sectors[:24]) if sectors else ('market', '市场动态')
+    sector_text = ' '.join(_text(value) for value in (sectors or []))
+    return ('industry', sector_text[:24]) if sector_text else ('market', '市场动态')
+
+
+def _topic(item):
+    impact = item.get('eventImpact') if isinstance(item.get('eventImpact'), dict) else {}
+    return classify_attention_topic(item.get('title'), impact.get('sectors') or [])
 
 
 def _target(item):
@@ -160,6 +170,31 @@ def _target(item):
     key = ','.join(codes) or ','.join(labels) or 'market'
     label = '、'.join(labels[:2]) or ('自选标的 ' + '、'.join(codes[:2]) if codes else '全市场')
     return key[:120], label[:48]
+
+
+def attention_relevance_scope(item):
+    """Describe the only scope that may be persisted for event relevance learning.
+
+    The identity is derived from structured event impact data, never from a model or
+    arbitrary client text.  Fallback market/industry buckets remain review-only.
+    """
+    impact = item.get('eventImpact') if isinstance(item.get('eventImpact'), dict) else {}
+    codes = sorted({_text(value) for value in (impact.get('watchlist') or []) if _text(value)})
+    labels = [_text(value) for value in (impact.get('watchlistLabels') or []) if _text(value)]
+    topic_id, topic_label = _topic(item)
+    match_types = sorted({_text(value) for value in (impact.get('matchTypes') or []) if _text(value)})
+    exact = len(codes) == 1 and topic_id not in {'market', 'industry'}
+    return {
+        'eligible': exact,
+        'targetCode': codes[0] if len(codes) == 1 else None,
+        'targetLabel': labels[0] if len(codes) == 1 and labels else (codes[0] if len(codes) == 1 else None),
+        'topicId': topic_id,
+        'topicLabel': topic_label,
+        'matchTypes': match_types,
+        'directPresent': 'direct' in match_types,
+        'taxonomyFingerprint': TOPIC_TAXONOMY_FINGERPRINT,
+        'reason': None if exact else '需要唯一关注标的和稳定事件主题才能建立长期降噪规则',
+    }
 
 
 def _day(timestamp):
@@ -214,6 +249,7 @@ def build_attention_triage(items=None, now_ms=None):
         group_id = _cluster_id(key)
         target = _typed_target(latest, group_id, ','.join(_text(row.get('id')) for row in members))
         disposition = _group_disposition(members)
+        relevance_scope = attention_relevance_scope(latest)
         groups.append({
             'id': group_id, 'type': 'cluster', 'kind': 'event',
             'memberIds': [_text(row.get('id')) for row in members],
@@ -228,12 +264,14 @@ def build_attention_triage(items=None, now_ms=None):
             'readAt': None if active_unread else max(int(row.get('readAt') or 0) for row in members),
             'feedback': latest.get('feedback'), 'sources': sources[:4], 'items': members,
             'target': target, 'disposition': disposition,
+            'relevanceScope': relevance_scope,
             'traceability': {'rawCount': len(members), 'evidencePreserved': True, 'causalClaim': False},
         })
 
     for item in singles:
         disposition = _disposition(item)
         target = _typed_target(item)
+        relevance_scope = attention_relevance_scope(item) if item.get('kind') == 'event' else None
         groups.append({
             'id': _text(item.get('id')), 'type': 'item', 'kind': item.get('kind') or 'system',
             'memberIds': [_text(item.get('id'))], 'count': 1,
@@ -244,6 +282,7 @@ def build_attention_triage(items=None, now_ms=None):
             'expiresAt': int(item.get('expiresAt') or 0), 'readAt': item.get('readAt'),
             'feedback': item.get('feedback'), 'items': [item],
             'target': target, 'disposition': disposition,
+            'relevanceScope': relevance_scope,
             'traceability': {'rawCount': 1, 'evidencePreserved': True, 'causalClaim': False},
         })
     groups.sort(key=lambda row: (bool(row.get('unreadCount')), int(row.get('createdAt') or 0)), reverse=True)

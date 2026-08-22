@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.37.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.38.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 事件相关性精准学习（v1.38）
+
+- 事件提醒的“少一点 / 不相关”不再立即修改全部事件；系统先展示由服务端解析的“关注标的 × 稳定主题”范围、效果和期限，用户确认前零写入。
+- “少一点”只让对应范围的间接关联留在提醒中心；“不相关”只移除对应范围的间接关联。其他股票、其他主题、价格提醒和直接提及公司或代码的事件完全不受影响。
+- 原始事件、来源、匹配证据与审计回执始终保留；无法识别唯一标的或稳定主题时禁止建立长期规则，只能记录本次反馈。
+- 精准设置默认 7/30 天自动恢复，并可在原提醒卡或学习区一键撤销。DeepSeek 只能解释预览，不能创建规则、扩大学习范围或执行交易。
 
 ### 可组合观察规则（v1.37）
 
