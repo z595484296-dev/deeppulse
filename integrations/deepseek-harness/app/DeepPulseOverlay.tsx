@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.32.0'
+const MIN_BACKEND_VERSION = '1.33.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -112,6 +112,7 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['research_run_comparison'] === 1
       && capabilities['research_workflow_lineage'] === 1
       && capabilities['research_evidence_timeline'] === 1
+      && capabilities['research_watch'] === 1
       && capabilities['research_suggestion_inbox'] === 1
       && capabilities['research_suggestion_preview'] === 1
       && capabilities['research_handoff'] === 1
@@ -248,6 +249,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
   const akshareSummary = recordOf(akshareResearch['summary'])
   const researchWorkflows = recordOf(raw['researchWorkflows'])
   const researchWorkflowSummary = recordOf(researchWorkflows['summary'])
+  const researchWatchSummary = recordOf(researchWorkflows['watchSummary'])
   const researchWorkflowPermissions = recordOf(researchWorkflows['permissions'])
   const researchSuggestions = recordOf(raw['researchSuggestions'])
   const researchSuggestionSummary = recordOf(researchSuggestions['summary'])
@@ -498,6 +500,8 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     const latest = recordOf(item['latestRun'] ?? runs[runs.length - 1])
     const latestSummary = recordOf(latest['summary'])
     const templateSpec = recordOf(item['templateSpec'])
+    const watch = recordOf(item['watch'])
+    const watchChange = recordOf(watch['lastChange'])
     return {
       id: short(item['id'], 180), modelVersion: short(item['modelVersion'], 60), title: short(item['title'], 240),
       kind: short(item['kind'], 30), status: short(item['status'], 30), effectiveStatus: short(item['effectiveStatus'], 30),
@@ -506,6 +510,26 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       outputs: uniqueStrings(item['outputs'], 3, 60), reviewDays: finite(item['reviewDays']),
       reminderEnabled: item['reminderEnabled'] === true, dueAt: short(item['dueAt'], 80),
       lastRunAt: short(item['lastRunAt'], 80), calendarBasis: short(item['calendarBasis'], 160),
+      watch: Object.keys(watch).length ? {
+        modelVersion: short(watch['modelVersion'], 60), enabled: watch['enabled'] === true,
+        status: short(watch['effectiveStatus'] ?? watch['status'], 40),
+        sources: uniqueStrings(watch['sources'], 5, 60), frequency: short(watch['frequency'], 20),
+        delivery: short(watch['delivery'], 20), startedAt: short(watch['startedAt'], 80),
+        expiresAt: short(watch['expiresAt'], 80), nextCheckAt: short(watch['nextCheckAt'], 80),
+        lastCheckedAt: short(watch['lastCheckedAt'], 80), lastChangeAt: short(watch['lastChangeAt'], 80),
+        pausedSources: uniqueStrings(watch['pausedSources'], 5, 60),
+        lastChange: Object.keys(watchChange).length ? {
+          modelVersion: short(watchChange['modelVersion'], 60), changed: watchChange['changed'] === true,
+          changes: Array.isArray(watchChange['changes']) ? watchChange['changes'].slice(0, 12).map(value => {
+            const change = recordOf(value)
+            return { sourceId: short(change['sourceId'], 60), kind: short(change['kind'], 40),
+              previous: short(change['previous'], 40), current: short(change['current'], 40),
+              previousCount: finite(change['previousCount']), currentCount: finite(change['currentCount']) }
+          }) : [], automaticConclusion: false, automaticTradingAction: false,
+          boundary: short(watchChange['boundary'], 400),
+        } : null,
+        boundary: short(watch['boundary'], 400),
+      } : null,
       templateSpec: Object.keys(templateSpec).length ? {
         modelVersion: short(templateSpec['modelVersion'], 60),
         parameters: Array.isArray(templateSpec['parameters']) ? templateSpec['parameters'].slice(0, 4).map(value => {
@@ -1092,6 +1116,10 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           reviewDue: finite(researchWorkflowSummary['review_due']), paused: finite(researchWorkflowSummary['paused']),
           template: finite(researchWorkflowSummary['template']), completed: finite(researchWorkflowSummary['completed']),
         },
+        watchSummary: {
+          active: finite(researchWatchSummary['active']), paused: finite(researchWatchSummary['paused']),
+          expired: finite(researchWatchSummary['expired']), attention: finite(researchWatchSummary['attention']),
+        },
         permissions: {
           previewRequired: researchWorkflowPermissions['previewRequired'] === true,
           explicitConfirmationRequired: researchWorkflowPermissions['explicitConfirmationRequired'] === true,
@@ -1286,7 +1314,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
     '15. akshareResearch 是用户按数据包选择并按需生成的研究增强背景；只能使用 selection 中已授权的数据包。必须检查每项 asOf、status、source.interface、source.independentGroup 和 interfaceHealth；陈旧、缺失或接口失败的数据不得描述为当前事实，最终上游相同的指标不能算独立互证。这些指标不参与情绪温度、仓位区间、提醒或交易触发。',
-    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论。templateSpec 只允许复用方法，新标的必须重新预览，不继承旧运行或结论；runComparison 只比较两次收集的数量、状态和陈旧度，不代表研究假设增强或减弱。lineage 只记录研究方法版本及来源，evidenceTimeline 只记录观察时点、数据时点和上游；历史记录不可被新版本覆盖，二者都不能被解释为方向结论。',
+    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和值守状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论。templateSpec 只允许复用方法，新标的必须重新预览，不继承旧运行或结论；runComparison 只比较两次收集的数量、状态和陈旧度，不代表研究假设增强或减弱。lineage 只记录研究方法版本及来源，evidenceTimeline 只记录观察时点、数据时点和上游；watch 只表示用户逐流程授权后的值守状态和已保存事实变化，你不得开启、暂停、恢复或扩展值守，也不得把变化解释为利好利空。',
     '17. researchSuggestions 只由用户自选、已保存假设和明确数据缺口生成，是可编辑研究草稿建议，不是目标推断、机会排名或行情预测。journey 只记录用户明确触发的载入、预览、创建与运行阶段，不代表模型采纳或结论成立。你可以解释依据、阶段和缺口，但不得替用户载入、忽略、恢复、授权、创建或运行流程；dismissed、accepted、expired 项不得当作当前待办。',
   ].join('\n')
 }

@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.32.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.32.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.32.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.32.0';
+import { api } from '../api.js?v=1.33.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.33.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.33.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.33.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -18,6 +18,8 @@ let researchSuggestionData = null;
 let activeResearchSuggestion = null;
 let suggestionDraftBackup = null;
 let pendingWorkflowFocus = '';
+let researchWatchPreview = null;
+let researchWatchTarget = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -147,6 +149,21 @@ export function init(container) {
         <div class="workflow-list-head"><b>已创建流程</b><span>执行只读取已冻结的来源；暂停和复制不会丢失历史</span></div>
         <div id="st-workflow-list"><div class="empty">正在读取研究流程…</div></div>
       </section>
+
+      <dialog class="research-watch-dialog" id="st-watch-dialog" aria-labelledby="st-watch-dialog-title">
+        <div class="research-watch-dialog-head"><div><h2 id="st-watch-dialog-title">开启研究值守</h2><p>仅重复读取这条流程已经确认的来源；无实质变化不提醒。</p></div><button type="button" class="icon-btn" data-watch-close aria-label="关闭研究值守设置">×</button></div>
+        <div class="research-watch-dialog-body">
+          <div class="research-watch-scope" id="st-watch-scope"></div>
+          <div class="research-watch-settings">
+            <label>检查频率<select id="st-watch-frequency"><option value="close">每个交易日收盘后</option><option value="daily">每个工作日一次</option></select></label>
+            <label>自动结束日期<input type="date" id="st-watch-expires"></label>
+            <label>变化提醒<select id="st-watch-delivery"><option value="center_only">只进入提醒中心</option><option value="digest">摘要并按已授权终端送达</option></select></label>
+          </div>
+          <p class="research-watch-boundary">值守默认关闭，按流程单独授权；不会新增来源、自动调用 DeepSeek、判断利好利空、修改研究结论或连接交易账户。</p>
+          <div class="research-watch-preview" id="st-watch-preview"><div class="empty compact">先预览持续访问范围和到期时间，再逐项确认。</div></div>
+        </div>
+        <div class="research-watch-dialog-actions"><button type="button" class="btn ghost" data-watch-close>取消</button><button type="button" class="btn primary" id="st-watch-preview-btn">预览值守权限</button></div>
+      </dialog>
 
       <section class="card span-12 hypothesis-lab" aria-labelledby="st-hyp-title">
         <div class="card-head">
@@ -561,6 +578,15 @@ export function init(container) {
     const workflow = (researchWorkflowData?.items || []).find(row => row.id === button.dataset.wfId);
     if (!workflow) return;
     const action = button.dataset.wfAction;
+    if (action === 'watch-setup') {
+      openResearchWatchDialog(container, workflow);
+      return;
+    }
+    if (action === 'watch-change') {
+      const comparison = button.closest('.workflow-item')?.querySelector('.workflow-comparison');
+      if (comparison) comparison.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     if (action === 'ask') {
       document.dispatchEvent(new CustomEvent('ask-research-workflow', { detail: { workflow } }));
       return;
@@ -586,19 +612,71 @@ export function init(container) {
     }
     button.disabled = true;
     const oldText = button.textContent;
-    if (action === 'run') button.textContent = '正在读取来源…';
+    if (['run', 'watch_check'].includes(action)) button.textContent = '正在读取来源…';
     try {
       const result = await api.mutateResearchWorkflow(action, { workflowId: workflow.id });
       researchWorkflowData = result.workflows;
       state.researchWorkflows = researchWorkflowData;
       renderResearchWorkflows(container);
       bus.dispatchEvent(new CustomEvent('research-workflows', { detail: researchWorkflowData }));
-      toast(action === 'run' ? '本次证据读取已记录；系统没有自动生成结论' : action === 'pause' ? '流程已暂停' : action === 'resume' ? '流程已继续' : '流程已完成');
+      const notices = {
+        run: '本次证据读取已记录；系统没有自动生成结论', pause: '流程已暂停', resume: '流程已继续',
+        watch_check: result.published ? '检查完成：发现实质变化，已写入提醒中心' : '检查完成：没有实质变化，不会打扰你',
+        watch_pause: '研究值守已暂停，来源授权仍保留', watch_resume: '研究值守已恢复',
+        watch_stop: '研究值守已结束；重新开启需要再次预览授权', complete: '流程已完成',
+      };
+      toast(notices[action] || '研究流程已更新', result.published ? 'ok' : undefined);
     } catch (error) {
       button.disabled = false;
       button.textContent = oldText;
       toast(error.message || '研究流程操作失败', 'err');
     }
+  });
+  const watchDialog = container.querySelector('#st-watch-dialog');
+  watchDialog.addEventListener('click', e => {
+    if (e.target.closest('[data-watch-close]')) watchDialog.close();
+  });
+  watchDialog.addEventListener('close', () => {
+    researchWatchPreview = null;
+    researchWatchTarget = null;
+  });
+  ['#st-watch-frequency', '#st-watch-expires', '#st-watch-delivery'].forEach(selector => {
+    container.querySelector(selector).addEventListener('change', () => {
+      researchWatchPreview = null;
+      renderResearchWatchPreview(container);
+    });
+  });
+  container.querySelector('#st-watch-preview-btn').addEventListener('click', async e => {
+    if (!researchWatchTarget) return;
+    const button = e.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchWorkflow('watch_preview', {
+        workflowId: researchWatchTarget.id, options: researchWatchOptions(container),
+      });
+      researchWatchPreview = result.preview;
+      renderResearchWatchPreview(container);
+    } catch (error) { toast(error.message || '值守权限预览失败', 'err'); }
+    finally { button.disabled = false; }
+  });
+  container.querySelector('#st-watch-preview').addEventListener('change', () => updateResearchWatchConfirm(container));
+  container.querySelector('#st-watch-preview').addEventListener('click', async e => {
+    const button = e.target.closest('[data-watch-confirm]');
+    if (!button || !researchWatchPreview || !researchWatchTarget) return;
+    const permissions = [...container.querySelectorAll('[data-watch-permission]:checked')].map(input => input.value);
+    if (container.querySelector('[data-watch-final]:checked')) permissions.push('confirm:watch');
+    button.disabled = true;
+    try {
+      const result = await api.mutateResearchWorkflow('watch_confirm', {
+        workflowId: researchWatchTarget.id, options: researchWatchOptions(container),
+        previewId: researchWatchPreview.previewId, confirmations: permissions,
+      });
+      researchWorkflowData = result.workflows;
+      state.researchWorkflows = researchWorkflowData;
+      renderResearchWorkflows(container);
+      watchDialog.close();
+      toast('研究值守已开启；首次检查只建立基线，无变化不会提醒', 'ok');
+    } catch (error) { button.disabled = false; toast(error.message || '开启研究值守失败', 'err'); }
   });
   bus.addEventListener('research-workflows', e => {
     researchWorkflowData = e.detail;
@@ -1046,6 +1124,61 @@ function renderWorkflowPreview(container) {
   updateWorkflowConfirmState(container);
 }
 
+function researchWatchOptions(container) {
+  const date = container.querySelector('#st-watch-expires').value;
+  return {
+    frequency: container.querySelector('#st-watch-frequency').value,
+    delivery: container.querySelector('#st-watch-delivery').value,
+    expiresAt: date ? `${date}T23:59:00+08:00` : '',
+  };
+}
+
+function openResearchWatchDialog(container, workflow) {
+  researchWatchTarget = workflow;
+  researchWatchPreview = null;
+  const target = workflow.target || {};
+  const dueDate = String(workflow.dueAt || '').slice(0, 10);
+  const fallback = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  container.querySelector('#st-watch-frequency').value = 'close';
+  container.querySelector('#st-watch-delivery').value = 'center_only';
+  container.querySelector('#st-watch-expires').value = dueDate || fallback;
+  container.querySelector('#st-watch-scope').innerHTML = `<b>${esc(workflow.title || '研究流程')}</b><span>${esc(target.name || target.code || target.type || '研究对象')} · ${(workflow.sources || []).length} 个已确认来源</span><p>${esc(workflow.question || '')}</p>`;
+  renderResearchWatchPreview(container);
+  const dialog = container.querySelector('#st-watch-dialog');
+  dialog.showModal();
+  container.querySelector('#st-watch-dialog-title').focus?.({ preventScroll: true });
+}
+
+function renderResearchWatchPreview(container) {
+  const root = container.querySelector('#st-watch-preview');
+  if (!researchWatchPreview) {
+    root.innerHTML = '<div class="empty compact">先预览持续访问范围和到期时间，再逐项确认。</div>';
+    return;
+  }
+  const preview = researchWatchPreview;
+  if ((preview.blockers || []).length) {
+    root.innerHTML = `<div class="workflow-preview-title"><b>暂时不能开启</b><span>草稿没有保存</span></div><ul class="workflow-blockers">${preview.blockers.map(text => `<li>${esc(text)}</li>`).join('')}</ul>`;
+    return;
+  }
+  const frequency = preview.frequency === 'daily' ? '每个工作日一次' : '每个交易日收盘后';
+  root.innerHTML = `<div class="research-watch-preview-head"><b>持续授权预览</b><span>预计最多 ${Number(preview.estimatedChecks || 0)} 次检查</span></div>
+    <dl><div><dt>频率</dt><dd>${frequency}</dd></div><div><dt>自动结束</dt><dd>${esc(formatHypothesisTime(preview.expiresAt))}</dd></div><div><dt>提醒范围</dt><dd>${preview.delivery === 'center_only' ? '只进入提醒中心' : '遵循已授权终端'}</dd></div></dl>
+    <fieldset class="workflow-permissions"><legend>逐项确认持续访问范围</legend>
+      ${(preview.permissions || []).map(permission => `<label><input type="checkbox" data-watch-permission value="${esc(permission.id)}"><span><b>${esc(permission.label)}</b><small>持续到到期、暂停或手动结束；不会增加新来源</small></span></label>`).join('')}
+      <label class="workflow-final-confirm"><input type="checkbox" data-watch-final><span><b>我确认按以上范围开启值守</b><small>首次检查只建立基线，不自动调用 DeepSeek 或形成结论</small></span></label>
+    </fieldset><button type="button" class="btn primary workflow-confirm-btn" data-watch-confirm disabled>确认开启至 ${esc(String(preview.expiresAt || '').slice(5, 10))}</button>`;
+  updateResearchWatchConfirm(container);
+}
+
+function updateResearchWatchConfirm(container) {
+  const root = container.querySelector('#st-watch-preview');
+  const button = root.querySelector('[data-watch-confirm]');
+  if (!button || !researchWatchPreview?.ready) return;
+  const required = root.querySelectorAll('[data-watch-permission]').length;
+  button.disabled = root.querySelectorAll('[data-watch-permission]:checked').length !== required
+    || !root.querySelector('[data-watch-final]:checked');
+}
+
 async function refreshResearchWorkflows(container) {
   try {
     researchWorkflowData = await api.researchWorkflows();
@@ -1116,6 +1249,27 @@ function renderResearchWorkflows(container) {
       <ol>${timeline.items.slice(0, 12).map(row => `<li><time>${esc(formatHypothesisTime(row.observedAt))}</time><div><b>${esc(sources[row.sourceId]?.label || row.sourceId || '未知来源')}</b><span>${esc(row.label || '来源执行记录')}</span><small>数据时点 ${esc(row.dataAt || '未披露')} · 状态 ${esc(row.status || '未知')}${row.upstream ? ` · 上游 ${esc(row.upstream)}` : ''}</small></div></li>`).join('')}</ol>
       <small>${esc(timeline.boundary || '时间轴不自动形成方向结论。')}</small>
     </details>` : '';
+    const watch = item.watch || {};
+    const watchState = watch.effectiveStatus || (watch.enabled ? 'active' : 'off');
+    const watchLabels = {
+      active: ['值守中', 'cyan'], paused: ['值守已暂停', 'amber'], expired: ['值守已到期', 'gray'],
+      stopped: ['值守已结束', 'gray'], paused_error: ['来源故障已暂停', 'red'],
+      workflow_inactive: ['流程停止，值守已停', 'gray'], reauthorization_required: ['需要重新授权', 'amber'],
+      invalid: ['值守配置需检查', 'red'], off: ['未开启值守', 'gray'],
+    };
+    const watchLabel = watchLabels[watchState] || watchLabels.off;
+    const watchActions = item.kind !== 'template' && item.status === 'active' ? (watchState === 'active'
+      ? `<button class="btn sm primary" data-wf-action="watch_check" data-wf-id="${esc(item.id)}">立即检查</button><button class="btn sm" data-wf-action="watch_pause" data-wf-id="${esc(item.id)}">暂停值守</button><button class="btn sm ghost" data-wf-action="watch_stop" data-wf-id="${esc(item.id)}">结束值守</button>`
+      : watchState === 'paused'
+        ? `<button class="btn sm primary" data-wf-action="watch_resume" data-wf-id="${esc(item.id)}">恢复值守</button><button class="btn sm ghost" data-wf-action="watch_stop" data-wf-id="${esc(item.id)}">结束值守</button>`
+        : `<button class="btn sm" data-wf-action="watch-setup" data-wf-id="${esc(item.id)}">${watchState === 'off' ? '开启值守' : '重新授权值守'}</button>`)
+      : '';
+    const watchCard = item.kind !== 'template' ? `<section class="workflow-watch" data-state="${esc(watchState)}">
+      <div class="workflow-watch-head"><span class="badge ${watchLabel[1]}">${watchLabel[0]}</span><div>${watch.nextCheckAt ? `下次 ${esc(formatHypothesisTime(watch.nextCheckAt))}` : '不会后台读取来源'}${watch.expiresAt ? ` · 至 ${esc(formatHypothesisTime(watch.expiresAt))}` : ''}</div></div>
+      <p>${esc(watch.boundary || '逐流程明确授权后，深脉才会持续检查已确认来源；无变化不提醒。')}</p>
+      ${watch.lastChangeAt ? `<button class="btn sm ghost" data-wf-action="watch-change" data-wf-id="${esc(item.id)}">查看 ${esc(formatHypothesisTime(watch.lastChangeAt))} 的变化</button>` : ''}
+      <div class="workflow-watch-actions">${watchActions}</div>
+    </section>` : '';
     const canRun = item.status === 'active';
     return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}" data-workflow-id="${esc(item.id)}">
       <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b>${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
@@ -1123,6 +1277,7 @@ function renderResearchWorkflows(container) {
       <p>${esc(item.question || '')}</p>
       <div class="workflow-source-tags">${sourceTags}</div>
       ${lineageCard}
+      ${watchCard}
       <details class="workflow-run" ${item.effectiveStatus === 'review_due' && latest ? 'open' : ''}><summary>${latest ? `最近执行 ${esc(formatHypothesisTime(latest.ranAt))} · 成功 ${Number(latest.summary?.ok || 0)} / ${Number(latest.summary?.selected || 0)}` : '尚未执行来源读取'}</summary>${runRows ? `<ul>${runRows}</ul>` : '<div class="empty compact">执行后会记录各来源的事实摘要、最终上游和失败原因，但不会自动下结论。</div>'}</details>
       ${resultCard}
       ${comparisonCard}

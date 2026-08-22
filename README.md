@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.32.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.33.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 研究值守（v1.33）
+
+- 已创建的一次性研究流程可以逐条开启值守，冻结原研究问题、原来源、检查频率、结束时间和提醒范围；默认关闭且最长授权 31 天。
+- 后台只重复读取用户已经确认的来源。首次检查只建立基线；普通价格波动不触发提醒，只有新公告、候选事件集合、来源状态或时效发生实质变化时才写入一条去重事项。
+- 提醒默认只进入注意力中心；用户也可选择遵循已经单独授权的 Windows/墨水屏终端。没有变化时只更新最近检查时间。
+- 可随时立即检查、暂停、恢复或结束；流程暂停/完成、方法变化、授权到期会停止后台读取。系统不会新增来源、自动调用 DeepSeek、替用户判断结论或连接交易账户。
 
 ### AI 回答新鲜度（v1.32）
 

@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.32.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.32.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.32.0';
+import { api } from './api.js?v=1.33.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.33.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.33.0';
 
-import * as pageOverview from './pages/overview.js?v=1.32.0';
-import * as pageEmotion from './pages/emotion.js?v=1.32.0';
-import * as pageMarket from './pages/market.js?v=1.32.0';
-import * as pageLadder from './pages/ladder.js?v=1.32.0';
-import * as pageWatch from './pages/watch.js?v=1.32.0';
-import * as pageStrategy from './pages/strategy.js?v=1.32.0';
-import * as pageEpaper from './pages/epaper.js?v=1.32.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.32.0';
-import * as pageAbout from './pages/about.js?v=1.32.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.32.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.32.0';
-import { initOnboarding } from './onboarding.js?v=1.32.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.32.0';
+import * as pageOverview from './pages/overview.js?v=1.33.0';
+import * as pageEmotion from './pages/emotion.js?v=1.33.0';
+import * as pageMarket from './pages/market.js?v=1.33.0';
+import * as pageLadder from './pages/ladder.js?v=1.33.0';
+import * as pageWatch from './pages/watch.js?v=1.33.0';
+import * as pageStrategy from './pages/strategy.js?v=1.33.0';
+import * as pageEpaper from './pages/epaper.js?v=1.33.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.33.0';
+import * as pageAbout from './pages/about.js?v=1.33.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.33.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.33.0';
+import { initOnboarding } from './onboarding.js?v=1.33.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.33.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -244,8 +244,19 @@ function currentHarnessContext() {
         sources: row.sources, outputs: row.outputs, reviewDays: row.reviewDays,
         dueAt: row.dueAt, lastRunAt: row.lastRunAt,
         latestRun: (row.runs || []).slice(-1)[0] || null,
+        watch: row.watch ? {
+          modelVersion: row.watch.modelVersion, enabled: row.watch.enabled === true,
+          status: row.watch.effectiveStatus || row.watch.status,
+          sources: row.watch.sources, frequency: row.watch.frequency,
+          delivery: row.watch.delivery, startedAt: row.watch.startedAt,
+          expiresAt: row.watch.expiresAt, nextCheckAt: row.watch.nextCheckAt,
+          lastCheckedAt: row.watch.lastCheckedAt, lastChangeAt: row.watch.lastChangeAt,
+          pausedSources: row.watch.pausedSources, lastChange: row.watch.lastChange,
+          boundary: row.watch.boundary,
+        } : null,
         contract: row.contract,
       })),
+      watchSummary: state.researchWorkflows.watchSummary,
       boundary: state.researchWorkflows.boundary,
       permissions: state.researchWorkflows.permissions,
     } : null,

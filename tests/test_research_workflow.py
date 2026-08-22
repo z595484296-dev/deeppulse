@@ -9,6 +9,8 @@ from research_workflow import (attach_workflow_lineage, build_evidence_timeline,
                                build_result_card, build_template_spec, compare_runs,
                                create_workflow, mutate_workflow, preview_workflow,
                                record_run, workflow_snapshot)
+from research_watch import (confirm_watch, is_due, material_change, preview_watch,
+                            watch_state)
 
 
 BJC = timezone(timedelta(hours=8))
@@ -31,6 +33,50 @@ def draft(**patch):
 
 
 class ResearchWorkflowTests(unittest.TestCase):
+    def test_watch_requires_separate_persistent_confirmation(self):
+        workflow_preview = preview_workflow(draft(reminderEnabled=False), now=NOW)
+        workflow = create_workflow(workflow_preview,
+                                   [row['id'] for row in workflow_preview['permissions']] + ['confirm:create'], NOW)
+        watch_preview = preview_watch(workflow, {
+            'frequency': 'close', 'delivery': 'center_only',
+            'expiresAt': '2026-08-28T15:30:00+08:00',
+        }, NOW)
+        self.assertTrue(watch_preview['ready'])
+        self.assertTrue(watch_preview['contract']['perWorkflowOptIn'])
+        self.assertFalse(watch_preview['contract']['automaticAI'])
+        with self.assertRaisesRegex(ValueError, '仍需确认值守权限'):
+            confirm_watch(workflow, watch_preview, ['confirm:watch'], NOW)
+        confirmations = [row['id'] for row in watch_preview['permissions']] + ['confirm:watch']
+        watched = confirm_watch(workflow, watch_preview, confirmations, NOW)
+        self.assertEqual(watch_state(watched, NOW), 'active')
+        self.assertEqual(watched['watch']['sources'], workflow['sources'])
+        self.assertEqual(watched['watch']['delivery'], 'center_only')
+        self.assertFalse(is_due(watched, NOW))
+
+    def test_watch_material_change_ignores_ordinary_price_but_detects_new_disclosure(self):
+        before = {'results': [
+            {'sourceId': 'market_quote', 'status': 'ok', 'evidence': [{'price': 50}]},
+            {'sourceId': 'official_disclosures', 'status': 'ok',
+             'evidence': [{'id': 'a', 'title': '公告 A', 'date': '2026-08-20'}]},
+        ]}
+        price_only = {'results': [
+            {'sourceId': 'market_quote', 'status': 'ok', 'evidence': [{'price': 52}]},
+            {'sourceId': 'official_disclosures', 'status': 'ok',
+             'evidence': [{'id': 'a', 'title': '公告 A', 'date': '2026-08-20'}]},
+        ]}
+        self.assertFalse(material_change(before, price_only)['changed'])
+        added = {'results': price_only['results'][:-1] + [{
+            'sourceId': 'official_disclosures', 'status': 'ok',
+            'evidence': [
+                {'id': 'b', 'title': '公告 B', 'date': '2026-08-21'},
+                {'id': 'a', 'title': '公告 A', 'date': '2026-08-20'},
+            ],
+        }]}
+        change = material_change(before, added)
+        self.assertTrue(change['changed'])
+        self.assertEqual(change['changes'][0]['kind'], 'evidence_set')
+        self.assertFalse(change['automaticConclusion'])
+
     def test_preview_is_deterministic_and_non_mutating(self):
         source = draft()
         first = preview_workflow(source, now=NOW)
@@ -225,6 +271,101 @@ class ResearchWorkflowTests(unittest.TestCase):
 
 
 class ResearchWorkflowServerTests(unittest.TestCase):
+    def _watched_workflow(self):
+        workflow_preview = preview_workflow(draft(
+            sources=['official_disclosures'], outputs=['dashboard_card'], reminderEnabled=False), now=NOW)
+        workflow = create_workflow(workflow_preview,
+                                   [row['id'] for row in workflow_preview['permissions']] + ['confirm:create'], NOW)
+        watch_preview = preview_watch(workflow, {
+            'frequency': 'daily', 'delivery': 'center_only',
+            'expiresAt': '2026-08-28T15:30:00+08:00',
+        }, NOW)
+        return confirm_watch(workflow, watch_preview,
+                             [row['id'] for row in watch_preview['permissions']] + ['confirm:watch'], NOW)
+
+    def test_unwatched_workflow_never_accesses_background_sources(self):
+        workflow_preview = preview_workflow(draft(reminderEnabled=False), now=NOW)
+        workflow = create_workflow(workflow_preview,
+                                   [row['id'] for row in workflow_preview['permissions']] + ['confirm:create'], NOW)
+        called = []
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(server, 'PROFILE_FILE', os.path.join(folder, 'profile.json')):
+            server.save_profile({'research_workflows': [workflow]})
+            result = server.process_research_watches_once(NOW, collector=lambda item: called.append(item))
+        self.assertEqual(result['checked'], 0)
+        self.assertEqual(called, [])
+
+    def test_watch_preview_and_confirm_are_separate_server_actions(self):
+        workflow_preview = preview_workflow(draft(reminderEnabled=False), now=NOW)
+        workflow = create_workflow(workflow_preview,
+                                   [row['id'] for row in workflow_preview['permissions']] + ['confirm:create'], NOW)
+        options = {'frequency': 'close', 'delivery': 'center_only',
+                   'expiresAt': '2026-08-28T23:59:00+08:00'}
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(server, 'PROFILE_FILE', os.path.join(folder, 'profile.json')), \
+                patch.object(server, 'now_bj', return_value=NOW):
+            server.save_profile({'research_workflows': [workflow]})
+            preview = server.mutate_research_workflow('watch_preview', {
+                'workflowId': workflow['id'], 'options': options,
+            })['preview']
+            with self.assertRaisesRegex(ValueError, '仍需确认值守权限'):
+                server.mutate_research_workflow('watch_confirm', {
+                    'workflowId': workflow['id'], 'options': options,
+                    'previewId': preview['previewId'], 'confirmations': ['confirm:watch'],
+                })
+            result = server.mutate_research_workflow('watch_confirm', {
+                'workflowId': workflow['id'], 'options': options,
+                'previewId': preview['previewId'],
+                'confirmations': [row['id'] for row in preview['permissions']] + ['confirm:watch'],
+            })
+        self.assertEqual(result['workflows']['watchSummary']['active'], 1)
+        self.assertEqual(result['updated']['watch']['delivery'], 'center_only')
+
+    def test_watch_baseline_is_silent_and_new_evidence_is_deduplicated(self):
+        watched = self._watched_workflow()
+        run_time = datetime(2026, 8, 24, 10, 0, tzinfo=BJC)
+        batches = [[{'id': 'a', 'title': '公告 A', 'date': '2026-08-21'}],
+                   [{'id': 'b', 'title': '公告 B', 'date': '2026-08-24'},
+                    {'id': 'a', 'title': '公告 A', 'date': '2026-08-21'}]]
+        def collector(_item):
+            evidence = batches.pop(0) if batches else [
+                {'id': 'b', 'title': '公告 B', 'date': '2026-08-24'},
+                {'id': 'a', 'title': '公告 A', 'date': '2026-08-21'}]
+            return [{'sourceId': 'official_disclosures', 'status': 'ok',
+                     'upstream': '巨潮资讯', 'summary': '公告', 'evidence': evidence}]
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(server, 'PROFILE_FILE', os.path.join(folder, 'profile.json')):
+            server.save_profile({'research_workflows': [watched]})
+            baseline = server.process_research_watches_once(run_time, collector=collector,
+                                                             workflow_id=watched['id'], force=True)
+            changed = server.process_research_watches_once(run_time + timedelta(minutes=1), collector=collector,
+                                                            workflow_id=watched['id'], force=True)
+            repeated = server.process_research_watches_once(run_time + timedelta(minutes=2), collector=collector,
+                                                             workflow_id=watched['id'], force=True)
+            data = server.load_profile()['data']
+        self.assertEqual(baseline['published'], 0)
+        self.assertEqual(changed['published'], 1)
+        self.assertEqual(repeated['published'], 0)
+        self.assertEqual(len(data['attention_inbox']), 1)
+        self.assertEqual(data['attention_inbox'][0]['delivery'], 'center_only')
+        self.assertEqual(len(data['research_workflows'][0]['runs']), 3)
+
+    def test_restart_does_not_catch_up_a_long_missed_watch(self):
+        watched = self._watched_workflow()
+        watched['watch']['nextCheckAt'] = '2026-08-21T09:05:00+08:00'
+        called = []
+        current = datetime(2026, 8, 24, 10, 0, tzinfo=BJC)
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(server, 'PROFILE_FILE', os.path.join(folder, 'profile.json')):
+            server.save_profile({'research_workflows': [watched]})
+            result = server.process_research_watches_once(current,
+                                                           collector=lambda item: called.append(item))
+            stored = server.load_profile()['data']['research_workflows'][0]['watch']
+        self.assertEqual(result['checked'], 0)
+        self.assertEqual(called, [])
+        self.assertEqual(stored['lastMissedAt'], '2026-08-21T09:05:00+08:00')
+        self.assertGreater(stored['nextCheckAt'], current.isoformat())
+
     def test_preview_and_confirm_persist_one_workflow(self):
         environment = {
             source_id: {'status': 'available', 'available': True, 'detail': ''}

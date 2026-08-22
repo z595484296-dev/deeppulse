@@ -43,6 +43,7 @@ $runtimeFiles = @(
     'research_hypothesis.py',
     'research_memory.py',
     'research_workflow.py',
+    'research_watch.py',
     'research_suggestions.py',
     'akshare_research.py',
     'hypothesis_evidence.py',

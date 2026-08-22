@@ -80,6 +80,21 @@ except Exception:
     RESEARCH_WORKFLOW_MODEL_VERSION = 'research-workflow-unavailable'
 
 try:
+    from research_watch import (confirm_watch as confirm_research_watch,
+                                is_due as research_watch_is_due,
+                                material_change as research_watch_material_change,
+                                method_fingerprint as research_watch_method_fingerprint,
+                                next_check_at as research_watch_next_check,
+                                preview_watch as preview_research_watch,
+                                watch_state as research_watch_state,
+                                MODEL_VERSION as RESEARCH_WATCH_MODEL_VERSION)
+except Exception:
+    confirm_research_watch = research_watch_is_due = research_watch_material_change = None
+    research_watch_method_fingerprint = research_watch_next_check = preview_research_watch = None
+    research_watch_state = None
+    RESEARCH_WATCH_MODEL_VERSION = 'research-watch-unavailable'
+
+try:
     from research_suggestions import (build_snapshot as build_research_suggestion_snapshot,
                                       draft_fingerprint as research_suggestion_draft_fingerprint,
                                       mutate_item as mutate_research_suggestion_item,
@@ -135,7 +150,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.32.0'
+VERSION = '1.33.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -3490,12 +3505,30 @@ def research_workflows_status(current=None):
             'error': '研究流程模型不可用',
         }
     result = workflow_snapshot(data.get('research_workflows') or [], now_bj())
+    watch_counts = {'active': 0, 'paused': 0, 'expired': 0, 'attention': 0}
+    for item in result.get('items') or []:
+        watch = item.get('watch') if isinstance(item.get('watch'), dict) else {}
+        state_name = research_watch_state(item, now_bj()) if research_watch_state else 'unavailable'
+        if watch:
+            watch['effectiveStatus'] = state_name
+            if state_name == 'active':
+                watch_counts['active'] += 1
+            elif state_name == 'expired':
+                watch_counts['expired'] += 1
+            else:
+                watch_counts['paused'] += 1
+            if watch.get('lastChangeAt'):
+                watch_counts['attention'] += 1
+            item['watch'] = watch
+    result['watchSummary'] = watch_counts
+    result['watchModelVersion'] = RESEARCH_WATCH_MODEL_VERSION
     result['environment'] = research_workflow_environment()
     result['permissions'] = {
         'previewRequired': True,
         'explicitConfirmationRequired': True,
         'automaticExternalAuthorization': False,
         'automaticTradingAction': False,
+        'watchPerWorkflowOptIn': True,
     }
     return result
 
@@ -3671,6 +3704,155 @@ def collect_research_workflow_sources(item):
     return results
 
 
+def _research_watch_attention(workflow, change, timestamp, repair=False):
+    watch = workflow.get('watch') if isinstance(workflow.get('watch'), dict) else {}
+    fingerprint = str(change.get('fingerprint') or 'repair')[:40]
+    workflow_id = str(workflow.get('id') or '')[:120]
+    target = workflow.get('target') if isinstance(workflow.get('target'), dict) else {}
+    name = str(workflow.get('title') or target.get('name') or target.get('code') or '研究流程')[:120]
+    count = len(change.get('changes') or [])
+    return {
+        'id': 'research-watch:%s:%s' % (workflow_id, fingerprint),
+        'fingerprint': 'research-watch:%s:%s' % (workflow_id, fingerprint),
+        'kind': 'research_watch', 'priority': 'medium',
+        'delivery': str(watch.get('delivery') or 'center_only'),
+        'page': 'strategy', 'createdAt': timestamp,
+        'expiresAt': timestamp + 14 * 24 * 60 * 60 * 1000,
+        'title': ('研究值守需要检查：' if repair else '研究值守发现变化：') + name,
+        'detail': (('连续读取失败，相关来源已暂停，请检查来源状态。' if repair else
+                    '已发现 %d 项来源状态或候选证据集合变化，请核对事实差异。' % count)),
+        'reason': ('你曾逐流程授权值守；失败只生成一次修复事项' if repair else
+                   '你曾逐流程授权值守；无实质变化时不会提醒'),
+        'workflowId': workflow_id, 'watchChange': change,
+    }
+
+
+def process_research_watches_once(now=None, collector=None, workflow_id='', force=False):
+    """Run at most one due watch. No opt-in means no source access."""
+    if not all((research_watch_is_due, research_watch_state, record_workflow_run,
+                research_watch_material_change, research_watch_next_check)):
+        return {'state': 'unavailable', 'checked': 0, 'published': 0}
+    current_time = now if isinstance(now, datetime) else now_bj()
+    selected = None
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                if isinstance(row, dict) and row.get('id')]
+        changed = False
+        for index, row in enumerate(rows):
+            watch = dict(row.get('watch') or {})
+            if not watch:
+                continue
+            state_name = research_watch_state(row, current_time)
+            if state_name in {'expired', 'reauthorization_required', 'workflow_inactive', 'invalid'}:
+                if watch.get('enabled') or watch.get('status') != state_name:
+                    watch.update(enabled=False, status=state_name, nextCheckAt=None)
+                    row['watch'] = watch
+                    rows[index] = row
+                    changed = True
+                continue
+            if not force and state_name == 'active':
+                try:
+                    scheduled = datetime.fromisoformat(str(watch.get('nextCheckAt') or '').replace('Z', '+00:00'))
+                    scheduled = scheduled.astimezone(BJC) if scheduled.tzinfo else scheduled.replace(tzinfo=BJC)
+                    if current_time - scheduled > timedelta(hours=6):
+                        watch.update(lastMissedAt=scheduled.isoformat(timespec='seconds'),
+                                     nextCheckAt=research_watch_next_check(
+                                         current_time, watch.get('frequency') or 'close'))
+                        row['watch'] = watch
+                        rows[index] = row
+                        changed = True
+                        continue
+                except ValueError:
+                    pass
+            matches = not workflow_id or str(row.get('id') or '') == str(workflow_id)
+            if selected is None and matches and state_name == 'active' and (force or research_watch_is_due(row, current_time)):
+                selected = dict(row)
+        if changed:
+            current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+            _write_profile_unlocked(current)
+    if not selected:
+        return {'state': 'idle', 'checked': 0, 'published': 0}
+
+    watch = selected.get('watch') or {}
+    paused_sources = set(watch.get('pausedSources') or [])
+    allowed_sources = [source for source in (watch.get('sources') or []) if source not in paused_sources]
+    if not allowed_sources:
+        return {'state': 'paused_no_sources', 'checked': 0, 'published': 0}
+    collection_target = dict(selected)
+    collection_target['sources'] = allowed_sources
+    source_loader = collector or collect_research_workflow_sources
+    source_results = source_loader(collection_target)
+    timestamp = int(current_time.timestamp() * 1000)
+
+    with _profile_lock:
+        current = _read_profile_unlocked()
+        rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                if isinstance(row, dict) and row.get('id')]
+        index = next((i for i, row in enumerate(rows)
+                      if str(row.get('id') or '') == str(selected.get('id') or '')), -1)
+        if index < 0 or research_watch_state(rows[index], current_time) != 'active':
+            return {'state': 'cancelled', 'checked': 0, 'published': 0}
+        live = rows[index]
+        live_watch = dict(live.get('watch') or {})
+        if live_watch.get('methodFingerprint') != watch.get('methodFingerprint'):
+            return {'state': 'reauthorization_required', 'checked': 0, 'published': 0}
+        previous = (live.get('runs') or [])[-1] if (live.get('runs') or []) else None
+        updated, run = record_workflow_run(live, source_results, current_time)
+        change = research_watch_material_change(previous, run) if previous else {
+            'modelVersion': RESEARCH_WATCH_MODEL_VERSION, 'changed': False,
+            'changes': [], 'fingerprint': '', 'automaticConclusion': False,
+            'automaticTradingAction': False,
+            'boundary': '首次值守只建立基线，不产生变化提醒。',
+        }
+        live_watch = dict(updated.get('watch') or live_watch)
+        failures = dict(live_watch.get('sourceFailures') or {})
+        newly_paused = []
+        for result in source_results:
+            source_id = str(result.get('sourceId') or '')
+            if not source_id:
+                continue
+            failures[source_id] = 0 if result.get('status') == 'ok' else int(failures.get(source_id) or 0) + 1
+            if failures[source_id] >= 3 and source_id not in paused_sources:
+                paused_sources.add(source_id)
+                newly_paused.append(source_id)
+        live_watch.update(
+            lastCheckedAt=current_time.isoformat(timespec='seconds'),
+            nextCheckAt=research_watch_next_check(current_time, live_watch.get('frequency') or 'close'),
+            sourceFailures=failures, pausedSources=sorted(paused_sources),
+        )
+        published = 0
+        inbox = [row for row in (current['data'].get('attention_inbox') or [])
+                 if isinstance(row, dict) and row.get('id')]
+        if change.get('changed') and change.get('fingerprint') != live_watch.get('lastChangeFingerprint'):
+            live_watch.update(lastChangeAt=current_time.isoformat(timespec='seconds'),
+                              lastChangeFingerprint=change.get('fingerprint'), lastChange=change)
+            item = _research_watch_attention(updated, change, timestamp)
+            if not any(row.get('id') == item['id'] for row in inbox):
+                inbox.append(item)
+                published += 1
+        if newly_paused:
+            repair_change = {
+                'modelVersion': RESEARCH_WATCH_MODEL_VERSION,
+                'changed': True, 'changes': [{'sourceId': source, 'kind': 'paused_after_failures'} for source in newly_paused],
+                'fingerprint': 'repair-' + hashlib.sha256('|'.join(sorted(newly_paused)).encode()).hexdigest()[:16],
+                'automaticConclusion': False, 'automaticTradingAction': False,
+            }
+            repair_item = _research_watch_attention(updated, repair_change, timestamp, repair=True)
+            if not any(row.get('id') == repair_item['id'] for row in inbox):
+                inbox.append(repair_item)
+                published += 1
+        if len(paused_sources) >= len(live_watch.get('sources') or []):
+            live_watch.update(enabled=False, status='paused_error', nextCheckAt=None)
+        updated['watch'] = live_watch
+        rows[index] = updated
+        current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+        current['data']['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
+        saved = _write_profile_unlocked(current)
+    return {'state': 'checked', 'checked': 1, 'published': published,
+            'run': run, 'change': change, 'workflows': research_workflows_status(saved)}
+
+
 def mutate_research_workflow(action, payload=None):
     body = payload if isinstance(payload, dict) else {}
     clean_action = str(action or '').strip()
@@ -3727,6 +3909,67 @@ def mutate_research_workflow(action, payload=None):
     workflow_id = str(body.get('workflowId') or '').strip()[:180]
     if not workflow_id:
         raise ValueError('研究流程 ID 是必需的')
+    if clean_action in {'watch_preview', 'watch_confirm'}:
+        profile = load_profile()
+        source = next((row for row in (profile.get('data') or {}).get('research_workflows') or []
+                       if isinstance(row, dict) and str(row.get('id') or '') == workflow_id), None)
+        if not source:
+            raise ValueError('研究流程不存在')
+        preview = preview_research_watch(source, body.get('options'), now_bj())
+        if clean_action == 'watch_preview':
+            return {'preview': preview, 'workflows': research_workflows_status(profile)}
+        if str(body.get('previewId') or '') != preview.get('previewId'):
+            raise ValueError('值守范围已经变化，请重新预览后确认')
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                    if isinstance(row, dict) and row.get('id')]
+            index = next((i for i, row in enumerate(rows)
+                          if str(row.get('id') or '') == workflow_id), -1)
+            if index < 0:
+                raise ValueError('研究流程不存在')
+            live_preview = preview_research_watch(rows[index], body.get('options'), now_bj())
+            if live_preview.get('previewId') != preview.get('previewId'):
+                raise ValueError('研究方法已经变化，请重新预览值守范围')
+            rows[index] = confirm_research_watch(rows[index], live_preview,
+                                                 body.get('confirmations'), now_bj())
+            current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+            saved = _write_profile_unlocked(current)
+        _event_service_wake.set()
+        return {'updated': rows[index], 'workflows': research_workflows_status(saved)}
+    if clean_action in {'watch_pause', 'watch_resume', 'watch_stop'}:
+        with _profile_lock:
+            current = _read_profile_unlocked()
+            rows = [dict(row) for row in (current['data'].get('research_workflows') or [])
+                    if isinstance(row, dict) and row.get('id')]
+            index = next((i for i, row in enumerate(rows)
+                          if str(row.get('id') or '') == workflow_id), -1)
+            if index < 0 or not isinstance(rows[index].get('watch'), dict):
+                raise ValueError('研究值守不存在')
+            watch = dict(rows[index]['watch'])
+            if clean_action == 'watch_pause':
+                if research_watch_state(rows[index], now_bj()) != 'active':
+                    raise ValueError('当前值守不能暂停')
+                watch.update(enabled=False, status='paused', nextCheckAt=None)
+            elif clean_action == 'watch_resume':
+                if research_watch_state(rows[index], now_bj()) not in {'paused'}:
+                    raise ValueError('当前值守不能恢复，请重新预览授权')
+                watch.update(enabled=True, status='active',
+                             nextCheckAt=research_watch_next_check(now_bj(), watch.get('frequency') or 'close'))
+            else:
+                watch.update(enabled=False, status='stopped', nextCheckAt=None,
+                             stoppedAt=now_bj().isoformat(timespec='seconds'))
+            rows[index]['watch'] = watch
+            rows[index]['updatedAt'] = now_bj().isoformat(timespec='seconds')
+            current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
+            saved = _write_profile_unlocked(current)
+        _event_service_wake.set()
+        return {'updated': rows[index], 'workflows': research_workflows_status(saved)}
+    if clean_action == 'watch_check':
+        result = process_research_watches_once(now_bj(), workflow_id=workflow_id, force=True)
+        if not result.get('checked'):
+            raise ValueError('当前研究值守不能立即检查')
+        return result
     if clean_action == 'run':
         profile = load_profile()
         source = next((row for row in (profile.get('data') or {}).get('research_workflows') or []
@@ -3756,6 +3999,10 @@ def mutate_research_workflow(action, payload=None):
         if index < 0:
             raise ValueError('研究流程不存在')
         rows[index] = mutate_workflow(rows[index], clean_action, now_bj())
+        if clean_action in {'pause', 'complete'} and isinstance(rows[index].get('watch'), dict):
+            watch = dict(rows[index]['watch'])
+            watch.update(enabled=False, status='workflow_inactive', nextCheckAt=None)
+            rows[index]['watch'] = watch
         current['data']['research_workflows'] = rows[-PROFILE_LIST_LIMITS['research_workflows']:]
         saved = _write_profile_unlocked(current)
     return {'updated': rows[index], 'workflows': research_workflows_status(saved)}
@@ -4468,6 +4715,10 @@ def _event_service_loop():
             publish_due_research_workflow_reminders(now_bj())
         except Exception as exc:
             log('research workflow due reminder -> %s' % exc)
+        try:
+            process_research_watches_once(now_bj())
+        except Exception as exc:
+            log('research watch -> %s' % exc)
         cfg = load_event_service_config()
         if cfg['enabled']:
             with _event_service_lock:
@@ -5920,7 +6171,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.32.0'
+    server_version = 'DeepPulse/1.33.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -6088,6 +6339,7 @@ class Handler(BaseHTTPRequestHandler):
                            'research_run_comparison': 1,
                            'research_workflow_lineage': 1,
                            'research_evidence_timeline': 1,
+                           'research_watch': 1,
                            'research_suggestion_inbox': 1,
                            'research_suggestion_preview': 1,
                            'research_handoff': 1,

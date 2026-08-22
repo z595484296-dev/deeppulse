@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.32.0';
+const MIN_VERSION = '1.33.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -97,6 +97,7 @@ async function probeBase(base, signal) {
       && capabilities.research_run_comparison === 1
       && capabilities.research_workflow_lineage === 1
       && capabilities.research_evidence_timeline === 1
+      && capabilities.research_watch === 1
       && capabilities.research_suggestion_inbox === 1
       && capabilities.research_suggestion_preview === 1
       && capabilities.research_handoff === 1
@@ -115,7 +116,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.32.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.33.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
