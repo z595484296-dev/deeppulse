@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.24.0';
-import { api } from './api.js?v=1.24.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.25.0';
+import { api } from './api.js?v=1.25.0';
 import {
   attentionLearningContext, bus, feedbackAttentionItem, loadAttentionInbox, loadAttentionPreferences, markAttentionRead,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences,
-} from './store.js?v=1.24.0';
-import { esc, toast } from './util.js?v=1.24.0';
+} from './store.js?v=1.25.0';
+import { esc, toast } from './util.js?v=1.25.0';
 
 let navigate = () => {};
 let digestTimer = null;

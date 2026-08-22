@@ -13,7 +13,7 @@ import json
 import re
 
 
-MODEL_VERSION = 'research-workflow-v2'
+MODEL_VERSION = 'research-workflow-v3'
 BJC = timezone(timedelta(hours=8))
 KINDS = {'one_off', 'template'}
 TARGET_TYPES = {'stock', 'market', 'theme', 'custom'}
@@ -46,6 +46,39 @@ OUTPUT_DEFINITIONS = {
     'deepseek_brief': 'DeepSeek 研究简报上下文',
 }
 MAX_RUNS = 20
+
+
+def _template_text(value, target):
+    """Replace the original subject with explicit parameters, never old conclusions."""
+    text = _text(value, 1200)
+    name = _text((target or {}).get('name'), 100)
+    code = _text((target or {}).get('code'), 20)
+    if name:
+        text = text.replace(name, '{{target.name}}')
+    if code:
+        text = text.replace(code, '{{target.code}}')
+    return text
+
+
+def build_template_spec(draft):
+    value = draft if isinstance(draft, dict) else {}
+    target = value.get('target') if isinstance(value.get('target'), dict) else {}
+    return {
+        'modelVersion': 'research-template-parameters-v1',
+        'parameters': [
+            {'id': 'target.name', 'label': '标的名称', 'required': True, 'type': 'text'},
+            {'id': 'target.code', 'label': '证券代码', 'required': target.get('type') == 'stock',
+             'type': 'security_code'},
+        ],
+        'titleTemplate': _template_text(value.get('title'), target),
+        'questionTemplate': _template_text(value.get('question'), target),
+        'originalTargetType': _text(target.get('type'), 30),
+        'requiresFreshPreview': True,
+        'inheritsRuns': False,
+        'inheritsResultCard': False,
+        'inheritsConclusion': False,
+        'boundary': '套用模板只复用研究方法、来源和输出设置；新标的必须重新预览与授权，旧运行、旧证据和旧结论不会继承。',
+    }
 
 
 def _lineage_key(value):
@@ -198,6 +231,67 @@ def build_result_card(item, run):
         '我的结论：待填写（请区分事实、推断与反证条件）',
     ])
     return card
+
+
+def compare_runs(previous, current):
+    """Compare observable collection quality; never infer thesis direction."""
+    before = previous if isinstance(previous, dict) else {}
+    after = current if isinstance(current, dict) else {}
+    before_card = before.get('resultCard') if isinstance(before.get('resultCard'), dict) else {}
+    after_card = after.get('resultCard') if isinstance(after.get('resultCard'), dict) else {}
+    if not before_card or not after_card:
+        return None
+    before_summary = before_card.get('summary') or {}
+    after_summary = after_card.get('summary') or {}
+    metric_keys = (
+        'usableSources', 'degradedSources', 'evidenceItems', 'staleItems',
+        'gapCount', 'sameUpstreamGroups',
+    )
+    deltas = {}
+    for key in metric_keys:
+        try:
+            deltas[key] = int(after_summary.get(key) or 0) - int(before_summary.get(key) or 0)
+        except (TypeError, ValueError):
+            deltas[key] = 0
+    before_sources = {
+        row.get('sourceId'): row for row in (before_card.get('sources') or [])
+        if isinstance(row, dict) and row.get('sourceId')
+    }
+    after_sources = {
+        row.get('sourceId'): row for row in (after_card.get('sources') or [])
+        if isinstance(row, dict) and row.get('sourceId')
+    }
+    source_changes = []
+    for source_id in sorted(set(before_sources) | set(after_sources)):
+        old = before_sources.get(source_id) or {}
+        new = after_sources.get(source_id) or {}
+        old_status = _text(old.get('status'), 30) or 'missing'
+        new_status = _text(new.get('status'), 30) or 'missing'
+        old_evidence = int(old.get('evidenceCount') or 0)
+        new_evidence = int(new.get('evidenceCount') or 0)
+        old_stale = int((old.get('freshness') or {}).get('stale') or 0)
+        new_stale = int((new.get('freshness') or {}).get('stale') or 0)
+        if old_status != new_status or old_evidence != new_evidence or old_stale != new_stale:
+            source_changes.append({
+                'sourceId': source_id,
+                'previousStatus': old_status,
+                'currentStatus': new_status,
+                'evidenceDelta': new_evidence - old_evidence,
+                'staleDelta': new_stale - old_stale,
+            })
+    return {
+        'modelVersion': 'research-run-comparison-v1',
+        'previousRunId': _text(before.get('id'), 180),
+        'currentRunId': _text(after.get('id'), 180),
+        'previousRanAt': _text(before.get('ranAt'), 80),
+        'currentRanAt': _text(after.get('ranAt'), 80),
+        'deltas': deltas,
+        'sourceChanges': source_changes[:10],
+        'changedSourceCount': len(source_changes),
+        'automaticConclusion': False,
+        'automaticTradingAction': False,
+        'boundary': '本对比只说明两次收集结果的数量、状态、陈旧度和同源变化，不判断研究假设变好或变坏。',
+    }
 
 
 def _text(value, limit=300):
@@ -381,7 +475,7 @@ def create_workflow(preview, confirmations=None, now=None):
     digest_source = preview['previewId'] + created_at
     workflow_id = 'workflow:' + hashlib.sha256(digest_source.encode('utf-8')).hexdigest()[:20]
     is_template = draft['kind'] == 'template'
-    return {
+    item = {
         'id': workflow_id,
         'modelVersion': MODEL_VERSION,
         **deepcopy(draft),
@@ -402,6 +496,9 @@ def create_workflow(preview, confirmations=None, now=None):
             'deepSeekMaySuggestOnly': True,
         },
     }
+    if is_template:
+        item['templateSpec'] = build_template_spec(draft)
+    return item
 
 
 def effective_status(item, now=None):
@@ -498,6 +595,10 @@ def workflow_snapshot(items, now=None):
                     not isinstance(latest.get('resultCard'), dict)):
                 latest['resultCard'] = build_result_card(item, latest)
             item['latestRun'] = latest
+            if len(runs) >= 2:
+                comparison = compare_runs(runs[-2], runs[-1])
+                if comparison:
+                    item['runComparison'] = comparison
         clean.append(item)
     clean.sort(key=lambda row: row.get('updatedAt') or row.get('createdAt') or '', reverse=True)
     states = ('active', 'review_due', 'paused', 'template', 'completed', 'invalid')

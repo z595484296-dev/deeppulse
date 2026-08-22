@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.24.0'
+const MIN_BACKEND_VERSION = '1.25.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -103,6 +103,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['research_workflow_preview'] === 1
       && capabilities['research_workflow_permissions'] === 1
       && capabilities['research_result_cards'] === 1
+      && capabilities['research_template_parameters'] === 1
+      && capabilities['research_run_comparison'] === 1
       && capabilities['epaper_research_workflow'] === 1
       ? baseUrl
       : undefined
@@ -405,6 +407,31 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       boundary: short(card['boundary'], 400),
     } : null
   }
+  const sanitizeWorkflowRunComparison = (value: unknown) => {
+    const comparison = recordOf(value)
+    const deltas = recordOf(comparison['deltas'])
+    const sourceChanges = Array.isArray(comparison['sourceChanges']) ? comparison['sourceChanges'].slice(0, 10).map(value => {
+      const row = recordOf(value)
+      return {
+        sourceId: short(row['sourceId'], 60), previousStatus: short(row['previousStatus'], 30),
+        currentStatus: short(row['currentStatus'], 30), evidenceDelta: finite(row['evidenceDelta']),
+        staleDelta: finite(row['staleDelta']),
+      }
+    }) : []
+    return Object.keys(comparison).length ? {
+      modelVersion: short(comparison['modelVersion'], 60),
+      previousRunId: short(comparison['previousRunId'], 180), currentRunId: short(comparison['currentRunId'], 180),
+      previousRanAt: short(comparison['previousRanAt'], 80), currentRanAt: short(comparison['currentRanAt'], 80),
+      deltas: {
+        usableSources: finite(deltas['usableSources']), degradedSources: finite(deltas['degradedSources']),
+        evidenceItems: finite(deltas['evidenceItems']), staleItems: finite(deltas['staleItems']),
+        gapCount: finite(deltas['gapCount']), sameUpstreamGroups: finite(deltas['sameUpstreamGroups']),
+      },
+      sourceChanges, changedSourceCount: finite(comparison['changedSourceCount']),
+      automaticConclusion: false, automaticTradingAction: false,
+      boundary: short(comparison['boundary'], 400),
+    } : null
+  }
   const sanitizeResearchWorkflow = (value: unknown) => {
     const item = recordOf(value)
     const target = recordOf(item['target'])
@@ -412,6 +439,7 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
     const runs = Array.isArray(item['runs']) ? item['runs'] : []
     const latest = recordOf(item['latestRun'] ?? runs[runs.length - 1])
     const latestSummary = recordOf(latest['summary'])
+    const templateSpec = recordOf(item['templateSpec'])
     return {
       id: short(item['id'], 180), modelVersion: short(item['modelVersion'], 60), title: short(item['title'], 240),
       kind: short(item['kind'], 30), status: short(item['status'], 30), effectiveStatus: short(item['effectiveStatus'], 30),
@@ -420,6 +448,20 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       outputs: uniqueStrings(item['outputs'], 3, 60), reviewDays: finite(item['reviewDays']),
       reminderEnabled: item['reminderEnabled'] === true, dueAt: short(item['dueAt'], 80),
       lastRunAt: short(item['lastRunAt'], 80), calendarBasis: short(item['calendarBasis'], 160),
+      templateSpec: Object.keys(templateSpec).length ? {
+        modelVersion: short(templateSpec['modelVersion'], 60),
+        parameters: Array.isArray(templateSpec['parameters']) ? templateSpec['parameters'].slice(0, 4).map(value => {
+          const parameter = recordOf(value)
+          return { id: short(parameter['id'], 60), label: short(parameter['label'], 80), required: parameter['required'] === true, type: short(parameter['type'], 40) }
+        }) : [],
+        titleTemplate: short(templateSpec['titleTemplate'], 240),
+        questionTemplate: short(templateSpec['questionTemplate'], 1200),
+        originalTargetType: short(templateSpec['originalTargetType'], 30),
+        requiresFreshPreview: templateSpec['requiresFreshPreview'] === true,
+        inheritsRuns: false, inheritsResultCard: false, inheritsConclusion: false,
+        boundary: short(templateSpec['boundary'], 400),
+      } : null,
+      runComparison: sanitizeWorkflowRunComparison(item['runComparison']),
       latestRun: Object.keys(latest).length ? {
         id: short(latest['id'], 180), ranAt: short(latest['ranAt'], 80),
         summary: {
@@ -1118,7 +1160,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
     '15. akshareResearch 是按需生成的研究增强背景；必须检查每项 asOf 和 status，陈旧或缺失数据不得描述为当前事实。source.independentGroup 相同表示最终上游相同，不能算独立互证；这些指标不参与情绪温度、仓位区间或交易触发。',
-    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论，仍需用户核对并填写最终复盘。',
+    '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论。templateSpec 只允许复用方法，新标的必须重新预览，不继承旧运行或结论；runComparison 只比较两次收集的数量、状态和陈旧度，不代表研究假设增强或减弱。',
   ].join('\n')
 }
 

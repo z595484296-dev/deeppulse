@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.24.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
+  data: { version: '1.25.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -469,6 +469,21 @@ describe('DeepPulse Harness bridge', () => {
       sources: ['official_disclosures', 'market_quote', 'akshare_macro'],
       outputs: ['dashboard_card', 'review_note'], reviewDays: 5, reminderEnabled: true,
       dueAt: '2026-08-28T15:30:00+08:00', lastRunAt: '2026-08-22T09:00:00+08:00',
+      templateSpec: { modelVersion: 'research-template-parameters-v1',
+        parameters: [{ id: 'target.name', label: 'Target', required: true, type: 'text', secret: 'drop parameter' }],
+        titleTemplate: '{{target.name}} follow-up', questionTemplate: 'Check {{target.code}}',
+        originalTargetType: 'stock', requiresFreshPreview: true, inheritsRuns: false,
+        inheritsResultCard: false, inheritsConclusion: false, boundary: 'fresh preview required',
+        secret: 'drop template' },
+      runComparison: { modelVersion: 'research-run-comparison-v1', previousRunId: 'run:0',
+        currentRunId: 'workflow-run:1', previousRanAt: '2026-08-21T09:00:00+08:00',
+        currentRanAt: '2026-08-22T09:00:00+08:00',
+        deltas: { usableSources: 1, degradedSources: -1, evidenceItems: 2, staleItems: 0,
+          gapCount: -1, sameUpstreamGroups: 0, secret: 'drop delta' },
+        sourceChanges: [{ sourceId: 'market_quote', previousStatus: 'unavailable',
+          currentStatus: 'ok', evidenceDelta: 2, staleDelta: 0, secret: 'drop change' }],
+        changedSourceCount: 1, automaticConclusion: false, automaticTradingAction: false,
+        boundary: 'collection change only', secret: 'drop comparison' },
       runs: [{ id: 'workflow-run:1', ranAt: '2026-08-22T09:00:00+08:00',
         summary: { selected: 3, ok: 2, degraded: 1, injected: 'drop run summary' },
         resultCard: {
@@ -517,6 +532,9 @@ describe('DeepPulse Harness bridge', () => {
         permissions: { previewRequired: true, explicitConfirmationRequired: true,
           automaticExternalAuthorization: false },
         items: [{ id: 'workflow:1', target: { code: '601138' },
+          templateSpec: { requiresFreshPreview: true, inheritsRuns: false, inheritsConclusion: false },
+          runComparison: { deltas: { usableSources: 1, gapCount: -1 },
+            sourceChanges: [{ sourceId: 'market_quote', currentStatus: 'ok' }], automaticConclusion: false },
           latestRun: { summary: { ok: 2 },
             resultCard: { summary: { gapCount: 1, sameUpstreamGroups: 1 },
               sources: [{ lineageGroups: ['eastmoney'], freshness: { stale: 1 } }],

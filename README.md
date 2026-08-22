@@ -4,7 +4,13 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.24.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.25.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 参数化研究模板与运行对比（v1.25）
+- 研究模板现在只复用问题结构、来源组合和输出方式；套用模板时会清空原标的，要求重新填写名称和代码并再次预览权限。
+- 模板不会继承旧运行、旧证据、旧结果卡或旧结论，避免把一个标的的判断机械搬到另一个标的。
+- 同一流程完成两次运行后，结果区展示可用来源、降级来源、证据、陈旧项、缺口和同源组的变化，并列出发生变化的数据源。
+- 运行对比只描述采集质量与证据结构变化，不自动判断利多利空，不触发交易，也不替代用户复盘。
 
 ### 可追溯研究结果卡与墨水屏研究模式（v1.24）
 

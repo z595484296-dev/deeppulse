@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.24.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.24.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.24.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.24.0';
+import { api } from '../api.js?v=1.25.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.25.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.25.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.25.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -12,6 +12,7 @@ let hypothesisData = null;
 let researchMemoryData = null;
 let researchWorkflowData = null;
 let researchWorkflowPreview = null;
+let activeWorkflowTemplate = null;
 
 const MATRIX = [
   { phase: '冰点期', color: 'blue', range: '0≤T<20', pos: '0-2成', tip: '低暴露场景 · 等修复证据' },
@@ -382,6 +383,12 @@ export function init(container) {
     code.placeholder = stock ? '601138' : '非股票对象无需代码';
   };
   container.querySelector('#st-wf-target-type').addEventListener('change', syncWorkflowTargetFields);
+  ['#st-wf-code', '#st-wf-name'].forEach(selector => {
+    container.querySelector(selector).addEventListener('input', () => renderWorkflowTemplateParameters(container));
+  });
+  ['#st-wf-title', '#st-wf-question'].forEach(selector => {
+    container.querySelector(selector).addEventListener('input', () => { activeWorkflowTemplate = null; });
+  });
   syncWorkflowTargetFields();
   container.querySelector('#st-wf-preview').addEventListener('click', async e => {
     const button = e.currentTarget;
@@ -418,6 +425,7 @@ export function init(container) {
     container.querySelector('#st-wf-days').value = '5';
     container.querySelector('#st-wf-kind').value = 'one_off';
     researchWorkflowPreview = null;
+    activeWorkflowTemplate = null;
     workflowPreviewPanel.innerHTML = '<div class="empty compact">草稿已清空。重新填写后再预览，不会影响已创建流程。</div>';
     container.querySelector('#st-wf-suggestion').hidden = true;
     syncWorkflowTargetFields();
@@ -461,7 +469,7 @@ export function init(container) {
       researchWorkflowPreview = null;
       renderWorkflowPreview(container);
       container.querySelector('#st-workflow-title').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      toast(workflow.kind === 'template' ? '模板已复制为一次性草稿；请预览后创建' : '已复制为新草稿；原流程不变');
+      toast(workflow.kind === 'template' ? '模板方法已载入；请填写新标的并重新预览授权，旧证据不会继承' : '已复制为新草稿；原流程不变');
       return;
     }
     if (action === 'review-draft') {
@@ -729,14 +737,48 @@ function workflowDraft(container) {
   };
 }
 
+function parameterizeLegacyTemplate(text, target) {
+  let result = String(text || '');
+  if (target?.name) result = result.replaceAll(target.name, '{{target.name}}');
+  if (target?.code) result = result.replaceAll(target.code, '{{target.code}}');
+  return result;
+}
+
+function templateText(value, target) {
+  return String(value || '')
+    .replaceAll('{{target.name}}', target.name || '【标的名称】')
+    .replaceAll('{{target.code}}', target.code || '【证券代码】');
+}
+
+function renderWorkflowTemplateParameters(container) {
+  if (!activeWorkflowTemplate) return;
+  const target = {
+    code: container.querySelector('#st-wf-code').value.trim(),
+    name: container.querySelector('#st-wf-name').value.trim(),
+  };
+  container.querySelector('#st-wf-title').value = templateText(activeWorkflowTemplate.titleTemplate, target);
+  container.querySelector('#st-wf-question').value = templateText(activeWorkflowTemplate.questionTemplate, target);
+}
+
 function fillWorkflowDraft(container, workflow, fromTemplate = false) {
   const target = workflow.target || {};
+  activeWorkflowTemplate = null;
   container.querySelector('#st-wf-kind').value = fromTemplate ? 'one_off' : (workflow.kind || 'one_off');
-  container.querySelector('#st-wf-title').value = workflow.title ? `${workflow.title} · 副本` : '';
   container.querySelector('#st-wf-target-type').value = target.type || 'stock';
-  container.querySelector('#st-wf-code').value = target.code || '';
-  container.querySelector('#st-wf-name').value = target.name || '';
-  container.querySelector('#st-wf-question').value = workflow.question || '';
+  if (fromTemplate) {
+    activeWorkflowTemplate = workflow.templateSpec || {
+      titleTemplate: parameterizeLegacyTemplate(workflow.title, target),
+      questionTemplate: parameterizeLegacyTemplate(workflow.question, target),
+    };
+    container.querySelector('#st-wf-code').value = '';
+    container.querySelector('#st-wf-name').value = '';
+    renderWorkflowTemplateParameters(container);
+  } else {
+    container.querySelector('#st-wf-title').value = workflow.title ? `${workflow.title} · 副本` : '';
+    container.querySelector('#st-wf-code').value = target.code || '';
+    container.querySelector('#st-wf-name').value = target.name || '';
+    container.querySelector('#st-wf-question').value = workflow.question || '';
+  }
   container.querySelector('#st-wf-days').value = String(workflow.reviewDays || 5);
   container.querySelector('#st-wf-reminder').checked = workflow.reminderEnabled === true;
   const sources = new Set(workflow.sources || []);
@@ -828,6 +870,22 @@ function renderResearchWorkflows(container) {
       ${(card.gaps || []).length ? `<details class="workflow-gaps"><summary>查看 ${Number(cardSummary.gapCount || 0)} 项待核对缺口</summary><ul>${card.gaps.map(row => `<li><b>${esc(sources[row.sourceId]?.label || row.sourceId)}</b><span>${esc(row.message)}</span></li>`).join('')}</ul></details>` : '<div class="workflow-result-ok">本次所选来源均返回了可展示证据；仍不代表研究问题已经成立。</div>'}
       <small>${esc(card.boundary || '本卡片不自动生成结论。')}</small>
     </section>` : '';
+    const comparison = item.runComparison;
+    const deltaText = value => {
+      const number = Number(value || 0);
+      return `${number > 0 ? '+' : ''}${number}`;
+    };
+    const comparisonCard = comparison ? `<section class="workflow-comparison" aria-label="两次运行对比">
+      <div class="workflow-comparison-head"><b>与上次运行相比</b><span>${esc(formatHypothesisTime(comparison.previousRanAt))} → ${esc(formatHypothesisTime(comparison.currentRanAt))}</span></div>
+      <div class="workflow-comparison-metrics">
+        <span>可用来源 <b>${deltaText(comparison.deltas?.usableSources)}</b></span>
+        <span>候选证据 <b>${deltaText(comparison.deltas?.evidenceItems)}</b></span>
+        <span>缺口 <b>${deltaText(comparison.deltas?.gapCount)}</b></span>
+        <span>陈旧项 <b>${deltaText(comparison.deltas?.staleItems)}</b></span>
+      </div>
+      ${(comparison.sourceChanges || []).length ? `<details><summary>${Number(comparison.changedSourceCount || 0)} 个来源状态或数量发生变化</summary><ul>${comparison.sourceChanges.map(row => `<li><b>${esc(sources[row.sourceId]?.label || row.sourceId)}</b><span>${esc(row.previousStatus)} → ${esc(row.currentStatus)} · 证据 ${deltaText(row.evidenceDelta)} · 陈旧 ${deltaText(row.staleDelta)}</span></li>`).join('')}</ul></details>` : '<div class="workflow-comparison-steady">来源状态和证据数量没有变化。</div>'}
+      <small>${esc(comparison.boundary || '数量变化不代表研究假设增强或减弱。')}</small>
+    </section>` : '';
     const canRun = item.status === 'active';
     return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}">
       <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b>${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
@@ -836,6 +894,7 @@ function renderResearchWorkflows(container) {
       <div class="workflow-source-tags">${sourceTags}</div>
       <details class="workflow-run" ${item.effectiveStatus === 'review_due' && latest ? 'open' : ''}><summary>${latest ? `最近执行 ${esc(formatHypothesisTime(latest.ranAt))} · 成功 ${Number(latest.summary?.ok || 0)} / ${Number(latest.summary?.selected || 0)}` : '尚未执行来源读取'}</summary>${runRows ? `<ul>${runRows}</ul>` : '<div class="empty compact">执行后会记录各来源的事实摘要、最终上游和失败原因，但不会自动下结论。</div>'}</details>
       ${resultCard}
+      ${comparisonCard}
       <div class="workflow-item-actions">
         ${canRun ? `<button class="btn sm primary" data-wf-action="run" data-wf-id="${esc(item.id)}">执行一次</button>` : ''}
         ${item.status === 'active' ? `<button class="btn sm" data-wf-action="pause" data-wf-id="${esc(item.id)}">暂停</button>` : ''}

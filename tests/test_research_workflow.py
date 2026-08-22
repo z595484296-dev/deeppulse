@@ -5,8 +5,9 @@ import tempfile
 from unittest.mock import patch
 
 import server
-from research_workflow import (build_result_card, create_workflow, mutate_workflow,
-                               preview_workflow, record_run, workflow_snapshot)
+from research_workflow import (build_result_card, build_template_spec, compare_runs,
+                               create_workflow, mutate_workflow, preview_workflow,
+                               record_run, workflow_snapshot)
 
 
 BJC = timezone(timedelta(hours=8))
@@ -64,6 +65,18 @@ class ResearchWorkflowTests(unittest.TestCase):
         item = create_workflow(preview, confirmations, NOW)
         self.assertEqual(item['status'], 'template')
         self.assertIsNone(item['dueAt'])
+        self.assertFalse(item['templateSpec']['inheritsConclusion'])
+        self.assertFalse(item['templateSpec']['inheritsRuns'])
+        self.assertIn('{{target.name}}', item['templateSpec']['titleTemplate'])
+
+    def test_template_parameterizes_subject_without_copying_run_state(self):
+        spec = build_template_spec(draft(
+            kind='template', title='工业富联需求验证',
+            question='工业富联 601138 的需求证据是否获得独立来源支持？'))
+        self.assertEqual(spec['titleTemplate'], '{{target.name}}需求验证')
+        self.assertIn('{{target.code}}', spec['questionTemplate'])
+        self.assertFalse(spec['inheritsResultCard'])
+        self.assertTrue(spec['requiresFreshPreview'])
 
     def test_pause_resume_complete_are_state_checked(self):
         preview = preview_workflow(draft(reminderEnabled=False), now=NOW)
@@ -122,6 +135,31 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(card['gaps'][0]['sourceId'], 'official_disclosures')
         self.assertIn('我的结论：待填写', card['reviewDraft'])
         self.assertFalse(card['automaticTradingAction'])
+
+    def test_run_comparison_reports_collection_changes_without_direction(self):
+        item = {
+            'id': 'workflow:compare', 'title': '对比', 'question': '证据是否变化？',
+            'target': {'type': 'stock', 'code': '601138', 'name': '工业富联'},
+            'sources': ['market_quote'], 'outputs': ['dashboard_card'],
+        }
+        before = {
+            'id': 'run:1', 'ranAt': '2026-08-20T15:00:00+08:00',
+            'results': [{'sourceId': 'market_quote', 'status': 'ok', 'upstream': 'eastmoney',
+                         'evidence': [{'status': 'current'}]}],
+        }
+        before['resultCard'] = build_result_card(item, before)
+        after = {
+            'id': 'run:2', 'ranAt': '2026-08-21T15:00:00+08:00',
+            'results': [{'sourceId': 'market_quote', 'status': 'unavailable',
+                         'error': 'timeout', 'evidence': []}],
+        }
+        after['resultCard'] = build_result_card(item, after)
+        comparison = compare_runs(before, after)
+        self.assertEqual(comparison['deltas']['usableSources'], -1)
+        self.assertEqual(comparison['deltas']['gapCount'], 1)
+        self.assertEqual(comparison['changedSourceCount'], 1)
+        self.assertFalse(comparison['automaticConclusion'])
+        self.assertNotIn('direction', comparison)
 
     def test_snapshot_backfills_result_card_for_legacy_run_without_mutating_source(self):
         item = {

@@ -8,7 +8,7 @@
                     {type:'dp-generate-result', requestId, ok, reply?, error?}
                     {type:'dp-nav', page?, code?, name?} 跳转页面/个股 */
 
-import { applyChartTheme } from './charts.js?v=1.24.0';
+import { applyChartTheme } from './charts.js?v=1.25.0';
 
 export const EMBEDDED = (() => {
   try {
@@ -66,6 +66,23 @@ function trimResultCard(card) {
   };
 }
 
+function trimRunComparison(comparison) {
+  if (!comparison || typeof comparison !== 'object') return null;
+  return {
+    modelVersion: comparison.modelVersion,
+    previousRunId: comparison.previousRunId,
+    currentRunId: comparison.currentRunId,
+    previousRanAt: comparison.previousRanAt,
+    currentRanAt: comparison.currentRanAt,
+    deltas: comparison.deltas,
+    sourceChanges: (comparison.sourceChanges || []).slice(0, 10),
+    changedSourceCount: comparison.changedSourceCount,
+    automaticConclusion: false,
+    automaticTradingAction: false,
+    boundary: comparison.boundary,
+  };
+}
+
 function trimWorkflowEvidence(item, resultLimit = 5, evidenceLimit = 5) {
   if (!item) return item;
   const runs = (item.runs || (item.latestRun ? [item.latestRun] : [])).slice(-1).map(run => ({
@@ -75,7 +92,24 @@ function trimWorkflowEvidence(item, resultLimit = 5, evidenceLimit = 5) {
       ...result, evidence: (result.evidence || []).slice(0, evidenceLimit),
     })),
   }));
-  return { ...item, runs, latestRun: runs[0] || null };
+  return {
+    ...item,
+    templateSpec: item.templateSpec ? {
+      modelVersion: item.templateSpec.modelVersion,
+      parameters: (item.templateSpec.parameters || []).slice(0, 4),
+      titleTemplate: item.templateSpec.titleTemplate,
+      questionTemplate: item.templateSpec.questionTemplate,
+      originalTargetType: item.templateSpec.originalTargetType,
+      requiresFreshPreview: item.templateSpec.requiresFreshPreview === true,
+      inheritsRuns: false,
+      inheritsResultCard: false,
+      inheritsConclusion: false,
+      boundary: item.templateSpec.boundary,
+    } : null,
+    runComparison: trimRunComparison(item.runComparison),
+    runs,
+    latestRun: runs[0] || null,
+  };
 }
 
 export function boundedContext(value) {

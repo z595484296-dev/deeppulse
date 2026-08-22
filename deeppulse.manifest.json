@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.24.0",
-  "minimumDesktopVersion": "1.24.0",
+  "version": "1.25.0",
+  "minimumDesktopVersion": "1.25.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -55,6 +55,8 @@
     "research-workflow-preview-v1",
     "research-workflow-permissions-v1",
     "research-result-cards-v1",
+    "research-template-parameters-v1",
+    "research-run-comparison-v1",
     "epaper-research-workflow-v1",
     "desktop-process-lifetime-v1"
   ]
