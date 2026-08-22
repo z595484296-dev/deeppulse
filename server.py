@@ -75,9 +75,12 @@ except Exception:
 try:
     from akshare_research import (build_snapshot as build_akshare_research_snapshot,
                                   unloaded_snapshot as unloaded_akshare_research_snapshot,
+                                  normalize_pack_ids as normalize_akshare_pack_ids,
+                                  pack_catalog as akshare_pack_catalog,
                                   MODEL_VERSION as AKSHARE_RESEARCH_MODEL_VERSION)
 except Exception:
     build_akshare_research_snapshot = unloaded_akshare_research_snapshot = None
+    normalize_akshare_pack_ids = akshare_pack_catalog = None
     AKSHARE_RESEARCH_MODEL_VERSION = 'akshare-research-unavailable'
 
 try:
@@ -115,7 +118,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.26.0'
+VERSION = '1.27.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -468,18 +471,68 @@ def cache_drop(prefix):
             del _cache[k]
 
 
-def akshare_research_snapshot(refresh=False):
-    """Return a cached, on-demand macro/rates snapshot with source lineage."""
+def normalize_akshare_research_preferences(value=None):
+    raw = value if isinstance(value, dict) else {}
+    selected = raw.get('enabledPacks')
+    if normalize_akshare_pack_ids:
+        selected = normalize_akshare_pack_ids(selected)
+    else:
+        selected = ['growth', 'prices', 'liquidity', 'rates']
+    return {
+        'modelVersion': 'akshare-research-preferences-v1',
+        'enabledPacks': selected,
+        'manualOnly': True,
+        'includedInEmotionScore': False,
+        'automaticTradingAction': False,
+    }
+
+
+def load_akshare_research_preferences():
+    profile = load_profile().get('data') or {}
+    return normalize_akshare_research_preferences(profile.get('akshare_research_preferences'))
+
+
+def save_akshare_research_preferences(value):
+    preferences = normalize_akshare_research_preferences(value)
+    saved = save_profile({'akshare_research_preferences': preferences})
+    cache_drop('akshare_research_snapshot_v2')
+    return {'profile': saved, 'preferences': preferences,
+            'catalog': akshare_pack_catalog() if akshare_pack_catalog else []}
+
+
+def _akshare_interface_health(interface_names):
+    with _source_lock:
+        stats = dict(_source_stats)
+    rows = []
+    for name in interface_names:
+        observation = stats.get('akshare:' + str(name)) or {}
+        rows.append({
+            'interface': str(name),
+            'status': ('ok' if observation.get('ok') is True else
+                       'failed' if observation.get('ok') is False else 'unobserved'),
+            'lastObserved': observation.get('last_at'), 'lastOk': observation.get('last_ok'),
+            'latencyMs': observation.get('latency_ms'),
+            'failures': int(observation.get('failures') or 0),
+        })
+    return rows
+
+
+def akshare_research_snapshot(refresh=False, selected_packs=None):
+    """Return a cached, on-demand snapshot for user-selected research packs."""
+    preferences = load_akshare_research_preferences()
+    selected = (normalize_akshare_pack_ids(selected_packs)
+                if normalize_akshare_pack_ids and selected_packs is not None
+                else preferences['enabledPacks'])
     module = load_akshare()
     version = str(getattr(module, '__version__', '') or '') if module else ''
     if module is None or build_akshare_research_snapshot is None:
         if unloaded_akshare_research_snapshot:
-            return unloaded_akshare_research_snapshot(False, version)
+            return unloaded_akshare_research_snapshot(False, version, selected)
         return {'modelVersion': AKSHARE_RESEARCH_MODEL_VERSION, 'status': 'unavailable',
                 'modules': [], 'errors': [{'interface': 'akshare', 'error': _akshare_error or '不可用'}],
                 'includedInEmotionScore': False, 'automaticTradingAction': False}
 
-    key = 'akshare_research_snapshot_v1'
+    key = 'akshare_research_snapshot_v2:' + ','.join(selected)
     if refresh:
         cache_drop(key)
     else:
@@ -487,7 +540,7 @@ def akshare_research_snapshot(refresh=False):
             hit = _cache.get(key)
             if hit and hit[0] > time.monotonic():
                 return hit[1]
-        return unloaded_akshare_research_snapshot(True, version)
+        return unloaded_akshare_research_snapshot(True, version, selected)
 
     def fetcher(name, **kwargs):
         fn = getattr(module, name, None)
@@ -502,8 +555,13 @@ def akshare_research_snapshot(refresh=False):
             _record_source('akshare:' + name, False, (time.monotonic() - started) * 1000, exc)
             raise
 
-    return cached(key, 6 * 3600,
-                  lambda: build_akshare_research_snapshot(fetcher, version, now_bj()))
+    def loader():
+        snapshot = build_akshare_research_snapshot(fetcher, version, now_bj(), selected)
+        snapshot['interfaceHealth'] = _akshare_interface_health(snapshot.get('interfacesRequested') or [])
+        snapshot['preferences'] = preferences
+        return snapshot
+
+    return cached(key, 6 * 3600, loader)
 
 
 # ---------------------------------------------------------------- 可选本地增强：通达信 TQ-Local（只读）
@@ -1540,6 +1598,7 @@ PROFILE_OBJECT_LIMITS = {
     'event_service': 16 * 1024,
     'research_cockpit_preferences': 64 * 1024,
     'research_memory_preferences': 128 * 1024,
+    'akshare_research_preferences': 16 * 1024,
 }
 
 
@@ -5500,7 +5559,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.26.0'
+    server_version = 'DeepPulse/1.27.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -5624,6 +5683,8 @@ class Handler(BaseHTTPRequestHandler):
                           'market_routine': 1,
                           'akshare_enrichment': 1,
                           'akshare_research_snapshot': 1,
+                          'akshare_research_packs': 1,
+                          'akshare_interface_health': 1,
                           'source_lineage': 1,
                           'event_impact': 1,
                           'event_background_service': 1,
@@ -5685,6 +5746,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({'ok': True, 'data': tdx_status(probe=probe, fresh=fresh)})
         elif path == '/api/akshare/status':
             self.send_json({'ok': True, 'data': akshare_status(probe=qs.get('probe', '1') != '0')})
+        elif path == '/api/akshare/research-config':
+            self.send_json({'ok': True, 'data': {
+                'preferences': load_akshare_research_preferences(),
+                'catalog': akshare_pack_catalog() if akshare_pack_catalog else [],
+            }})
         elif path == '/api/akshare/research-snapshot':
             self.send_json({'ok': True, 'data': akshare_research_snapshot(
                 refresh=qs.get('refresh', '0') == '1')})
@@ -5887,6 +5953,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 saved = save_profile(body.get('data') or {})
                 self.send_json({'ok': True, 'data': saved})
+            elif u.path == '/api/akshare/research-config':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': save_akshare_research_preferences(
+                    body.get('preferences') or {})})
             elif u.path == '/api/profile/brief-receipt':
                 body = self.read_json_body()
                 saved = update_brief_receipt(body.get('receipt') or {}, body.get('read') is not False)

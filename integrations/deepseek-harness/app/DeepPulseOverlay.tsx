@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.26.0'
+const MIN_BACKEND_VERSION = '1.27.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -68,6 +68,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['market_routine'] === 1
       && capabilities['akshare_enrichment'] === 1
       && capabilities['akshare_research_snapshot'] === 1
+      && capabilities['akshare_research_packs'] === 1
+      && capabilities['akshare_interface_health'] === 1
       && capabilities['source_lineage'] === 1
       && capabilities['event_impact'] === 1
       && capabilities['event_background_service'] === 1
@@ -310,10 +312,12 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           id: short(metric['id'], 60), label: short(metric['label'], 100),
           value: finite(metric['value']), unit: short(metric['unit'], 30),
           asOf: short(metric['asOf'], 30), stalenessDays: finite(metric['stalenessDays']),
-          status: short(metric['status'], 30), note: short(metric['note'], 300),
+          status: short(metric['status'], 30), frequency: short(metric['frequency'], 30),
+          note: short(metric['note'], 300),
           reference: short(metric['reference'], 200),
           source: {
-            provider: short(source['provider'], 60), upstream: short(source['upstream'], 80),
+            provider: short(source['provider'], 60), interface: short(source['interface'], 100),
+            upstream: short(source['upstream'], 80),
             upstreamUrl: short(source['upstreamUrl'], 500), tier: short(source['tier'], 30),
             independentGroup: short(source['independentGroup'], 60),
           },
@@ -323,6 +327,15 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
       return {
         id: short(module['id'], 60), label: short(module['label'], 100),
         purpose: short(module['purpose'], 300), status: short(module['status'], 30), metrics,
+      }
+    }) : []
+  const akshareInterfaceHealth = Array.isArray(akshareResearch['interfaceHealth'])
+    ? akshareResearch['interfaceHealth'].slice(0, 16).map(value => {
+      const row = recordOf(value)
+      return {
+        interface: short(row['interface'], 100), status: short(row['status'], 30),
+        lastObserved: short(row['lastObserved'], 80), lastOk: short(row['lastOk'], 80),
+        latencyMs: finite(row['latencyMs']), failures: finite(row['failures']),
       }
     }) : []
   const sanitizeWorkflowEvidence = (value: unknown) => {
@@ -1038,11 +1051,14 @@ export function normalizeDeepPulseAsk(value: unknown): DeepPulseAsk | undefined 
           tier: short(akshareProvider['tier'], 30),
         },
         generatedAt: short(akshareResearch['generatedAt'], 80), status: short(akshareResearch['status'], 30),
+        selection: uniqueStrings(akshareResearch['selection'], 8, 40),
         summary: {
           metrics: finite(akshareSummary['metrics']), current: finite(akshareSummary['current']),
           stale: finite(akshareSummary['stale']), unavailable: finite(akshareSummary['unavailable']),
+          sourceGroups: finite(akshareSummary['sourceGroups']),
         },
-        modules: akshareModules,
+        sourceGroups: uniqueStrings(akshareResearch['sourceGroups'], 8, 60),
+        modules: akshareModules, interfaceHealth: akshareInterfaceHealth,
         errors: Array.isArray(akshareResearch['errors']) ? akshareResearch['errors'].slice(0, 8).map(value => {
           const row = recordOf(value)
           return { interface: short(row['interface'], 100), error: short(row['error'], 240) }
@@ -1192,7 +1208,7 @@ export function formatDeepPulsePrompt(ask: DeepPulseAsk): string {
     '12. researchHypotheses 保存创建时可知事实、预设观察窗口和反证条件；evidenceCandidates 只是按可知时间排列的候选事实与相对大盘对照，不得把相对涨跌直接解释成事件因果，不得自动修改结论；复盘必须区分支持、混合、不支持与事件失效，最终结论由用户确认。',
     '13. researchCockpit 是透明规则与用户明确调整形成的研究队列，不是市场机会排名或模型目标推断；只能解释排序依据和建议下一步，不得替用户调整优先级、改写假设或触发交易。',
     '14. researchMemory 只来自用户明确确认的假设复盘；可用于比较研究结构和总结方法改进，但不得统计交易胜率、根据收益倒推因果、自动保存方法结论、自动修改策略或触发交易。',
-    '15. akshareResearch 是按需生成的研究增强背景；必须检查每项 asOf 和 status，陈旧或缺失数据不得描述为当前事实。source.independentGroup 相同表示最终上游相同，不能算独立互证；这些指标不参与情绪温度、仓位区间或交易触发。',
+    '15. akshareResearch 是用户按数据包选择并按需生成的研究增强背景；只能使用 selection 中已授权的数据包。必须检查每项 asOf、status、source.interface、source.independentGroup 和 interfaceHealth；陈旧、缺失或接口失败的数据不得描述为当前事实，最终上游相同的指标不能算独立互证。这些指标不参与情绪温度、仓位区间、提醒或交易触发。',
     '16. researchWorkflows 是用户预览并明确授权后的研究计划；你只能解释、拆解或建议下一步，不得改变来源范围、权限、提醒和状态，不得代替用户执行来源访问或触发交易。latestRun 只代表最近一次按授权范围收集到的候选证据；resultCard 是事实、血缘、陈旧项和缺口的清单，不是自动结论。templateSpec 只允许复用方法，新标的必须重新预览，不继承旧运行或结论；runComparison 只比较两次收集的数量、状态和陈旧度，不代表研究假设增强或减弱。lineage 只记录研究方法版本及来源，evidenceTimeline 只记录观察时点、数据时点和上游；历史记录不可被新版本覆盖，二者都不能被解释为方向结论。',
   ].join('\n')
 }

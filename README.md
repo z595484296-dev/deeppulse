@@ -4,7 +4,13 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.26.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.27.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 用户可控 AKShare 研究数据包（v1.27）
+- 数据源页可分别选择增长景气、价格环境、流动性、利率环境和外储黄金数据包；设置保存在本机，只有点击生成时才访问所选接口。
+- PMI、CPI、PPI 改用当前可更新的宏观接口，并新增 GDP、M1/M2、SHIBOR、外储和黄金储备；旧接口即使仍能返回，也不会把 2025 年数据冒充当前事实。
+- 每项指标同时展示数据日期、更新频率、AKShare 接口、最终上游与独立来源组；每次运行还展示接口成功、失败、耗时和最近成功时间。
+- AKShare 仍是研究补充层；同一最终上游只算一个来源，所有指标继续排除在情绪温度、仓位、提醒和交易动作之外。
 
 ### 研究方法版本与证据时间轴（v1.26）
 - 每个研究流程都有独立的方法版本；复制或模板实例化时，由本地服务根据真实来源流程生成版本谱系，前端不能伪造来源。

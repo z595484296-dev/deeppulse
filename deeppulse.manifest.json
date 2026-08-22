@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.26.0",
-  "minimumDesktopVersion": "1.26.0",
+  "version": "1.27.0",
+  "minimumDesktopVersion": "1.27.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -19,6 +19,8 @@
     "market-routine-v1",
     "akshare-enrichment-v1",
     "akshare-research-snapshot-v1",
+    "akshare-research-packs-v1",
+    "akshare-interface-health-v1",
     "source-lineage-v1",
     "event-impact-v1",
     "event-background-service-v1",

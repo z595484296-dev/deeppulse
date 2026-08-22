@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 行情页（个股K线 + 实时行情） */
 
-import { api } from '../api.js?v=1.26.0';
-import { marketState, addWatch, loadWatch, emit, state } from '../store.js?v=1.26.0';
-import { klineChart } from '../charts.js?v=1.26.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, debounce, toast, UP, DOWN, phaseBandsOf } from '../util.js?v=1.26.0';
+import { api } from '../api.js?v=1.27.0';
+import { marketState, addWatch, loadWatch, emit, state } from '../store.js?v=1.27.0';
+import { klineChart } from '../charts.js?v=1.27.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, debounce, toast, UP, DOWN, phaseBandsOf } from '../util.js?v=1.27.0';
 
 let built = false;
 let timer = null;

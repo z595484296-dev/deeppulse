@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.26.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.26.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.26.0';
+import { api } from './api.js?v=1.27.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.27.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.27.0';
 
-import * as pageOverview from './pages/overview.js?v=1.26.0';
-import * as pageEmotion from './pages/emotion.js?v=1.26.0';
-import * as pageMarket from './pages/market.js?v=1.26.0';
-import * as pageLadder from './pages/ladder.js?v=1.26.0';
-import * as pageWatch from './pages/watch.js?v=1.26.0';
-import * as pageStrategy from './pages/strategy.js?v=1.26.0';
-import * as pageEpaper from './pages/epaper.js?v=1.26.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.26.0';
-import * as pageAbout from './pages/about.js?v=1.26.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.26.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.26.0';
-import { initOnboarding } from './onboarding.js?v=1.26.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.26.0';
+import * as pageOverview from './pages/overview.js?v=1.27.0';
+import * as pageEmotion from './pages/emotion.js?v=1.27.0';
+import * as pageMarket from './pages/market.js?v=1.27.0';
+import * as pageLadder from './pages/ladder.js?v=1.27.0';
+import * as pageWatch from './pages/watch.js?v=1.27.0';
+import * as pageStrategy from './pages/strategy.js?v=1.27.0';
+import * as pageEpaper from './pages/epaper.js?v=1.27.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.27.0';
+import * as pageAbout from './pages/about.js?v=1.27.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.27.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.27.0';
+import { initOnboarding } from './onboarding.js?v=1.27.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.27.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -253,17 +253,20 @@ function currentHarnessContext() {
       provider: state.akshareResearch.provider,
       generatedAt: state.akshareResearch.generatedAt,
       status: state.akshareResearch.status,
+      selection: state.akshareResearch.selection,
       summary: state.akshareResearch.summary,
       modules: (state.akshareResearch.modules || []).map(module => ({
         id: module.id, label: module.label, purpose: module.purpose, status: module.status,
         metrics: (module.metrics || []).map(metric => ({
           id: metric.id, label: metric.label, value: metric.value, unit: metric.unit,
           asOf: metric.asOf, stalenessDays: metric.stalenessDays, status: metric.status,
-          note: metric.note, reference: metric.reference, source: metric.source,
+          frequency: metric.frequency, note: metric.note, reference: metric.reference, source: metric.source,
           includedInEmotionScore: metric.includedInEmotionScore === true,
         })),
       })),
       errors: state.akshareResearch.errors || [],
+      interfaceHealth: state.akshareResearch.interfaceHealth || [],
+      sourceGroups: state.akshareResearch.sourceGroups || [],
       marketBreadth: state.akshareResearch.marketBreadth,
       lineagePolicy: state.akshareResearch.lineagePolicy,
       boundary: state.akshareResearch.boundary,
@@ -844,7 +847,7 @@ async function boot() {
   document.addEventListener('ask-akshare-research', e => {
     const snapshot = e.detail && e.detail.snapshot;
     const request = askDeepSeek({
-      question: '请解读这份 AKShare 研究增强快照：先按数据日期区分可用、陈旧和缺失项，再说明宏观、价格与利率背景能支持哪些研究线索、不能支持哪些结论。相同独立来源组不得当作交叉验证，不得据此修改情绪温度、仓位或生成交易动作；最后列出应优先补查的一手来源。',
+      question: '请解读这份由我选择数据包后生成的 AKShare 研究增强快照：先检查本次选择、每项数据日期、最终上游和接口健康，再区分可用、陈旧、缺失与接口失败。说明这些背景能支持哪些研究线索、不能支持哪些结论；相同独立来源组不得当作交叉验证，不得据此修改情绪温度、仓位、提醒或生成交易动作；最后列出应优先补查的一手来源。',
       context: { intent: 'explain-akshare-research', akshareResearch: snapshot || null },
     });
     if (!request) toast('请在 DeepSeek Harness 中打开深脉后使用', 'err', 6000);

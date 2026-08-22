@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.26.0';
-import { esc, toast, downloadText } from '../util.js?v=1.26.0';
-import { state } from '../store.js?v=1.26.0';
+import { api } from '../api.js?v=1.27.0';
+import { esc, toast, downloadText } from '../util.js?v=1.27.0';
+import { state } from '../store.js?v=1.27.0';
 
 let built = false;
 
@@ -63,7 +63,7 @@ export function init(container) {
         <div class="card-head">
           <div>
             <div class="card-title">🧭 AKShare 补充层</div>
-            <div class="card-sub">交易日历 · 宏观事件双源补充 · 事件雷达需单独授权</div>
+            <div class="card-sub">按研究主题选择数据包 · 逐项显示最终上游、时效与接口健康</div>
           </div>
           <span class="source-tier enrichment">补充数据</span>
         </div>
@@ -76,8 +76,9 @@ export function init(container) {
             <a class="btn" href="https://akshare.akfamily.xyz/" target="_blank" rel="noopener noreferrer">官方文档</a>
           </div>
         </div>
+        <div id="ds-akshare-packs" class="akresearch-packs"><div class="empty compact">正在读取研究数据包…</div></div>
         <div id="ds-akshare-research-panel" class="akresearch-panel">
-          <div class="empty">研究增强按需读取，不会自动影响情绪温度。点击“生成研究增强快照”查看宏观与利率背景。</div>
+          <div class="empty">研究增强按需读取，不会自动影响情绪温度。先选择研究数据包，再生成快照。</div>
         </div>
         <div class="tdx-safety">分层原则：AKShare 不替代交易所公告、通达信本地行情或实时行情主链路；事件路径只表示透明规则识别的敏感性，不代表因果或方向预测。</div>
       </div>
@@ -142,6 +143,26 @@ export function init(container) {
     await renderAkshareResearch(container, true);
     await renderSources(container);
     btn.disabled = false; btn.textContent = '重新生成研究增强快照';
+  });
+  container.querySelector('#ds-akshare-packs').addEventListener('click', async e => {
+    const button = e.target.closest('[data-akshare-save-packs]');
+    if (!button) return;
+    const selected = [...container.querySelectorAll('[name="akshare-pack"]:checked')].map(node => node.value);
+    if (!selected.length) {
+      toast('至少保留一个研究数据包', 'warn');
+      return;
+    }
+    button.disabled = true; button.textContent = '保存中…';
+    try {
+      await api.saveAkshareResearchConfig({ enabledPacks: selected });
+      state.akshareResearch = null;
+      await renderAkshareConfig(container);
+      await renderAkshareResearch(container, false);
+      toast('研究数据包已保存，下一次生成时生效', 'ok');
+    } catch (error) {
+      toast('保存失败：' + error.message, 'err');
+    }
+    button.disabled = false; button.textContent = '保存选择';
   });
   container.querySelector('#ds-akshare-ask').addEventListener('click', () => {
     if (!state.akshareResearch || state.akshareResearch.status === 'not_loaded') return;
@@ -284,6 +305,34 @@ async function renderTdxStatus(container, fresh = false) {
   }
 }
 
+async function renderAkshareConfig(container) {
+  const el = container.querySelector('#ds-akshare-packs');
+  if (!el) return;
+  try {
+    const config = await api.akshareResearchConfig();
+    const preferences = config.preferences || {};
+    const selected = new Set(preferences.enabledPacks || []);
+    el.innerHTML = `
+      <div class="akresearch-pack-head">
+        <div><b>研究数据包</b><small>只读取勾选主题；设置保存在本机</small></div>
+        <button class="btn sm" data-akshare-save-packs>保存选择</button>
+      </div>
+      <div class="akresearch-pack-grid">
+        ${(config.catalog || []).map(pack => `<label class="akresearch-pack ${selected.has(pack.id) ? 'selected' : ''}">
+          <input type="checkbox" name="akshare-pack" value="${esc(pack.id)}" ${selected.has(pack.id) ? 'checked' : ''}>
+          <span><b>${esc(pack.label)}</b><small>${esc(pack.description || '')}</small><em>${(pack.interfaces || []).length} 个接口</em></span>
+        </label>`).join('')}
+      </div>
+      <div class="akresearch-consent">仅在你点击“生成研究增强快照”时联网；不会后台扩大访问范围。</div>
+    `;
+    el.querySelectorAll('[name="akshare-pack"]').forEach(input => input.addEventListener('change', () => {
+      input.closest('.akresearch-pack')?.classList.toggle('selected', input.checked);
+    }));
+  } catch (error) {
+    el.innerHTML = `<div class="tdx-error">无法读取研究数据包：${esc(error.message)}</div>`;
+  }
+}
+
 async function renderAkshareStatus(container, probe = false) {
   const el = container.querySelector('#ds-akshare-status');
   if (!el) return;
@@ -320,9 +369,13 @@ async function renderAkshareResearch(container, refresh = false) {
   try {
     const snapshot = await api.akshareResearch(refresh);
     state.akshareResearch = snapshot;
-    if (!snapshot || snapshot.status === 'not_loaded') return;
     const refreshButton = container.querySelector('#ds-akshare-research');
     const askButton = container.querySelector('#ds-akshare-ask');
+    if (!snapshot || snapshot.status === 'not_loaded') {
+      if (askButton) askButton.disabled = true;
+      el.innerHTML = '<div class="empty">所选数据包尚未读取。点击“生成研究增强快照”后才会联网访问。</div>';
+      return;
+    }
     if (refreshButton) refreshButton.textContent = '重新生成研究增强快照';
     if (askButton) askButton.disabled = snapshot.status === 'not_installed';
     if (snapshot.status === 'not_installed') {
@@ -335,18 +388,24 @@ async function renderAkshareResearch(container, refresh = false) {
     el.innerHTML = `
       <div class="akresearch-head">
         <div><b>研究增强快照</b><span>${esc(snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString('zh-CN', { hour12: false }) : '--')}</span></div>
-        <div class="akresearch-summary"><span class="ok">${Number(summary.current || 0)} 项可用</span><span class="warn">${Number(summary.stale || 0)} 项陈旧</span><span>${Number(summary.unavailable || 0)} 项缺失</span></div>
+        <div class="akresearch-summary"><span class="ok">${Number(summary.current || 0)} 项可用</span><span class="warn">${Number(summary.stale || 0)} 项陈旧</span><span>${Number(summary.unavailable || 0)} 项缺失</span><span>${Number(summary.sourceGroups || 0)} 个最终上游</span></div>
       </div>
+      <div class="akresearch-selection">本次数据包：${(snapshot.catalog || []).filter(pack => (snapshot.selection || []).includes(pack.id)).map(pack => esc(pack.label)).join(' · ') || '--'}</div>
       <div class="akresearch-modules">
         ${(snapshot.modules || []).map(module => `<section class="akresearch-module ${esc(module.status || '')}">
           <header><div><b>${esc(module.label)}</b><small>${esc(module.purpose)}</small></div><span>${esc(statusLabels[module.status] || module.status || '--')}</span></header>
           <div class="akresearch-metrics">${(module.metrics || []).map(metric => `<div class="akresearch-metric ${esc(metric.status || '')}">
             <div><span>${esc(metric.label)}</span><strong>${metric.value == null ? '--' : esc(metric.value)}${metric.value == null ? '' : `<small>${esc(metric.unit || '')}</small>`}</strong></div>
             <div class="akresearch-meta"><span>${esc(metricLabels[metric.status] || metric.status || '--')} · ${esc(metric.asOf || '无数据日期')}</span><span>上游：${esc(metric.source?.upstream || '--')}</span></div>
+            <div class="akresearch-interface">${esc(metric.source?.interface || '--')} · ${esc(metric.frequency || '--')}</div>
             ${metric.note ? `<p>${esc(metric.note)}</p>` : ''}
           </div>`).join('')}</div>
         </section>`).join('')}
       </div>
+      ${(snapshot.interfaceHealth || []).length ? `<div class="akresearch-health">
+        <b>接口健康</b>
+        <div>${snapshot.interfaceHealth.map(row => `<span class="${esc(row.status || '')}"><i></i>${esc(row.interface)} · ${row.status === 'ok' ? `${Math.round(Number(row.latencyMs || 0))} ms` : row.status === 'failed' ? '本次失败' : '未观测'}</span>`).join('')}</div>
+      </div>` : ''}
       ${(snapshot.errors || []).length ? `<div class="akresearch-errors"><b>降级记录：</b>${snapshot.errors.map(row => `${esc(row.interface)}：${esc(row.error)}`).join(' · ')}</div>` : ''}
       <div class="akresearch-boundary"><b>来源规则：</b>${esc(snapshot.lineagePolicy || '')}<br><b>产品边界：</b>${esc(snapshot.boundary || '')}</div>
     `;
@@ -432,6 +491,6 @@ export async function refresh(container) {
   init(container);
   await Promise.allSettled([
     renderSources(container), renderStatus(container), renderTdxStatus(container), renderAkshareStatus(container),
-    renderAkshareResearch(container, false), renderDiagnostics(container),
+    renderAkshareConfig(container), renderAkshareResearch(container, false), renderDiagnostics(container),
   ]);
 }

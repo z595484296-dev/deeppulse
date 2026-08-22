@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.26.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, research_workflow_lineage: 1, research_evidence_timeline: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
+  data: { version: '1.27.0', capabilities: { tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, akshare_research_packs: 1, akshare_interface_health: 1, source_lineage: 1, event_impact: 1, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, research_workflow_lineage: 1, research_evidence_timeline: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -434,16 +434,18 @@ describe('DeepPulse Harness bridge', () => {
     const ask = normalizeDeepPulseAsk({
       type: 'dp-ask', question: '解释宏观背景', context: {
         akshareResearch: {
-          modelVersion: 'akshare-research-v1', generatedAt: '2026-08-22T08:00:00+08:00', status: 'degraded',
+          modelVersion: 'akshare-research-v2', generatedAt: '2026-08-22T08:00:00+08:00', status: 'degraded',
           provider: { name: 'AKShare', version: '1.16.82', tier: 'enrichment', injected: 'drop provider' },
-          summary: { metrics: 2, current: 1, stale: 1, unavailable: 0, injected: 'drop summary' },
+          selection: ['rates', 'liquidity'], sourceGroups: ['eastmoney', 'jin10'],
+          summary: { metrics: 2, current: 1, stale: 1, unavailable: 0, sourceGroups: 2, injected: 'drop summary' },
           modules: [{ id: 'rates', label: '利率环境', purpose: '研究背景', status: 'partial', metrics: [{
             id: 'china-lpr-1y', label: 'LPR 1 年期', value: 3, unit: '%', asOf: '2026-08-20',
-            stalenessDays: 2, status: 'current', note: '不算独立互证', reference: '',
-            source: { provider: 'AKShare', upstream: '东方财富', upstreamUrl: 'https://data.eastmoney.com/', tier: 'enrichment', independentGroup: 'eastmoney', injected: 'drop source' },
+            stalenessDays: 2, status: 'current', frequency: 'monthly', note: '不算独立互证', reference: '',
+            source: { provider: 'AKShare', interface: 'macro_china_lpr', upstream: '东方财富', upstreamUrl: 'https://data.eastmoney.com/', tier: 'enrichment', independentGroup: 'eastmoney', injected: 'drop source' },
             includedInEmotionScore: false, injected: 'drop metric',
           }], injected: 'drop module' }],
           errors: [{ interface: 'macro_china_cpi_yearly', error: 'upstream changed', injected: 'drop error' }],
+          interfaceHealth: [{ interface: 'macro_china_lpr', status: 'ok', lastObserved: '2026-08-22T08:00:00+08:00', lastOk: '2026-08-22T08:00:00+08:00', latencyMs: 420, failures: 0, injected: 'drop health' }],
           marketBreadth: { status: 'kept-on-primary-chain', statement: '不重复包装为独立来源', injected: 'drop breadth' },
           lineagePolicy: '相同上游不算独立互证', boundary: '不参与情绪温度',
           includedInEmotionScore: false, automaticTradingAction: false, injected: 'drop root',
@@ -451,9 +453,10 @@ describe('DeepPulse Harness bridge', () => {
       },
     })
     expect(ask).toMatchObject({ context: { akshareResearch: {
-      status: 'degraded', summary: { current: 1, stale: 1 },
-      modules: [{ metrics: [{ asOf: '2026-08-20', status: 'current',
-        source: { upstream: '东方财富', independentGroup: 'eastmoney' }, includedInEmotionScore: false }] }],
+      status: 'degraded', selection: ['rates', 'liquidity'], summary: { current: 1, stale: 1, sourceGroups: 2 },
+      modules: [{ metrics: [{ asOf: '2026-08-20', status: 'current', frequency: 'monthly',
+        source: { interface: 'macro_china_lpr', upstream: '东方财富', independentGroup: 'eastmoney' }, includedInEmotionScore: false }] }],
+      interfaceHealth: [{ interface: 'macro_china_lpr', status: 'ok', latencyMs: 420 }],
       marketBreadth: { status: 'kept-on-primary-chain' },
       includedInEmotionScore: false, automaticTradingAction: false,
     } } })
