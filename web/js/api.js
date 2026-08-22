@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.40.0';
+const MIN_VERSION = '1.41.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -127,7 +127,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.40.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.41.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -195,6 +195,14 @@ export const api = {
   akshareResearch: (refresh = false) => request('/api/akshare/research-snapshot?refresh=' + (refresh ? '1' : '0'), 120000),
   disclosures: (code, n = 8) => request(`/api/disclosures?code=${encodeURIComponent(code)}&n=${n}`),
   brain: () => request('/api/brain'),
+  aiProvider: () => request('/api/ai-provider', 10000),
+  testAiProvider: (config) => post('/api/ai-provider/test', config, 45000),
+  confirmAiProvider: (testId, expectedRevision, confirmations) => post(
+    '/api/ai-provider/confirm', { testId, expectedRevision, confirmations }, 10000),
+  disconnectAiProvider: (expectedRevision) => post(
+    '/api/ai-provider/disconnect', { expectedRevision, confirmed: true }, 10000),
+  setAiChatService: (enabled, expectedRevision) => post(
+    '/api/ai-provider/chat-service', { enabled, expectedRevision, confirmed: true }, 10000),
   profile: () => request('/api/profile', 5000),
   saveProfile: (data) => post('/api/profile', { data }, 5000),
   saveBriefReceipt: (receipt, read = true) => post('/api/profile/brief-receipt', { receipt, read }, 5000),

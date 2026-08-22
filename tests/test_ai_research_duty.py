@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 import server
+from ai_provider import provider_fingerprint
 from ai_research_duty import (confirm_delegation, create_job, eligible_trigger,
                               parse_draft, preview_delegation, provider_status)
 from research_watch import confirm_watch, preview_watch
@@ -16,6 +17,12 @@ from research_workflow import create_workflow, preview_workflow, record_run
 
 BJC = timezone(timedelta(hours=8))
 NOW = datetime(2026, 8, 24, 10, 0, tzinfo=BJC)
+
+
+def verified_provider_config(key='configured-key', base='https://api.deepseek.com', model='deepseek-chat'):
+    return {'deepseek_api_key': key, 'deepseek_model': model, 'deepseek_base_url': base,
+            'deepseek_provider_verified_fingerprint': provider_fingerprint(base, model, key),
+            'deepseek_provider_verified_at': NOW.isoformat()}
 
 
 def watched_with_baseline():
@@ -48,7 +55,7 @@ class AiResearchDutyRulesTests(unittest.TestCase):
         self.assertFalse(blocked['ready'])
         preview = preview_delegation(workflow, {'maxRunsPerDay': 3, 'maxTokensPerRun': 2400,
                                                 'expiresAt': '2026-08-29T23:59:00+08:00'},
-                                     provider_status({'deepseek_api_key': 'configured'}), NOW)
+                                     provider_status(verified_provider_config()), NOW)
         self.assertTrue(preview['ready'])
         self.assertEqual(preview['maxRunsPerDay'], 1)
         self.assertEqual(preview['maxTokensPerRun'], 900)
@@ -69,7 +76,7 @@ class AiResearchDutyRulesTests(unittest.TestCase):
     def test_job_is_idempotent_and_draft_parser_rejects_actions_shape(self):
         workflow = watched_with_baseline()
         preview = preview_delegation(workflow, {'expiresAt': '2026-08-29T23:59:00+08:00'},
-                                     provider_status({'deepseek_api_key': 'configured'}), NOW)
+                                     provider_status(verified_provider_config()), NOW)
         delegation = confirm_delegation(
             workflow, preview, [row['id'] for row in preview['permissions']] + ['confirm:ai-duty'], NOW)
         run = workflow['runs'][-1]
@@ -129,8 +136,8 @@ class AiResearchDutyServerTests(unittest.TestCase):
                 config_file = os.path.join(folder, 'config.json')
                 secret = 'test-secret-never-persist'
                 with open(config_file, 'w', encoding='utf-8') as handle:
-                    json.dump({'deepseek_api_key': secret, 'deepseek_model': 'deepseek-chat',
-                               'deepseek_base_url': 'http://127.0.0.1:%d' % httpd.server_port}, handle)
+                    base = 'http://127.0.0.1:%d' % httpd.server_port
+                    json.dump(verified_provider_config(secret, base), handle)
                 workflow = watched_with_baseline()
                 with patch.object(server, 'PROFILE_FILE', profile_file), \
                      patch.object(server, 'CONFIG_FILE', config_file), \
@@ -152,7 +159,18 @@ class AiResearchDutyServerTests(unittest.TestCase):
                         NOW + timedelta(minutes=1), collector=collector,
                         workflow_id=workflow['id'], force=True)
                     job_result = server.process_ai_research_jobs_once(NOW + timedelta(minutes=2))
+                    job_id = job_result['jobId']
+                    opened = server.mutate_research_workflow('ai_draft_evidence_open', {
+                        'workflowId': workflow['id'], 'jobId': job_id})
+                    self.assertEqual(opened['job']['reviewStatus'], 'evidence_opened')
+                    verified = server.mutate_research_workflow('ai_draft_verify', {
+                        'workflowId': workflow['id'], 'jobId': job_id})
+                    self.assertEqual(verified['job']['reviewStatus'], 'verified')
+                    staged = server.mutate_research_workflow('ai_draft_stage', {
+                        'workflowId': workflow['id'], 'jobId': job_id})
+                    self.assertEqual(staged['job']['reviewStatus'], 'staged')
                     data = server.load_profile()['data']
+                    triage = server.attention_triage_status()
                     with open(profile_file, 'r', encoding='utf-8') as handle:
                         stored_text = handle.read()
                 self.assertEqual(watch_result['published'], 1)
@@ -161,6 +179,11 @@ class AiResearchDutyServerTests(unittest.TestCase):
                 self.assertEqual(FakeDeepSeekHandler.authorization, 'Bearer ' + secret)
                 self.assertNotIn(secret, stored_text)
                 self.assertNotIn('chat_action_plans', data)
+                attention = next(row for row in data['attention_inbox'] if row['kind'] == 'ai_research_draft')
+                self.assertEqual(attention['jobId'], job_result['jobId'])
+                target = next(group['target'] for group in triage['groups']
+                              if group['target'].get('jobId') == job_result['jobId'])
+                self.assertEqual(target['view'], 'ai_draft')
                 job = data['ai_research_jobs'][0]
                 self.assertTrue(job['notEvidence'])
                 self.assertEqual(job['usage']['total_tokens'], 200)
@@ -175,7 +198,7 @@ class AiResearchDutyServerTests(unittest.TestCase):
              patch.object(server, 'CONFIG_FILE', os.path.join(folder, 'config.json')), \
              patch.object(server, 'now_bj', return_value=NOW):
             with open(server.CONFIG_FILE, 'w', encoding='utf-8') as handle:
-                json.dump({'deepseek_api_key': 'configured'}, handle)
+                json.dump(verified_provider_config(), handle)
             workflow = watched_with_baseline()
             server.save_profile({'research_workflows': [workflow]})
             options = {'expiresAt': '2026-08-29T23:59:00+08:00'}

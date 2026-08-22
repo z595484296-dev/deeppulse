@@ -4,7 +4,14 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.40.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.41.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### AI 可信接入与首用闭环（v1.41）
+
+- 不再要求手改 `data/config.json`：数据源、策略和关于页共用同一条“连接 → 合成验证 → 按流程授权”入口，完整 Key 永不回填到页面或任何 GET 接口。
+- “存在 Key”不再等于“可以值班”。只有真实完成鉴权、模型和六字段研究草稿结构验证后，后台 AI 才就绪；验证只发送合成样例，不使用股票、公告、复盘或聊天，也不占值班次数。
+- 云端对话与后台研究分开授权。从值班入口保存 API 不会让聊天内容自动外发；替换地址、模型或 Key 会让旧值班授权暂停并要求重新确认。
+- AI 调用回执显示排队、运行、失败、丢弃、token 用量和每日额度。首份草稿进入统一提醒中心并精准落到对应流程；打开证据、人工核验、填入未保存复盘和不采用均留下可撤销回执。
 
 ### 限额可撤销的 AI 研判值班（v1.40）
 

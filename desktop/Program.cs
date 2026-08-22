@@ -738,6 +738,26 @@ internal sealed class HarnessForm : Form
                 || aiResearchBudget.ValueKind != JsonValueKind.Number
                 || !aiResearchBudget.TryGetInt32(out var aiResearchBudgetVersion)
                 || aiResearchBudgetVersion != 1
+                || !capabilities.TryGetProperty("ai_provider_trust_gate", out var aiProviderTrustGate)
+                || aiProviderTrustGate.ValueKind != JsonValueKind.Number
+                || !aiProviderTrustGate.TryGetInt32(out var aiProviderTrustGateVersion)
+                || aiProviderTrustGateVersion != 1
+                || !capabilities.TryGetProperty("ai_provider_synthetic_verification", out var aiProviderSyntheticVerification)
+                || aiProviderSyntheticVerification.ValueKind != JsonValueKind.Number
+                || !aiProviderSyntheticVerification.TryGetInt32(out var aiProviderSyntheticVerificationVersion)
+                || aiProviderSyntheticVerificationVersion != 1
+                || !capabilities.TryGetProperty("ai_provider_secret_isolation", out var aiProviderSecretIsolation)
+                || aiProviderSecretIsolation.ValueKind != JsonValueKind.Number
+                || !aiProviderSecretIsolation.TryGetInt32(out var aiProviderSecretIsolationVersion)
+                || aiProviderSecretIsolationVersion != 1
+                || !capabilities.TryGetProperty("ai_provider_service_authorization", out var aiProviderServiceAuthorization)
+                || aiProviderServiceAuthorization.ValueKind != JsonValueKind.Number
+                || !aiProviderServiceAuthorization.TryGetInt32(out var aiProviderServiceAuthorizationVersion)
+                || aiProviderServiceAuthorizationVersion != 1
+                || !capabilities.TryGetProperty("ai_draft_review_receipts", out var aiDraftReviewReceipts)
+                || aiDraftReviewReceipts.ValueKind != JsonValueKind.Number
+                || !aiDraftReviewReceipts.TryGetInt32(out var aiDraftReviewReceiptsVersion)
+                || aiDraftReviewReceiptsVersion != 1
                 || !capabilities.TryGetProperty("research_suggestion_inbox", out var researchSuggestionInbox)
                 || researchSuggestionInbox.ValueKind != JsonValueKind.Number
                 || !researchSuggestionInbox.TryGetInt32(out var researchSuggestionInboxVersion)
@@ -826,7 +846,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.40.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.41.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {

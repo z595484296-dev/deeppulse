@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.40.0';
-import { esc, toast, downloadText } from '../util.js?v=1.40.0';
-import { state } from '../store.js?v=1.40.0';
+import { api } from '../api.js?v=1.41.0';
+import { esc, toast, downloadText } from '../util.js?v=1.41.0';
+import { state } from '../store.js?v=1.41.0';
 
 let built = false;
 
@@ -39,6 +39,18 @@ export function init(container) {
           </div>
           <button class="btn" id="ds-clear-cache">清除盘中临时轨迹</button>
         </div>
+      </div>
+
+      <div class="card span-12 ai-provider-entry" id="ds-ai-provider-card" tabindex="-1">
+        <div class="card-head">
+          <div><div class="card-title">🧠 DeepSeek 独立 API</div><div class="card-sub">应用内连接与合成验证 · 对话和后台研究分别授权</div></div>
+          <span class="source-tier enrichment" id="ds-ai-provider-badge">读取中</span>
+        </div>
+        <div class="tdx-grid">
+          <div id="ds-ai-provider-status" class="tdx-status"><div class="empty">正在读取本机 AI 提供方状态…</div></div>
+          <div class="tdx-actions"><button class="btn primary" id="ds-ai-provider-open">连接与管理</button></div>
+        </div>
+        <div class="tdx-safety">🔒 合成验证不使用股票、公告、复盘、账户或聊天；保存 API 不会自动开启研究值班，也不会自动开启云端对话。</div>
       </div>
 
       <div class="card span-12 tdx-integration">
@@ -123,6 +135,10 @@ export function init(container) {
   container.querySelector('#ds-refresh').addEventListener('click', () => {
     location.reload();
   });
+  container.querySelector('#ds-ai-provider-open').addEventListener('click', e => {
+    document.dispatchEvent(new CustomEvent('ai-provider-open', { detail: { trigger: e.currentTarget } }));
+  });
+  document.addEventListener('ai-provider-status', e => renderAiProviderStatus(container, e.detail));
   container.querySelector('#ds-tdx-probe').addEventListener('click', async e => {
     const btn = e.currentTarget;
     btn.disabled = true; btn.textContent = '检测中…';
@@ -262,6 +278,23 @@ const STATUS_LABELS = {
 };
 
 const TIER_LABELS = { official: '一级官方', local: '本地终端', market: '市场聚合', enrichment: '补充数据' };
+
+async function renderAiProviderStatus(container, supplied = null) {
+  const el = container.querySelector('#ds-ai-provider-status');
+  const badge = container.querySelector('#ds-ai-provider-badge');
+  if (!el) return;
+  try {
+    const s = supplied || await api.aiProvider();
+    const labels = { verified: ['已验证可用', 'ok'], saved_unverified: ['已保存，待验证', 'warn'], unconfigured: ['未连接', 'warn'] };
+    const [label, tone] = labels[s.state] || ['状态需检查', 'warn'];
+    badge.textContent = label;
+    const chat = s.services?.chat?.enabled ? '已单独授权' : '本地智脑';
+    el.innerHTML = `<div class="tdx-state ${tone}"><i class="dot ${tone}"></i>${esc(label)}</div><div class="tdx-detail"><span>提供方：${esc(s.host || '--')}</span><span>模型：${esc(s.model || 'deepseek-chat')}</span><span>云端对话：${esc(chat)}</span><span>后台值班：${s.verified ? '可逐流程授权' : '不可开启'}</span>${s.verifiedAt ? `<span>验证：${esc(new Date(s.verifiedAt).toLocaleString('zh-CN', { hour12: false }))}</span>` : ''}</div>`;
+  } catch (error) {
+    badge.textContent = '读取失败';
+    el.innerHTML = `<div class="tdx-error">AI 提供方状态读取失败：${esc(error.message)}</div>`;
+  }
+}
 
 async function renderSources(container) {
   const body = container.querySelector('#ds-sources');
@@ -502,7 +535,7 @@ async function renderDiagnostics(container) {
 export async function refresh(container) {
   init(container);
   await Promise.allSettled([
-    renderSources(container), renderStatus(container), renderTdxStatus(container), renderAkshareStatus(container),
+    renderSources(container), renderStatus(container), renderAiProviderStatus(container), renderTdxStatus(container), renderAkshareStatus(container),
     renderAkshareConfig(container), renderAkshareResearch(container, false), renderDiagnostics(container),
   ]);
 }

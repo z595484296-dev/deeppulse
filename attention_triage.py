@@ -75,7 +75,8 @@ def _typed_target(item, attention_id=None, version_key=''):
 
     if workflow_id:
         page, entity_type, entity_id = 'strategy', 'research_workflow', workflow_id
-        view = 'latest_change' if item.get('kind') == 'research_watch' else 'latest_result'
+        view = ('latest_change' if item.get('kind') == 'research_watch' else
+                'ai_draft' if item.get('kind') == 'ai_research_draft' else 'latest_result')
     elif hypothesis_id:
         page, entity_type, entity_id, view = 'strategy', 'research_hypothesis', hypothesis_id, 'review'
     elif suggestion_id:
@@ -103,6 +104,9 @@ def _typed_target(item, attention_id=None, version_key=''):
     run_id = _text(item.get('runId') or change.get('currentRunId'))[:180]
     if run_id:
         target['runId'] = run_id
+    job_id = _text(item.get('jobId'))[:180]
+    if job_id and view == 'ai_draft':
+        target['jobId'] = job_id
     target['fingerprint'] = _target_fingerprint(
         target, version_key or item.get('targetVersion') or item.get('runId')
         or item.get('createdAt') or item_id)

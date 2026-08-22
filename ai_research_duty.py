@@ -12,6 +12,8 @@ import hashlib
 import json
 from urllib.parse import urlparse
 
+from ai_provider import public_status as ai_provider_public_status
+
 
 MODEL_VERSION = 'ai-research-duty-v1'
 PROMPT_VERSION = 'ai-research-draft-v1'
@@ -39,27 +41,15 @@ def _parse_time(value):
 
 
 def provider_status(config):
-    value = config if isinstance(config, dict) else {}
-    key_configured = bool(str(value.get('deepseek_api_key') or '').strip())
-    base = str(value.get('deepseek_base_url') or 'https://api.deepseek.com').strip()
-    parsed = urlparse(base)
-    secure = parsed.scheme == 'https' or (parsed.scheme == 'http' and parsed.hostname in {'127.0.0.1', 'localhost', '::1'})
-    ready = key_configured and secure
-    host = parsed.hostname or ''
-    if parsed.port:
-        host += ':' + str(parsed.port)
-    model = str(value.get('deepseek_model') or 'deepseek-chat')[:120]
-    provider_fingerprint = hashlib.sha256((host + '|' + model).encode('utf-8')).hexdigest()[:20]
-    return {
-        'provider': 'deepseek_api',
-        'ready': ready,
-        'model': model, 'host': host, 'fingerprint': provider_fingerprint,
-        'reason': (None if ready else
-                   'DeepSeek API 地址只允许 HTTPS 或本机 loopback HTTP。' if key_configured and not secure else
-                   '独立版尚未配置 DeepSeek API；Harness 会话不能用于后台值班。'),
-        'credentialStoredInProfile': False,
-        'harnessSessionAllowed': False,
-    }
+    status = ai_provider_public_status(config)
+    status['fingerprint'] = status.get('configRevision') or ''
+    if status.get('ready'):
+        status['reason'] = None
+    elif status.get('configured'):
+        status['reason'] = '独立 DeepSeek API 已保存但尚未通过合成连接与结构验证。'
+    else:
+        status['reason'] = '独立版尚未配置 DeepSeek API；Harness 会话不能用于后台值班。'
+    return status
 
 
 def source_fingerprint(workflow):
@@ -226,7 +216,7 @@ def daily_usage(jobs, workflow_id, now=None):
     day = _now(now).date().isoformat()
     rows = [row for row in (jobs or []) if isinstance(row, dict)]
     completed_states = {'queued', 'running', 'completed_draft', 'failed_provider',
-                        'interrupted', 'discarded_after_revocation'}
+                        'interrupted', 'discarded_after_revocation', 'dismissed'}
     per_workflow = sum(1 for row in rows if row.get('workflowId') == workflow_id
                        and str(row.get('createdAt') or '')[:10] == day
                        and row.get('status') in completed_states)

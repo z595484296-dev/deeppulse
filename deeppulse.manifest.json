@@ -1,7 +1,7 @@
 {
   "name": "DeepPulse",
-  "version": "1.40.0",
-  "minimumDesktopVersion": "1.40.0",
+  "version": "1.41.0",
+  "minimumDesktopVersion": "1.41.0",
   "capabilities": [
     "deepseek-harness-bridge-v2",
     "deepseek-harness-bridge-v3",
@@ -76,6 +76,10 @@
     "ai-research-duty-v1",
     "ai-research-job-receipts-v1",
     "ai-research-budget-v1",
+    "ai-provider-trust-gate-v1",
+    "ai-provider-synthetic-verification-v1",
+    "ai-provider-service-authorization-v1",
+    "ai-draft-review-receipts-v1",
     "service-management-center-v1",
     "proactive-target-v1",
     "disposition-receipts-v1",

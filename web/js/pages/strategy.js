@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.40.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.40.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.40.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.40.0';
+import { api } from '../api.js?v=1.41.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.41.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.41.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.41.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -121,6 +121,7 @@ export function init(container) {
           <div class="workflow-summary" id="st-workflow-summary">正在读取…</div>
         </div>
         <p class="hypothesis-boundary">把研究对象、问题、证据源、复盘时点和输出方式组合成一个可控任务。预览不会访问外部数据；DeepSeek 只能建议拆解，不能替你确认权限。</p>
+        <section class="ai-provider-banner" id="st-ai-provider-banner" data-state="loading" aria-live="polite"><div><b>后台 AI：正在读取连接状态…</b><p>Harness 会话不会被关闭页面后的 AI 值班使用。</p></div></section>
         <div class="workflow-origin-banner" id="st-wf-origin-banner" hidden></div>
         <div class="workflow-builder">
           <form id="st-workflow-form" class="workflow-form" autocomplete="off">
@@ -428,6 +429,11 @@ export function init(container) {
   });
 
   const workflowForm = container.querySelector('#st-workflow-form');
+  container.querySelector('#st-ai-provider-banner').addEventListener('click', e => {
+    const button = e.target.closest('[data-open-ai-provider]');
+    if (button) document.dispatchEvent(new CustomEvent('ai-provider-open', { detail: { trigger: button } }));
+  });
+  document.addEventListener('ai-provider-status', () => refreshResearchWorkflows(container));
   const workflowPreviewPanel = container.querySelector('#st-wf-preview-panel');
   container.querySelector('#st-suggestion-refresh').addEventListener('click', async e => {
     const button = e.currentTarget;
@@ -590,6 +596,10 @@ export function init(container) {
       toast(error.message || '创建研究流程失败', 'err');
     }
   });
+  container.querySelector('#st-workflow-list').addEventListener('change', e => {
+    const checkbox = e.target.closest('[data-ai-draft-verify-check]');
+    if (checkbox) checkbox.closest('.workflow-ai-verify')?.querySelector('[data-wf-action="ai_draft_verify"]')?.toggleAttribute('disabled', !checkbox.checked);
+  });
   container.querySelector('#st-workflow-list').addEventListener('click', async e => {
     const attentionButton = e.target.closest('[data-workflow-attention-action]');
     if (attentionButton && activeWorkflowAttention) {
@@ -633,6 +643,10 @@ export function init(container) {
       return;
     }
     if (action === 'ai-duty-setup') {
+      if (researchWorkflowData?.aiDutyProvider?.ready !== true) {
+        document.dispatchEvent(new CustomEvent('ai-provider-open', { detail: { trigger: button } }));
+        return;
+      }
       openAiDutyDialog(container, workflow);
       return;
     }
@@ -665,12 +679,28 @@ export function init(container) {
       return;
     }
     if (action === 'ai_draft_evidence') {
-      const timeline = button.closest('.workflow-item')?.querySelector('.workflow-evidence-timeline');
+      try {
+        const result = await api.mutateResearchWorkflow('ai_draft_evidence_open', { workflowId: workflow.id, jobId: button.dataset.jobId });
+        researchWorkflowData = result.workflows; state.researchWorkflows = researchWorkflowData;
+        renderResearchWorkflows(container);
+      } catch (error) { toast(error.message || '证据查看回执未保存', 'err'); }
+      const timeline = container.querySelector(`[data-workflow-id="${CSS.escape(workflow.id)}"] .workflow-evidence-timeline`);
       if (timeline) { timeline.open = true; timeline.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' }); }
+      return;
+    }
+    if (action === 'ai_draft_verify') {
+      button.disabled = true;
+      try {
+        const result = await api.mutateResearchWorkflow('ai_draft_verify', { workflowId: workflow.id, jobId: button.dataset.jobId });
+        researchWorkflowData = result.workflows; state.researchWorkflows = researchWorkflowData; renderResearchWorkflows(container);
+        toast('已记录人工核验；这仍是研究草稿，不会自动成为结论', 'ok');
+      } catch (error) { button.disabled = false; toast(error.message || '人工核验回执未保存', 'err'); }
       return;
     }
     if (action === 'ai_draft_review') {
       const job = (workflow.aiDrafts || []).find(row => row.id === button.dataset.jobId);
+      const verified = Boolean(job?.humanVerifiedAt);
+      if (!verified && !window.confirm('这份 AI 草稿尚未完成人工核验。仍要填入未保存复盘草稿吗？内容不会自动保存为研究结论。')) return;
       const output = job?.output || {};
       const lines = ['[AI 草稿，待人工核验；尚未保存为复盘结论]', output.summary || '', '',
         '事实摘录（需核对原文）：', ...(output.facts || []).map(row => `- ${row}`), '',
@@ -681,6 +711,11 @@ export function init(container) {
       const journalText = container.querySelector('#st-jtext');
       if (calendarText) calendarText.value = text;
       if (journalText) journalText.value = text;
+      try {
+        const result = await api.mutateResearchWorkflow('ai_draft_stage', { workflowId: workflow.id, jobId: button.dataset.jobId });
+        researchWorkflowData = result.workflows; state.researchWorkflows = researchWorkflowData;
+        renderResearchWorkflows(container);
+      } catch (error) { toast(error.message || '草稿接力回执未保存', 'err'); }
       container.querySelector('#st-cal-panel')?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
       toast('AI 内容仅填入未保存草稿；核验后由你决定是否保存');
       return;
@@ -705,6 +740,7 @@ export function init(container) {
         ai_duty_pause: 'AI 值班已暂停；普通研究值守仍继续', ai_duty_resume: 'AI 值班已恢复',
         ai_duty_revoke: 'AI 值班已撤销；普通研究值守仍继续',
         ai_draft_dismiss: '已标记为不采用；不会据此学习偏好',
+        ai_draft_restore: '已撤销“不采用”，草稿重新回到待核验状态',
       };
       toast(notices[action] || '研究流程已更新', result.published ? 'ok' : undefined);
     } catch (error) {
@@ -1402,7 +1438,16 @@ function renderResearchWorkflows(container) {
   if (!root || !researchWorkflowData) return;
   const summary = researchWorkflowData.summary || {};
   const dutySummary = researchWorkflowData.aiDutySummary || {};
-  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · 暂停 <b>${summary.paused || 0}</b> · AI 值班 <b>${dutySummary.active || 0}</b> · 待核验草稿 <b>${dutySummary.drafts || 0}</b>`;
+  const provider = researchWorkflowData.aiDutyProvider || {};
+  const providerBanner = container.querySelector('#st-ai-provider-banner');
+  if (providerBanner) {
+    const ready = provider.ready === true;
+    providerBanner.dataset.state = ready ? 'verified' : (provider.configured ? 'saved_unverified' : 'unconfigured');
+    providerBanner.innerHTML = ready
+      ? `<div><b>后台 AI：${esc(provider.model || 'DeepSeek')} 已验证</b><p>${esc(provider.host || '--')} · ${provider.verifiedAt ? `验证于 ${esc(formatHypothesisTime(provider.verifiedAt))}` : '已通过合成结构验证'} · 每条流程仍需单独授权</p></div><button class="btn sm" data-open-ai-provider>管理连接</button>`
+      : `<div><b>后台 AI：${provider.configured ? '已保存但尚未验证' : '未连接独立 DeepSeek API'}</b><p>${esc(provider.reason || '当前 Harness 会话不会用于关闭页面后的 AI 值班。')}</p></div><button class="btn sm primary" data-open-ai-provider>${provider.configured ? '完成验证' : '连接并验证'}</button>`;
+  }
+  container.querySelector('#st-workflow-summary').innerHTML = `运行 <b>${summary.active || 0}</b> · 待复盘 <b>${summary.review_due || 0}</b> · AI 值班 <b>${dutySummary.active || 0}</b> · 今日调用 <b>${dutySummary.usedToday || 0}/${dutySummary.globalDailyLimit || 3}</b>${dutySummary.tokensToday ? ` · ${Number(dutySummary.tokensToday)} tokens` : ''} · 待核验草稿 <b>${dutySummary.drafts || 0}</b>`;
   const items = researchWorkflowData.items || [];
   if (!items.length) {
     root.innerHTML = '<div class="empty">还没有研究流程。可以从一个具体问题开始，先预览再创建。</div>';
@@ -1487,23 +1532,33 @@ function renderResearchWorkflows(container) {
       invalid: ['AI 值班需检查', 'red'], off: ['AI 值班未开启', 'gray'] };
     const dutyLabel = dutyLabels[dutyState] || dutyLabels.invalid;
     const providerReady = researchWorkflowData.aiDutyProvider?.ready === true;
+    const jobLabels = { queued: '已排队', running: '正在整理', completed_draft: '草稿待核验', failed_provider: '调用失败', interrupted: '服务重启，未自动重试', discarded_after_revocation: '授权变化，结果已丢弃', cancelled: '授权已失效', dismissed: '草稿已不采用' };
+    const jobReceipts = (item.aiDutyJobs || []).length ? `<div class="workflow-ai-job-receipts"><b>最近调用回执</b>${(item.aiDutyJobs || []).slice().reverse().map(row => `<div data-status="${esc(row.status || '')}"><span>${esc(jobLabels[row.status] || row.status || '未知')}</span><time>${esc(formatHypothesisTime(row.finishedAt || row.startedAt || row.createdAt))}</time><em>${row.usage?.total_tokens ? `${Number(row.usage.total_tokens)} tokens` : row.status === 'completed_draft' ? '用量未知' : ''}</em>${row.errorCode ? `<small>${esc({ provider_failed: '提供方调用失败，可检查连接后再次明确试跑', invalid_output: '返回结构不兼容，请重新验证提供方', service_restarted: '服务重启后未自动重试，避免重复计费', authorization_changed: '授权变化后正文未保存', authorization_inactive: '授权当前不可用' }[row.errorCode] || '本次未生成草稿')}</small>` : ''}</div>`).join('')}</div>` : '';
     const dutyActions = dutyState === 'active'
-      ? `<button class="btn sm" data-wf-action="ai_duty_test" data-wf-id="${esc(item.id)}">测试连接与格式</button><button class="btn sm" data-wf-action="ai_duty_pause" data-wf-id="${esc(item.id)}">暂停 AI 值班</button><button class="btn sm ghost" data-wf-action="ai_duty_revoke" data-wf-id="${esc(item.id)}">撤销 AI 值班</button>`
+      ? `<button class="btn sm" data-wf-action="ai_duty_test" data-wf-id="${esc(item.id)}">用最近公告试跑一次（占今日 1 次）</button><button class="btn sm" data-wf-action="ai_duty_pause" data-wf-id="${esc(item.id)}">暂停 AI 值班</button><button class="btn sm ghost" data-wf-action="ai_duty_revoke" data-wf-id="${esc(item.id)}">撤销 AI 值班</button>`
       : dutyState === 'paused'
         ? `<button class="btn sm" data-wf-action="ai_duty_resume" data-wf-id="${esc(item.id)}">恢复 AI 值班</button><button class="btn sm ghost" data-wf-action="ai_duty_revoke" data-wf-id="${esc(item.id)}">撤销 AI 值班</button>`
         : `<button class="btn sm" data-wf-action="ai-duty-setup" data-wf-id="${esc(item.id)}">${dutyState === 'off' ? (providerReady ? '开启 AI 研判值班' : '查看 AI 值班要求') : '重新授权 AI 值班'}</button>`;
     const dutyCard = item.kind !== 'template' && watchState !== 'off' ? `<section class="workflow-ai-duty" data-state="${esc(dutyState)}" aria-live="polite">
       <div class="workflow-watch-head"><span class="badge ${dutyLabel[1]}">${dutyLabel[0]}</span><span>${duty.expiresAt ? `至 ${esc(formatHypothesisTime(duty.expiresAt))}` : (providerReady ? '默认关闭，需独立授权' : '独立版 DeepSeek API 未配置')}</span></div>
       <p>${esc(duty.boundary || '只在新增官方披露后生成未核验草稿；首轮基线、无变化和来源故障均不调用。')}</p>
+      <div class="workflow-ai-budget">今日这条流程最多 1 次 · 全局 ${Number(dutySummary.usedToday || 0)}/${Number(dutySummary.globalDailyLimit || 3)} · 北京时间 00:00 重置</div>
       ${duty.lastBlockedReason ? `<small>最近未运行：${esc(duty.lastBlockedReason)}</small>` : ''}
+      ${jobReceipts}
       <div class="workflow-watch-actions">${dutyActions}</div>
     </section>` : '';
-    const aiDrafts = (item.aiDrafts || []).filter(row => row.status !== 'dismissed');
+    const aiDrafts = item.aiDrafts || [];
     const aiDraftCards = aiDrafts.map(job => {
       const output = job.output || {};
+      if (job.status === 'dismissed') return `<article class="workflow-ai-draft dismissed" data-ai-job-id="${esc(job.id)}"><div class="workflow-ai-draft-head"><div><span class="badge gray">已不采用</span><b>AI 研判草稿</b></div><span>${esc(formatHypothesisTime(job.dismissedAt))}</span></div><button class="btn sm ghost" data-wf-action="ai_draft_restore" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">撤销不采用</button></article>`;
+      const reviewStatus = job.reviewStatus || 'pending_review';
+      const verified = Boolean(job.humanVerifiedAt);
+      const reviewLabels = { pending_review: '待核验', evidence_opened: '已打开证据，尚未确认', verified: '已人工核验', staged: '已填入未保存复盘草稿' };
+      const usage = job.usage || {};
       return `<article class="workflow-ai-draft" data-status="unverified_draft" data-ai-job-id="${esc(job.id)}">
-        <div class="workflow-ai-draft-head"><div><span class="badge violet">AI 研判草稿</span><b>${job.trigger === 'manual_test' ? '连接与格式测试草稿' : '新增官方披露研判草稿'}</b></div><span>未核验 · 不计入证据</span></div>
+        <div class="workflow-ai-draft-head"><div><span class="badge violet">AI 研判草稿</span><b>${job.trigger === 'manual_test' ? '连接与格式测试草稿' : '新增官方披露研判草稿'}</b></div><span>${verified ? '已人工核验 · 仍不计入证据' : '未核验 · 不计入证据'}</span></div>
         <div class="workflow-ai-draft-guard" role="note">以下内容由 DeepSeek 基于冻结公告片段生成，是待人工核验的草稿，不是市场事实、研究结论或投资建议。</div>
+        <div class="workflow-ai-draft-meta"><span>${esc(job.model || 'DeepSeek')}</span><span>证据 ${esc(formatHypothesisTime(job.evidenceAsOf))}</span><span>生成 ${esc(formatHypothesisTime(job.finishedAt))}</span><span>${usage.total_tokens ? `${Number(usage.total_tokens)} tokens` : '服务商未返回 token 用量'}</span><b>${esc(reviewLabels[reviewStatus] || reviewStatus)}</b></div>
         <p>${esc(output.summary || '')}</p>
         <details><summary>查看事实摘录、推断、缺口与反证</summary>
           <h4>事实摘录（仍需核对原文）</h4><ul>${(output.facts || []).map(row => `<li>${esc(row)}</li>`).join('') || '<li>无</li>'}</ul>
@@ -1511,7 +1566,8 @@ function renderResearchWorkflows(container) {
           <h4>待补证与反证</h4><ul>${[...(output.gaps || []), ...(output.falsifiers || [])].map(row => `<li>${esc(row)}</li>`).join('') || '<li>无</li>'}</ul>
           <small>引用：${(output.citations || []).map(esc).join('；') || '模型未返回可验证引用，草稿已降级'}</small>
         </details>
-        <div class="workflow-ai-draft-actions"><button class="btn sm primary" data-wf-action="ai_draft_evidence" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">核对原始证据</button><button class="btn sm" data-wf-action="ai_draft_review" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">填入复盘草稿</button><button class="btn sm ghost" data-wf-action="ai_draft_dismiss" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">不采用</button></div>
+        ${!verified ? `<label class="workflow-ai-verify"><input type="checkbox" data-ai-draft-verify-check><span>我已核对公告原文、发布日期与引用范围</span><button class="btn sm" disabled data-wf-action="ai_draft_verify" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">确认人工核验</button></label>` : `<div class="workflow-ai-verified">✓ 人工核验于 ${esc(formatHypothesisTime(job.humanVerifiedAt))}</div>`}
+        <div class="workflow-ai-draft-actions"><button class="btn sm ${verified ? '' : 'primary'}" data-wf-action="ai_draft_evidence" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">核对原始证据</button><button class="btn sm ${verified ? 'primary' : ''}" data-wf-action="ai_draft_review" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">填入复盘草稿</button><button class="btn sm ghost" data-wf-action="ai_draft_dismiss" data-wf-id="${esc(item.id)}" data-job-id="${esc(job.id)}">不采用</button></div>
       </article>`;
     }).join('');
     const canRun = item.status === 'active';
@@ -1554,10 +1610,18 @@ function revealWorkflowAttentionTarget(target, attentionTarget = {}) {
   const comparisonDetails = comparison?.querySelector('details');
   const timeline = target.querySelector('.workflow-evidence-timeline');
   const watch = target.querySelector('.workflow-watch');
+  const aiDraft = attentionTarget?.jobId
+    ? [...target.querySelectorAll('.workflow-ai-draft')].find(row => row.dataset.aiJobId === String(attentionTarget.jobId))
+    : target.querySelector('.workflow-ai-draft');
   if (view === 'latest_change') {
     if (comparisonDetails) comparisonDetails.open = true;
     if (timeline) timeline.open = true;
     (comparison || timeline || watch)?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
+  } else if (view === 'ai_draft' && aiDraft) {
+    aiDraft.querySelector('details')?.setAttribute('open', '');
+    aiDraft.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
+    aiDraft.classList.add('workflow-focus');
+    setTimeout(() => aiDraft.classList.remove('workflow-focus'), 3200);
   }
 }
 

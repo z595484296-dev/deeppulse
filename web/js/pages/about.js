@@ -1,6 +1,6 @@
 /* 深脉 DeepPulse — 关于页（我的身体自述） */
 
-import { replayOnboarding } from '../onboarding.js?v=1.40.0';
+import { replayOnboarding } from '../onboarding.js?v=1.41.0';
 
 let built = false;
 
@@ -64,7 +64,7 @@ export function init(container) {
         <div class="card-head"><div class="card-title">使用指南</div></div>
         <div class="about-copy" style="font-size:12.5px;columns:2;column-gap:40px">
           <p><b>① 总览</b> —— 每天开盘前看一眼：温度、阶段、仓位建议、风险信号，一分钟完成市场体检。首页常驻<b>蚂小财</b>，直接对话。</p>
-          <p><b>🐜 蚂小财</b> —— 右下角悬浮球随时召唤。问我行情、情绪、策略，或一句话调度全局：「打开涨停梯队」「帮我看看贵州茅台」「加自选 宁德时代」。配置 DeepSeek 官方 API 后启用云端模型，未配置时使用本地规则引擎；当前模式始终显示在助手标题下方。</p>
+          <p><b>🐜 蚂小财</b> —— 右下角悬浮球随时召唤。问我行情、情绪、策略，或一句话调度全局：「打开涨停梯队」「帮我看看贵州茅台」「加自选 宁德时代」。独立 API 必须先通过合成验证；云端对话和后台研究分别授权，未授权时继续使用本地规则引擎。</p>
           <p><b>② 情绪周期</b> —— 复盘时看：温度曲线走到哪一段，昨日涨停/连板指数是否转负，评分明细哪个指标在拖后腿。</p>
           <p><b>③ 行情</b> —— 个股日/周/月K + MA + MACD，涨停股会带上「N连板」标签，点击指数卡或榜单可直达。</p>
           <p><b>④ 涨停梯队</b> —— 游资视角的战场地图：最高板是谁、梯队厚度如何、题材聚在哪，一目了然。</p>
@@ -76,16 +76,19 @@ export function init(container) {
 
       <div class="card span-12" style="text-align:center;padding:20px">
         <div style="font-size:12px;color:var(--text-3);line-height:2">
-          深脉 DeepPulse v1.40.0 · 本地运行 · 数据来源：官方披露 / 通达信 TQ-Local（可选）/ 东方财富 / 腾讯 / AKShare 补充层<br>
+          深脉 DeepPulse v1.41.0 · 本地运行 · 数据来源：官方披露 / 通达信 TQ-Local（可选）/ 东方财富 / 腾讯 / AKShare 补充层<br>
           仅供研究参考，不构成投资建议 · 市场有风险，决策需独立<br>
           <span style="color:var(--text-3)">Made by DeepSeek, for a trader who reads the market's pulse.</span>
         </div>
-        <button class="btn sm ghost" id="ab-replay-guide" style="margin-top:10px">▶ 重新播放新手引导</button>
+        <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="btn sm" id="ab-ai-provider">连接与管理 DeepSeek API</button><button class="btn sm ghost" id="ab-replay-guide">▶ 重新播放新手引导</button></div>
       </div>
     </div>
   `;
 
   container.querySelector('#ab-replay-guide').addEventListener('click', replayOnboarding);
+  container.querySelector('#ab-ai-provider').addEventListener('click', e => {
+    document.dispatchEvent(new CustomEvent('ai-provider-open', { detail: { trigger: e.currentTarget } }));
+  });
 }
 
 export async function refresh() {

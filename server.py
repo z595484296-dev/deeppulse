@@ -31,6 +31,7 @@ import threading
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
 import zipfile
 from datetime import datetime, timezone, timedelta, date as _date
 from http.client import RemoteDisconnected
@@ -129,6 +130,21 @@ except Exception:
     AI_RESEARCH_DUTY_MODEL_VERSION = 'ai-research-duty-unavailable'
 
 try:
+    from ai_provider import (candidate as ai_provider_candidate,
+                             config_fingerprint as ai_provider_config_fingerprint,
+                             public_status as ai_provider_public_status,
+                             test_preview as ai_provider_test_preview,
+                             validate_confirmation as validate_ai_provider_confirmation,
+                             MODEL_VERSION as AI_PROVIDER_MODEL_VERSION,
+                             SCHEMA_VERSION as AI_PROVIDER_SCHEMA_VERSION)
+except Exception:
+    ai_provider_candidate = ai_provider_config_fingerprint = None
+    ai_provider_public_status = ai_provider_test_preview = None
+    validate_ai_provider_confirmation = None
+    AI_PROVIDER_MODEL_VERSION = 'ai-provider-unavailable'
+    AI_PROVIDER_SCHEMA_VERSION = 'research-draft-schema-unavailable'
+
+try:
     from research_suggestions import (build_snapshot as build_research_suggestion_snapshot,
                                       draft_fingerprint as research_suggestion_draft_fingerprint,
                                       mutate_item as mutate_research_suggestion_item,
@@ -184,7 +200,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.40.0'
+VERSION = '1.41.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1505,6 +1521,9 @@ def em_dragon_seats(code, date=None):
 # ---------------------------------------------------------------- 配置（可选云端大脑）
 
 CONFIG_FILE = os.path.join(DATA, 'config.json')
+_ai_provider_config_lock = threading.Lock()
+_ai_provider_test_lock = threading.Lock()
+_ai_provider_tests = {}
 
 
 def load_config():
@@ -1525,6 +1544,180 @@ def ensure_config():
                           f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+
+def _write_config_unlocked(value):
+    """Atomically write local-only configuration without returning secrets."""
+    temp_file = CONFIG_FILE + '.tmp'
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        json.dump(value, f, ensure_ascii=False, indent=2)
+    os.replace(temp_file, CONFIG_FILE)
+
+
+def ai_provider_status():
+    if not ai_provider_public_status:
+        return {'state': 'unavailable', 'configured': False, 'verified': False,
+                'ready': False, 'reason': 'AI 提供方接入模块不可用'}
+    return ai_provider_public_status(load_config(), now_bj())
+
+
+def _ai_provider_probe(candidate_value, timeout=35):
+    """Verify authentication, model access and the exact research JSON schema.
+
+    The payload is synthetic and contains no security, research, profile or
+    market data.  The credential is used only in the Authorization header.
+    """
+    payload = {
+        'model': candidate_value['model'],
+        'messages': [
+            {'role': 'system', 'content': (
+                'Return one JSON object only. Required keys: summary, facts, inferences, gaps, '
+                'falsifierChecks, citations. The five list fields must be JSON arrays of strings.')},
+            {'role': 'user', 'content': (
+                'Synthetic format check. No real company or market data is present. '
+                'Use summary="format ok" and cite only SYNTHETIC-001.')},
+        ],
+        'temperature': 0, 'stream': False, 'max_tokens': 220,
+        'response_format': {'type': 'json_object'},
+    }
+    request = urllib.request.Request(
+        candidate_value['baseUrl'] + '/chat/completions',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json',
+                 'Authorization': 'Bearer ' + candidate_value['apiKey']},
+        method='POST')
+    started = time.monotonic()
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read(32 * 1024)
+    latency_ms = round((time.monotonic() - started) * 1000)
+    if len(raw) >= 32 * 1024:
+        raise ValueError('schema_incompatible')
+    envelope = json.loads(raw.decode('utf-8'))
+    content = (envelope.get('choices') or [{}])[0].get('message', {}).get('content', '')
+    value = json.loads(str(content or ''))
+    if not isinstance(value, dict) or not isinstance(value.get('summary'), str):
+        raise ValueError('schema_incompatible')
+    for name in ('facts', 'inferences', 'gaps', 'falsifierChecks', 'citations'):
+        if not isinstance(value.get(name), list) or not all(isinstance(row, str) for row in value[name]):
+            raise ValueError('schema_incompatible')
+    return {'passed': True, 'latencyMs': latency_ms,
+            'usage': {name: int((envelope.get('usage') or {}).get(name) or 0)
+                      for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')}}
+
+
+def _ai_provider_error(error):
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in (401, 403):
+            return 'invalid_credentials', 'API Key 无效或没有调用权限，请检查后重试'
+        if error.code in (402, 429):
+            return 'rate_limited', '提供方额度不足或正在限流，请稍后重试'
+        if error.code in (400, 404, 422):
+            return 'model_unavailable', 'API 地址或模型不可用，请核对模型名称'
+        return 'provider_error', '提供方暂时无法完成验证'
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return 'network_timeout', '连接超时，配置尚未保存，请稍后重试'
+    if isinstance(error, (ValueError, json.JSONDecodeError)):
+        return 'schema_incompatible', '连接成功，但返回内容不符合研究草稿结构'
+    if isinstance(error, urllib.error.URLError):
+        return 'network_unavailable', '无法连接 API 地址，请检查网络或地址'
+    return 'provider_error', '验证未完成，请检查配置后重试'
+
+
+def test_ai_provider(body):
+    if not all((ai_provider_candidate, ai_provider_test_preview, ai_provider_config_fingerprint)):
+        raise ValueError('AI 提供方接入模块不可用')
+    current = load_config()
+    expected_revision = (ai_provider_config_fingerprint(current) or '')[:20] or 'unconfigured'
+    candidate_value = ai_provider_candidate(body, current if body.get('reuseExistingKey') is True else {})
+    try:
+        result = _ai_provider_probe(candidate_value)
+    except Exception as error:
+        code, message = _ai_provider_error(error)
+        return {'passed': False, 'state': code, 'message': message,
+                'host': candidate_value['host'], 'model': candidate_value['model'],
+                'syntheticOnly': True, 'usesResearchData': False,
+                'countsAgainstDutyBudget': False}
+    preview = ai_provider_test_preview(candidate_value, result, expected_revision, now_bj())
+    secret = dict(preview)
+    secret['_candidate'] = candidate_value
+    with _ai_provider_test_lock:
+        _ai_provider_tests.clear()
+        _ai_provider_tests[preview['testId']] = secret
+    public = dict(preview)
+    public.pop('fingerprint', None)
+    public['passed'] = True
+    public['state'] = 'verified_preview'
+    public['message'] = '连接与研究草稿结构验证通过；确认后才会保存到本机'
+    return public
+
+
+def confirm_ai_provider(test_id, expected_revision, confirmations):
+    with _ai_provider_test_lock:
+        preview = _ai_provider_tests.get(str(test_id or ''))
+    if not preview:
+        raise ValueError('连接测试不存在或已经过期，请重新测试')
+    with _ai_provider_config_lock:
+        current = load_config()
+        current_revision = (ai_provider_config_fingerprint(current) or '')[:20] or 'unconfigured'
+        if str(expected_revision or '') != current_revision:
+            raise ValueError('AI 配置已变化，请重新测试后再保存')
+        validate_ai_provider_confirmation(preview, confirmations, current_revision, now_bj())
+        candidate_value = preview['_candidate']
+        existing_chat_flag = current.get('deepseek_chat_enabled')
+        existing_chat_enabled = bool(current.get('deepseek_api_key')) if existing_chat_flag is None else existing_chat_flag is True
+        saved = dict(current)
+        saved.update({
+            'deepseek_api_key': candidate_value['apiKey'],
+            'deepseek_base_url': candidate_value['baseUrl'],
+            'deepseek_model': candidate_value['model'],
+            'deepseek_provider_verified_fingerprint': candidate_value['fingerprint'],
+            'deepseek_provider_verified_at': preview['verifiedAt'],
+            'deepseek_provider_latency_ms': preview['latencyMs'],
+            'deepseek_provider_schema_version': preview['schemaVersion'],
+            # Provider onboarding never broadens interactive chat permissions.
+            'deepseek_chat_enabled': existing_chat_enabled,
+        })
+        _write_config_unlocked(saved)
+    with _ai_provider_test_lock:
+        _ai_provider_tests.pop(str(test_id or ''), None)
+    _ai_research_wake.set()
+    return ai_provider_status()
+
+
+def disconnect_ai_provider(expected_revision, confirmed=False):
+    if not confirmed:
+        raise ValueError('断开独立 API 需要明确确认')
+    with _ai_provider_config_lock:
+        current = load_config()
+        current_revision = (ai_provider_config_fingerprint(current) or '')[:20] or 'unconfigured'
+        if str(expected_revision or '') != current_revision:
+            raise ValueError('AI 配置已变化，请刷新后再断开')
+        saved = dict(current)
+        for key in ('deepseek_provider_verified_fingerprint', 'deepseek_provider_verified_at',
+                    'deepseek_provider_latency_ms', 'deepseek_provider_schema_version'):
+            saved.pop(key, None)
+        saved['deepseek_api_key'] = ''
+        saved['deepseek_chat_enabled'] = False
+        _write_config_unlocked(saved)
+    _ai_research_wake.set()
+    return ai_provider_status()
+
+
+def set_ai_chat_service(enabled, expected_revision, confirmed=False):
+    if not confirmed:
+        raise ValueError('切换云端对话需要明确确认')
+    with _ai_provider_config_lock:
+        current = load_config()
+        current_revision = (ai_provider_config_fingerprint(current) or '')[:20] or 'unconfigured'
+        if str(expected_revision or '') != current_revision:
+            raise ValueError('AI 配置已变化，请刷新后再操作')
+        status = ai_provider_status()
+        if enabled and not status.get('verified'):
+            raise ValueError('请先完成独立 API 的合成连接与结构验证')
+        saved = dict(current)
+        saved['deepseek_chat_enabled'] = enabled is True
+        _write_config_unlocked(saved)
+    return ai_provider_status()
 
 
 MA_XIAOCAI_SYSTEM = (
@@ -1598,7 +1791,9 @@ def chat_llm(messages):
     未配置 API Key 时返回 None（客户端走本地智脑）。"""
     cfg = load_config()
     key = (cfg.get('deepseek_api_key') or '').strip()
-    if not key:
+    chat_flag = cfg.get('deepseek_chat_enabled')
+    chat_enabled = bool(key) if chat_flag is None else chat_flag is True
+    if not key or not chat_enabled:
         return None
     base = (cfg.get('deepseek_base_url') or 'https://api.deepseek.com').rstrip('/')
     model = cfg.get('deepseek_model') or 'deepseek-chat'
@@ -4768,7 +4963,9 @@ def research_workflows_status(current=None):
                    if isinstance(row, dict) and row.get('workflowId')]
     jobs = [dict(row) for row in (data.get('ai_research_jobs') or [])
             if isinstance(row, dict) and row.get('workflowId')]
-    duty_counts = {'active': 0, 'drafts': 0, 'failed': 0, 'queued': 0}
+    duty_counts = {'active': 0, 'drafts': 0, 'failed': 0, 'queued': 0,
+                   'usedToday': 0, 'tokensToday': 0, 'globalDailyLimit': 3,
+                   'date': now_bj().date().isoformat()}
     for item in result.get('items') or []:
         watch = item.get('watch') if isinstance(item.get('watch'), dict) else {}
         state_name = research_watch_state(item, now_bj()) if research_watch_state else 'unavailable'
@@ -4798,11 +4995,19 @@ def research_workflows_status(current=None):
         item['aiDrafts'] = [row for row in workflow_jobs
                             if row.get('status') in {'completed_draft', 'dismissed'}][-6:]
         item['aiDutyJobs'] = [{key: row.get(key) for key in (
-            'id', 'status', 'createdAt', 'finishedAt', 'errorCode', 'triggerKinds')}
+            'id', 'status', 'createdAt', 'startedAt', 'finishedAt', 'errorCode',
+            'trigger', 'triggerKinds', 'evidenceAsOf', 'model', 'usage', 'attempts', 'reviewStatus')}
             for row in workflow_jobs[-6:]]
         duty_counts['drafts'] += sum(row.get('status') == 'completed_draft' for row in workflow_jobs)
-        duty_counts['failed'] += sum(row.get('status') == 'failed_provider' for row in workflow_jobs)
+        duty_counts['failed'] += sum(row.get('status') in {'failed_provider', 'interrupted'} for row in workflow_jobs)
         duty_counts['queued'] += sum(row.get('status') in {'queued', 'running'} for row in workflow_jobs)
+    counted_states = {'queued', 'running', 'completed_draft', 'failed_provider',
+                      'interrupted', 'discarded_after_revocation', 'dismissed'}
+    today_jobs = [row for row in jobs if str(row.get('createdAt') or '')[:10] == duty_counts['date']
+                  and row.get('status') in counted_states]
+    duty_counts['usedToday'] = len(today_jobs)
+    duty_counts['tokensToday'] = sum(int((row.get('usage') or {}).get('total_tokens') or 0)
+                                     for row in today_jobs)
     result['watchSummary'] = watch_counts
     result['aiDutySummary'] = duty_counts
     result['aiDutyProvider'] = provider
@@ -5015,6 +5220,26 @@ def _research_watch_attention(workflow, change, timestamp, repair=False):
     }
 
 
+def _ai_research_draft_attention(workflow, job, timestamp):
+    workflow_id = str((workflow or {}).get('id') or '')[:120]
+    target = (workflow or {}).get('target') if isinstance((workflow or {}).get('target'), dict) else {}
+    name = str((workflow or {}).get('title') or target.get('name') or target.get('code') or '研究流程')[:120]
+    job_id = str((job or {}).get('id') or '')[:180]
+    return {
+        'id': 'ai-research-draft:' + job_id,
+        'fingerprint': 'ai-research-draft:' + job_id,
+        'kind': 'ai_research_draft', 'priority': 'medium', 'delivery': 'center_only',
+        'page': 'strategy', 'createdAt': timestamp,
+        'expiresAt': timestamp + 14 * 24 * 60 * 60 * 1000,
+        'title': 'AI 研判草稿待核验：' + name,
+        'detail': 'DeepSeek 已基于冻结公告片段生成未核验草稿；请先核对原始证据。',
+        'reason': '你曾为这条研究流程单独授权限额 AI 值班',
+        'workflowId': workflow_id, 'jobId': job_id,
+        'runId': str((job or {}).get('runId') or '')[:180],
+        'notEvidence': True, 'automaticConclusion': False,
+    }
+
+
 def _queue_ai_research_job_unlocked(current, workflow, run, change, current_time):
     """Queue inside the watch commit; never performs network I/O."""
     if not create_ai_research_job:
@@ -5142,6 +5367,13 @@ def process_ai_research_jobs_once(now=None, provider=None):
                             if row.get('id') == delegation.get('id')), -1)
             if d_index >= 0:
                 delegations[d_index] = delegation
+            inbox = [dict(row) for row in (data.get('attention_inbox') or [])
+                     if isinstance(row, dict) and row.get('id')]
+            attention = _ai_research_draft_attention(
+                workflow, job, int(current_time.timestamp() * 1000))
+            if not any(row.get('id') == attention['id'] for row in inbox):
+                inbox.append(attention)
+            data['attention_inbox'] = inbox[-PROFILE_LIST_LIMITS['attention_inbox']:]
         jobs[index] = job
         data['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
         data['ai_research_delegations'] = delegations[-PROFILE_LIST_LIMITS['ai_research_delegations']:]
@@ -5429,16 +5661,31 @@ def mutate_research_workflow(action, payload=None):
             saved = _write_profile_unlocked(current)
         _ai_research_wake.set()
         return {'job': job, 'workflows': research_workflows_status(saved)}
-    if clean_action == 'ai_draft_dismiss':
+    if clean_action in {'ai_draft_evidence_open', 'ai_draft_verify', 'ai_draft_stage',
+                        'ai_draft_dismiss', 'ai_draft_restore'}:
         job_id = str(body.get('jobId') or '').strip()[:180]
         with _profile_lock:
             current = _read_profile_unlocked()
             jobs = [dict(row) for row in (current['data'].get('ai_research_jobs') or []) if isinstance(row, dict)]
             index = next((i for i, row in enumerate(jobs)
                           if row.get('id') == job_id and str(row.get('workflowId') or '') == workflow_id), -1)
-            if index < 0 or jobs[index].get('status') != 'completed_draft':
+            allowed_status = {'dismissed'} if clean_action == 'ai_draft_restore' else {'completed_draft'}
+            if index < 0 or jobs[index].get('status') not in allowed_status:
                 raise ValueError('AI 草稿已变化，请刷新后重试')
-            jobs[index].update(status='dismissed', dismissedAt=now_bj().isoformat(timespec='seconds'))
+            timestamp = now_bj().isoformat(timespec='seconds')
+            if clean_action == 'ai_draft_evidence_open':
+                jobs[index].update(reviewStatus='evidence_opened', evidenceOpenedAt=timestamp)
+            elif clean_action == 'ai_draft_verify':
+                if jobs[index].get('reviewStatus') not in {'evidence_opened', 'verified', 'staged'}:
+                    raise ValueError('请先打开并核对原始证据')
+                jobs[index].update(reviewStatus='verified', humanVerifiedAt=timestamp)
+            elif clean_action == 'ai_draft_stage':
+                jobs[index].update(reviewStatus='staged', stagedAt=timestamp)
+            elif clean_action == 'ai_draft_dismiss':
+                jobs[index].update(status='dismissed', dismissedAt=timestamp)
+            elif clean_action == 'ai_draft_restore':
+                jobs[index].update(status='completed_draft', restoredAt=timestamp)
+                jobs[index].pop('dismissedAt', None)
             current['data']['ai_research_jobs'] = jobs[-PROFILE_LIST_LIMITS['ai_research_jobs']:]
             saved = _write_profile_unlocked(current)
         return {'job': jobs[index], 'workflows': research_workflows_status(saved)}
@@ -7611,6 +7858,16 @@ def build_product_diagnostics(record=True):
         '' if (ak_ok or ak_installed) else '需要交易日历或宏观补充数据时再安装，不影响主行情。',
         'datasrc', optional=True, repair_action='probe_akshare', repair_label='核对日历')
 
+    ai_provider = ai_provider_status()
+    ai_state = 'ok' if ai_provider.get('verified') else ('warn' if ai_provider.get('configured') else 'info')
+    add('ai_provider', 'DeepSeek 独立 API', ai_state,
+        ('已通过合成连接与研究草稿结构验证。' if ai_provider.get('verified') else
+         '配置已保存在本机，但尚未通过合成验证。' if ai_provider.get('configured') else
+         '未配置可选的独立 API；本地智脑与 Harness 会话仍可使用。'),
+        ('前往数据源页完成合成验证。' if ai_provider.get('configured') and not ai_provider.get('verified') else
+         '需要后台 AI 值班时，再前往数据源页连接并验证。' if not ai_provider.get('configured') else ''),
+        'datasrc', optional=not ai_provider.get('configured'))
+
     delivery = attention_delivery_status().get('channels') or {}
     failed = sum(int((row or {}).get('failed') or 0) for row in delivery.values())
     enabled_channels = sum(1 for row in delivery.values() if (row or {}).get('enabled'))
@@ -7750,7 +8007,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.40.0'
+    server_version = 'DeepPulse/1.41.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -7927,9 +8184,14 @@ class Handler(BaseHTTPRequestHandler):
                            'research_workflow_lineage': 1,
                            'research_evidence_timeline': 1,
                             'research_watch': 1,
-                            'ai_research_duty': 1,
-                            'ai_research_job_receipts': 1,
-                            'ai_research_budget': 1,
+                                      'ai_research_duty': 1,
+                                      'ai_research_job_receipts': 1,
+                                      'ai_research_budget': 1,
+                                      'ai_provider_trust_gate': 1,
+                                      'ai_provider_synthetic_verification': 1,
+                                      'ai_provider_secret_isolation': 1,
+                                      'ai_provider_service_authorization': 1,
+                                      'ai_draft_review_receipts': 1,
                             'service_management_center': 1,
                             'proactive_target': 1,
                             'disposition_receipts': 1,
@@ -7993,9 +8255,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/brain':
             cfg = load_config()
             key = (cfg.get('deepseek_api_key') or '').strip()
+            chat_flag = cfg.get('deepseek_chat_enabled')
+            chat_enabled = bool(key) if chat_flag is None else chat_flag is True
             self.send_json({'ok': True, 'data': {
-                'mode': 'llm' if key else 'local',
-                'model': cfg.get('deepseek_model') or 'deepseek-chat'}})
+                'mode': 'llm' if key and chat_enabled else 'local',
+                'model': cfg.get('deepseek_model') or 'deepseek-chat',
+                'provider': ai_provider_status()}})
+        elif path == '/api/ai-provider':
+            self.send_json({'ok': True, 'data': ai_provider_status()})
         elif path == '/api/profile':
             self.send_json({'ok': True, 'data': load_profile()})
         elif path == '/api/attention/learning':
@@ -8189,6 +8456,23 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = mutate_chat_action_plan(mutation, body.get('planId'))
                 self.send_json({'ok': True, 'data': result})
+            elif u.path == '/api/ai-provider/test':
+                body = self.read_json_body(16384)
+                self.send_json({'ok': True, 'data': test_ai_provider(body)})
+            elif u.path == '/api/ai-provider/confirm':
+                body = self.read_json_body(8192)
+                self.send_json({'ok': True, 'data': confirm_ai_provider(
+                    body.get('testId'), body.get('expectedRevision'),
+                    body.get('confirmations') or [])})
+            elif u.path == '/api/ai-provider/disconnect':
+                body = self.read_json_body(4096)
+                self.send_json({'ok': True, 'data': disconnect_ai_provider(
+                    body.get('expectedRevision'), body.get('confirmed') is True)})
+            elif u.path == '/api/ai-provider/chat-service':
+                body = self.read_json_body(4096)
+                self.send_json({'ok': True, 'data': set_ai_chat_service(
+                    body.get('enabled') is True, body.get('expectedRevision'),
+                    body.get('confirmed') is True)})
             elif u.path == '/api/weights':
                 body = self.read_json_body()
                 saved = save_weights(body.get('weights') or {}) if compute_emotion else {}
