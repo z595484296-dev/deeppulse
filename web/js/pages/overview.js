@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 总览页 */
 
-import { api } from '../api.js?v=1.35.0';
-import { state, bus, syncProfile } from '../store.js?v=1.35.0';
-import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.35.0';
-import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.35.0';
-import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.35.0';
-import { buildProactiveBrief } from '../proactive.js?v=1.35.0';
-import { buildServiceCenterStatus } from '../service-center.js?v=1.35.0';
+import { api } from '../api.js?v=1.36.0';
+import { state, bus, syncProfile } from '../store.js?v=1.36.0';
+import { loadJournal, loadWatch, loadAlerts, isBriefRead, setBriefRead } from '../store.js?v=1.36.0';
+import { gaugeChart, breadthChart, flowChart, sparkChart, hbarChart } from '../charts.js?v=1.36.0';
+import { fmtPct, fmtPrice, fmtBig, pctClass, esc, UP, DOWN, FLAT, PHASE_COLORS, fmtSeal, tradingState, toast } from '../util.js?v=1.36.0';
+import { buildProactiveBrief } from '../proactive.js?v=1.36.0';
+import { buildServiceCenterStatus } from '../service-center.js?v=1.36.0';
 
 let built = false;
 let sparksAt = 0;
@@ -345,6 +345,20 @@ export function init(container) {
   };
   container.querySelector('#ov-service-manage').addEventListener('click', openServiceCenter);
   container.querySelector('#ov-service-close').addEventListener('click', closeServiceCenter);
+  document.addEventListener('service-recommendation-open', async e => {
+    openServiceCenter();
+    await refreshRoutineEffectiveness(container);
+    const target = [...container.querySelectorAll('[data-effect-apply]')]
+      .find(row => row.dataset.effectApply === String(e.detail?.recommendationId || ''));
+    const card = target?.closest('.routine-effect-suggestion');
+    if (card) {
+      card.classList.add('attention-target');
+      card.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+      target.focus({ preventScroll: true });
+      setTimeout(() => card.classList.remove('attention-target'), 3200);
+    }
+    e.detail?.acknowledge?.(Boolean(card));
+  });
   serviceDialog.addEventListener('click', e => {
     if (e.target === serviceDialog) closeServiceCenter();
   });
@@ -488,7 +502,13 @@ export function init(container) {
       }
       if (item?.sourceType === 'attention' && item.sourceId) {
         e.stopPropagation();
-        document.dispatchEvent(new CustomEvent('attention-open', { detail: { id: item.sourceId } }));
+        if (item.nextAction?.target) {
+          document.dispatchEvent(new CustomEvent('attention-target-open', {
+            detail: { id: item.sourceId, target: item.nextAction.target },
+          }));
+        } else {
+          document.dispatchEvent(new CustomEvent('attention-open', { detail: { id: item.sourceId } }));
+        }
         return;
       }
       document.querySelector(`.nav-item[data-page="${navigate.dataset.cockpitPage}"]`)?.click();

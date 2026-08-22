@@ -8,7 +8,7 @@ export const EMBEDDED = (() => {
   } catch { return false; }
 })();
 
-const MIN_VERSION = '1.35.0';
+const MIN_VERSION = '1.36.0';
 const LOCAL_BASES = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}`);
 let cachedBase = EMBEDDED ? null : '';
 
@@ -118,7 +118,7 @@ async function discoverBase() {
   try {
     const results = await Promise.all(candidates.map(base => probeBase(base, controller.signal)));
     const found = results.find(Boolean);
-    if (!found) throw new Error('没有找到兼容的深脉 1.35.0+ 本地服务');
+    if (!found) throw new Error('没有找到兼容的深脉 1.36.0+ 本地服务');
     cachedBase = found;
     return found;
   } finally {
@@ -192,8 +192,8 @@ export const api = {
   saveAttentionItem: (item, remove = false) => post('/api/profile/attention-item', { item, remove }, 5000),
   attentionLearning: () => request('/api/attention/learning', 5000),
   attentionTriage: () => request('/api/attention/triage', 5000),
-  mutateAttentionTriage: (groupId, action, signal = null, surface = 'web') => post(
-    '/api/attention/triage', { groupId, action, signal, surface }, 5000),
+  mutateAttentionTriage: (groupId, action, signal = null, surface = 'web', targetFingerprint = '') => post(
+    '/api/attention/triage', { groupId, action, signal, surface, targetFingerprint }, 5000),
   saveAttentionFeedback: (itemId, signal, surface = 'web') => post('/api/profile/attention-feedback', { itemId, signal, surface }, 5000),
   resetAttentionLearning: (kind = null, clearHistory = false) => post('/api/attention/learning/reset', { kind, clearHistory }, 5000),
   deliveryStatus: () => request('/api/delivery/status', 5000),

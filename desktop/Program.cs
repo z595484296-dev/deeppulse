@@ -88,6 +88,11 @@ internal sealed class HarnessForm : Form
     private bool ownedDeepPulseProtected;
     private string? lastNotificationItemId;
     private string lastNotificationPage = "overview";
+    private string lastNotificationEntityType = "attention";
+    private string lastNotificationEntityId = "";
+    private string lastNotificationView = "evidence";
+    private string lastNotificationTargetFingerprint = "";
+    private string lastNotificationRunId = "";
 
     internal HarnessForm()
     {
@@ -711,9 +716,17 @@ internal sealed class HarnessForm : Form
                 || chatActionPlanVersion != 1
                 || !capabilities.TryGetProperty("chat_action_receipts", out var chatActionReceipts)
                 || chatActionReceipts.ValueKind != JsonValueKind.Number
-                || !chatActionReceipts.TryGetInt32(out var chatActionReceiptsVersion)
-                || chatActionReceiptsVersion != 1
-                || !capabilities.TryGetProperty("epaper_research_workflow", out var epaperResearchWorkflow)
+                 || !chatActionReceipts.TryGetInt32(out var chatActionReceiptsVersion)
+                 || chatActionReceiptsVersion != 1
+                 || !capabilities.TryGetProperty("proactive_target", out var proactiveTarget)
+                 || proactiveTarget.ValueKind != JsonValueKind.Number
+                 || !proactiveTarget.TryGetInt32(out var proactiveTargetVersion)
+                 || proactiveTargetVersion != 1
+                 || !capabilities.TryGetProperty("disposition_receipts", out var dispositionReceipts)
+                 || dispositionReceipts.ValueKind != JsonValueKind.Number
+                 || !dispositionReceipts.TryGetInt32(out var dispositionReceiptsVersion)
+                 || dispositionReceiptsVersion != 1
+                 || !capabilities.TryGetProperty("epaper_research_workflow", out var epaperResearchWorkflow)
                 || epaperResearchWorkflow.ValueKind != JsonValueKind.Number
                 || !epaperResearchWorkflow.TryGetInt32(out var epaperResearchWorkflowVersion)
                 || epaperResearchWorkflowVersion != 1)
@@ -777,7 +790,7 @@ internal sealed class HarnessForm : Form
             ?? throw new InvalidOperationException("WebView2 初始化完成后未提供浏览器核心。");
         if (activeDeepPulseBaseUri is null)
         {
-            throw new InvalidOperationException("未找到兼容的深脉 1.35.0+ 数据服务。");
+            throw new InvalidOperationException("未找到兼容的深脉 1.36.0+ 数据服务。");
         }
         if (deepPulseBootstrapScriptId is not null)
         {
@@ -840,6 +853,31 @@ internal sealed class HarnessForm : Form
             lastNotificationItemId = itemId;
             lastNotificationPage = item.TryGetProperty("page", out var rawPage)
                 ? SanitizePage(rawPage.GetString()) : "overview";
+            lastNotificationEntityType = "attention";
+            lastNotificationEntityId = itemId;
+            lastNotificationView = "evidence";
+            lastNotificationTargetFingerprint = "";
+            lastNotificationRunId = "";
+            if (item.TryGetProperty("attentionGroupId", out var rawGroupId)
+                && !string.IsNullOrWhiteSpace(rawGroupId.GetString()))
+            {
+                lastNotificationItemId = Truncate(rawGroupId.GetString()!, 160);
+            }
+            if (item.TryGetProperty("target", out var target) && target.ValueKind == JsonValueKind.Object)
+            {
+                lastNotificationPage = target.TryGetProperty("page", out var targetPage)
+                    ? SanitizePage(targetPage.GetString()) : lastNotificationPage;
+                lastNotificationEntityType = target.TryGetProperty("entityType", out var entityType)
+                    ? Truncate(entityType.GetString() ?? "attention", 40) : "attention";
+                lastNotificationEntityId = target.TryGetProperty("entityId", out var entityId)
+                    ? Truncate(entityId.GetString() ?? "", 180) : "";
+                lastNotificationView = target.TryGetProperty("view", out var targetView)
+                    ? Truncate(targetView.GetString() ?? "evidence", 40) : "evidence";
+                lastNotificationTargetFingerprint = target.TryGetProperty("fingerprint", out var fingerprint)
+                    ? Truncate(fingerprint.GetString() ?? "", 80) : "";
+                lastNotificationRunId = target.TryGetProperty("runId", out var runId)
+                    ? Truncate(runId.GetString() ?? "", 180) : "";
+            }
             systemNotification.BalloonTipTitle = Truncate(title ?? "深脉提醒", 63);
             systemNotification.BalloonTipText = Truncate(detail ?? "请打开深脉查看详情", 240);
             systemNotification.BalloonTipIcon = item.TryGetProperty("priority", out var priority)
@@ -925,8 +963,19 @@ internal sealed class HarnessForm : Form
         {
             return;
         }
-        var target = $"deeppulse://attention/{Uri.EscapeDataString(lastNotificationItemId)}"
-            + $"?page={Uri.EscapeDataString(lastNotificationPage)}";
+        var parameters = new List<string> {
+            $"page={Uri.EscapeDataString(lastNotificationPage)}",
+            $"entityType={Uri.EscapeDataString(lastNotificationEntityType)}",
+            $"entityId={Uri.EscapeDataString(lastNotificationEntityId)}",
+            $"view={Uri.EscapeDataString(lastNotificationView)}",
+            $"fingerprint={Uri.EscapeDataString(lastNotificationTargetFingerprint)}"
+        };
+        if (!string.IsNullOrWhiteSpace(lastNotificationRunId))
+        {
+            parameters.Add($"runId={Uri.EscapeDataString(lastNotificationRunId)}");
+        }
+        var target = $"deeppulse://attention/{Uri.EscapeDataString(lastNotificationItemId)}?"
+            + string.Join("&", parameters);
         var script = "(() => { const link = document.createElement('a');"
             + $"link.setAttribute('href', {JsonSerializer.Serialize(target)});"
             + "link.style.display='none';document.body.appendChild(link);link.click();link.remove(); })();";

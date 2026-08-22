@@ -64,6 +64,18 @@ class UnifiedDeliveryTests(unittest.TestCase):
         self.assertEqual(status['desktop']['delivered'], 1)
         self.assertEqual(status['epaper']['delivered'], 1)
 
+    def test_delivery_carries_server_generated_typed_target(self):
+        self.seed(desktopSystemEnabled=True, desktopSystemEnabledAt=self.now - 1)
+        claimed = server.claim_attention_delivery('desktop', 'windows-app')
+        item = claimed['item']
+        self.assertTrue(item['attentionGroupId'])
+        self.assertEqual(item['target']['page'], 'watch')
+        self.assertEqual(item['target']['entityType'], 'security')
+        self.assertEqual(item['target']['entityId'], '601138')
+        self.assertEqual(item['target']['view'], 'context')
+        self.assertRegex(item['target']['fingerprint'], r'^[0-9a-f]{24}$')
+        self.assertEqual(item['disposition']['status'], 'pending')
+
     def test_failed_delivery_can_be_explicitly_requeued(self):
         self.seed(desktopSystemEnabled=True, desktopSystemEnabledAt=self.now - 1)
         claimed = server.claim_attention_delivery('desktop', 'windows-app')

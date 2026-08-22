@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function response(ok: boolean, body = '', json: unknown = {
-  data: { version: '1.35.0', capabilities: { research_suggestion_inbox: 1, research_suggestion_preview: 1, research_handoff: 1, research_journey: 1, tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, attention_triage: 1, attention_center_only_boundary: 1, chat_answer_freshness: 1, chat_action_plan: 1, chat_action_receipts: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, akshare_research_packs: 1, akshare_interface_health: 1, source_lineage: 1, event_impact: 2, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, research_workflow_lineage: 1, research_evidence_timeline: 1, research_watch: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
+  data: { version: '1.36.0', capabilities: { proactive_target: 1, disposition_receipts: 1, research_suggestion_inbox: 1, research_suggestion_preview: 1, research_handoff: 1, research_journey: 1, tdx_read_only: true, proactive_brief: 1, profile_brief_receipts: 1, attention_center: 1, profile_attention: 1, attention_learning: 1, attention_triage: 1, attention_center_only_boundary: 1, chat_answer_freshness: 1, chat_action_plan: 1, chat_action_receipts: 1, background_monitor: 1, market_routine: 1, akshare_enrichment: 1, akshare_research_snapshot: 1, akshare_research_packs: 1, akshare_interface_health: 1, source_lineage: 1, event_impact: 2, event_background_service: 1, research_hypotheses: 1, hypothesis_due_reminders: 1, hypothesis_evidence_candidates: 1, hypothesis_market_control: 1, unified_delivery: 1, desktop_system_notifications: 1, epaper_delivery_receipts: 1, notification_deep_links: 1, delivery_timeline: 1, product_diagnostics: 1, diagnostics_export: 1, desktop_heartbeat: 1, diagnostic_repairs: 1, diagnostic_history: 1, diagnostic_issue_template: 1, service_plan_preview: 1, service_plan_confirm: 1, routine_timeline: 1, routine_skip_pause: 1, routine_effectiveness: 1, routine_effect_suggestions: 1, routine_effect_undo: 1, research_cockpit: 1, research_priority_controls: 1, research_cockpit_context: 1, research_memory: 1, research_memory_controls: 1, research_memory_context: 1, research_workflows: 1, research_workflow_preview: 1, research_workflow_permissions: 1, research_result_cards: 1, research_template_parameters: 1, research_run_comparison: 1, research_workflow_lineage: 1, research_evidence_timeline: 1, research_watch: 1, epaper_research_workflow: 1, epaper_gateway: 1 } },
 }): Response {
   return { ok, text: async () => body, json: async () => json } as Response
 }
@@ -45,7 +45,7 @@ describe('DeepPulseView', () => {
       if (url === ENTRY_PATH) return Promise.resolve(response(true, '<!doctype html><title>DeepSeek Harness</title>'))
       if (url.includes(':8971/')) {
         return Promise.resolve(response(true, '', {
-          data: { version: '1.9.0', capabilities: { research_suggestion_inbox: 1, research_suggestion_preview: 1, research_handoff: 1, research_journey: 1, tdx_read_only: true } },
+          data: { version: '1.9.0', capabilities: { proactive_target: 1, disposition_receipts: 1, research_suggestion_inbox: 1, research_suggestion_preview: 1, research_handoff: 1, research_journey: 1, tdx_read_only: true } },
         }))
       }
       return Promise.resolve(response(true))
@@ -66,6 +66,13 @@ describe('DeepPulse Harness bridge', () => {
       attentionId: 'event:601138:earnings', page: 'watch',
     })
     expect(navOfHash('attention/event%3A1?page=not-a-page')).toEqual({ attentionId: 'event:1' })
+    expect(navOfHash('attention/research-watch%3A1?page=strategy&entityType=research_workflow&entityId=workflow%3A1&view=latest_change&fingerprint=0123456789abcdef01234567&runId=run%3A2')).toEqual({
+      attentionId: 'research-watch:1', page: 'strategy', entityType: 'research_workflow',
+      entityId: 'workflow:1', view: 'latest_change', fingerprint: '0123456789abcdef01234567', runId: 'run:2',
+    })
+    expect(navOfHash('attention/event%3A1?page=overview&entityType=attention&entityId=https%3A%2F%2Fevil.test&view=evidence&fingerprint=0123456789abcdef01234567')).toEqual({
+      attentionId: 'event:1', page: 'overview',
+    })
   })
 
   it('accepts generation requests through the same owned-context allowlist', () => {

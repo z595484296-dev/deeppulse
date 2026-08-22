@@ -7,6 +7,7 @@ raw attention item remains addressable and is returned inside its group.
 """
 
 import hashlib
+import json
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,115 @@ from datetime import datetime, timedelta, timezone
 
 MODEL_VERSION = 'attention-triage-v1'
 BJ = timezone(timedelta(hours=8))
+
+DISPOSITION_STATES = {'pending', 'opened', 'in_progress', 'resolved', 'snoozed', 'dismissed', 'superseded'}
+TARGET_PAGES = {'overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'epaper', 'datasrc', 'about'}
+TARGET_ENTITY_TYPES = {
+    'attention', 'research_workflow', 'research_hypothesis', 'research_suggestion',
+    'security', 'data_component', 'service_recommendation', 'review_day',
+}
+
+
+def _disposition(item):
+    raw = item.get('disposition') if isinstance(item.get('disposition'), dict) else {}
+    status = _text(raw.get('status'))
+    if status not in DISPOSITION_STATES:
+        status = 'resolved' if item.get('doneAt') else 'pending'
+    return {
+        'status': status,
+        'openedAt': raw.get('openedAt') or item.get('readAt'),
+        'startedAt': raw.get('startedAt'),
+        'resolvedAt': raw.get('resolvedAt') or item.get('doneAt'),
+        'updatedAt': raw.get('updatedAt') or item.get('feedbackAt') or item.get('readAt'),
+        'surface': _text(raw.get('surface'))[:40] or None,
+    }
+
+
+def _target_fingerprint(target, version_key):
+    body = {
+        'page': target.get('page'), 'entityType': target.get('entityType'),
+        'entityId': target.get('entityId'), 'view': target.get('view'),
+        'version': _text(version_key)[:1000],
+    }
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()[:24]
+
+
+def _typed_target(item, attention_id=None, version_key=''):
+    """Build a navigation-only target from trusted item fields.
+
+    Targets never contain URLs, selectors, commands, source permissions or execution flags.
+    """
+    item_id = _text(attention_id or item.get('id'))[:160]
+    page = _text(item.get('page')).lower()
+    page = page if page in TARGET_PAGES else 'overview'
+    entity_type, entity_id, view = 'attention', item_id, 'evidence'
+
+    workflow_id = _text(item.get('workflowId'))[:180]
+    hypothesis_id = _text(item.get('hypothesisId'))[:180]
+    suggestion_id = _text(item.get('suggestionId'))[:180]
+    component_id = _text(item.get('componentId') or item.get('diagnosticId'))[:120]
+    recommendation_id = _text(item.get('recommendationId') or item.get('effectId'))[:160]
+    review_day = _text(item.get('dataDate'))[:20]
+    impact = item.get('eventImpact') if isinstance(item.get('eventImpact'), dict) else {}
+    watchlist = [_text(value) for value in (impact.get('watchlist') or []) if re.fullmatch(r'\d{6}', _text(value))]
+    code = _text(item.get('code'))
+    id_code = re.search(r'(?<!\d)(\d{6})(?!\d)', item_id)
+    code = code if re.fullmatch(r'\d{6}', code) else (
+        watchlist[0] if len(watchlist) == 1 else (id_code.group(1) if id_code else ''))
+
+    if workflow_id:
+        page, entity_type, entity_id = 'strategy', 'research_workflow', workflow_id
+        view = 'latest_change' if item.get('kind') == 'research_watch' else 'latest_result'
+    elif hypothesis_id:
+        page, entity_type, entity_id, view = 'strategy', 'research_hypothesis', hypothesis_id, 'review'
+    elif suggestion_id:
+        page, entity_type, entity_id, view = 'strategy', 'research_suggestion', suggestion_id, 'detail'
+    elif component_id:
+        page, entity_type, entity_id, view = 'datasrc', 'data_component', component_id, 'diagnostics'
+    elif recommendation_id:
+        page, entity_type, entity_id, view = 'overview', 'service_recommendation', recommendation_id, 'service_manager'
+    elif review_day and item.get('kind') in {'routine', 'review'}:
+        page, entity_type, entity_id, view = 'strategy', 'review_day', review_day, 'calendar'
+    elif code:
+        entity_type, entity_id = 'security', code
+        page = 'watch' if item.get('kind') == 'price' else page
+        view = 'alert' if item.get('kind') == 'price' else 'context'
+
+    if entity_type not in TARGET_ENTITY_TYPES:
+        entity_type, entity_id, view = 'attention', item_id, 'evidence'
+    target = {
+        'page': page, 'entityType': entity_type, 'entityId': entity_id,
+        'view': view, 'attentionId': item_id,
+    }
+    change = item.get('watchChange') if isinstance(item.get('watchChange'), dict) else {}
+    run_id = _text(item.get('runId') or change.get('currentRunId'))[:180]
+    if run_id:
+        target['runId'] = run_id
+    target['fingerprint'] = _target_fingerprint(
+        target, version_key or item.get('targetVersion') or item.get('runId')
+        or item.get('createdAt') or item_id)
+    return target
+
+
+def _group_disposition(items):
+    rows = [_disposition(item) for item in items]
+    states = [row['status'] for row in rows]
+    if states and all(state == 'resolved' for state in states):
+        status = 'resolved'
+    elif 'in_progress' in states:
+        status = 'in_progress'
+    elif any(state == 'opened' for state in states):
+        status = 'opened'
+    elif states and all(state == 'dismissed' for state in states):
+        status = 'dismissed'
+    elif states and all(state == 'superseded' for state in states):
+        status = 'superseded'
+    elif 'snoozed' in states and not any(state in {'pending', 'opened', 'in_progress'} for state in states):
+        status = 'snoozed'
+    else:
+        status = 'pending'
+    latest = max(rows, key=lambda row: int(row.get('updatedAt') or 0), default={})
+    return {**latest, 'status': status}
 
 TOPICS = (
     ('ai_compute', 'AI 算力', ('ai', '人工智能', '算力', '服务器', '数据中心', 'cpo', '光模块', '英伟达')),
@@ -97,8 +207,11 @@ def build_attention_triage(items=None, now_ms=None):
             match = re.search(r'来源\s*([^，；]+)', reason)
             if match and match.group(1).strip() not in sources:
                 sources.append(match.group(1).strip())
+        group_id = _cluster_id(key)
+        target = _typed_target(latest, group_id, ','.join(_text(row.get('id')) for row in members))
+        disposition = _group_disposition(members)
         groups.append({
-            'id': _cluster_id(key), 'type': 'cluster', 'kind': 'event',
+            'id': group_id, 'type': 'cluster', 'kind': 'event',
             'memberIds': [_text(row.get('id')) for row in members],
             'count': len(members), 'unreadCount': len(active_unread),
             'priority': 'high' if any(row.get('priority') == 'high' for row in members) else 'medium',
@@ -110,10 +223,13 @@ def build_attention_triage(items=None, now_ms=None):
             'expiresAt': max(int(row.get('expiresAt') or 0) for row in members),
             'readAt': None if active_unread else max(int(row.get('readAt') or 0) for row in members),
             'feedback': latest.get('feedback'), 'sources': sources[:4], 'items': members,
+            'target': target, 'disposition': disposition,
             'traceability': {'rawCount': len(members), 'evidencePreserved': True, 'causalClaim': False},
         })
 
     for item in singles:
+        disposition = _disposition(item)
+        target = _typed_target(item)
         groups.append({
             'id': _text(item.get('id')), 'type': 'item', 'kind': item.get('kind') or 'system',
             'memberIds': [_text(item.get('id'))], 'count': 1,
@@ -123,6 +239,7 @@ def build_attention_triage(items=None, now_ms=None):
             'page': item.get('page'), 'createdAt': int(item.get('createdAt') or 0),
             'expiresAt': int(item.get('expiresAt') or 0), 'readAt': item.get('readAt'),
             'feedback': item.get('feedback'), 'items': [item],
+            'target': target, 'disposition': disposition,
             'traceability': {'rawCount': 1, 'evidencePreserved': True, 'causalClaim': False},
         })
     groups.sort(key=lambda row: (bool(row.get('unreadCount')), int(row.get('createdAt') or 0)), reverse=True)
@@ -135,6 +252,8 @@ def build_attention_triage(items=None, now_ms=None):
         'policy': {
             'groupingOnly': True, 'rawEvidencePreserved': True,
             'highPriorityPriceAlertsStayIndividual': True,
+            'typedTargetsServerGenerated': True,
+            'deliveryReadDispositionSeparated': True,
             'statement': '未读数按可处理主题计算；原始事件不删除、不改写，也不据此自动交易。',
         },
     }

@@ -13,7 +13,7 @@ import type { ReactNode } from 'react'
 import { deeppulseMode, setExitReason, deeppulseEnteredAt } from './deeppulse-mode.ts'
 import css from './DeepPulseOverlay.module.css'
 
-const MIN_BACKEND_VERSION = '1.35.0'
+const MIN_BACKEND_VERSION = '1.36.0'
 const BACKEND_URLS = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8971 + index}/`)
 /** 同源发布路径（apps/web/public/deeppulse，随 shell 构建产物分发）。 */
 const SAME_ORIGIN_PATH = '/deeppulse/index.html'
@@ -115,6 +115,8 @@ async function probeBackend(baseUrl: string, signal: AbortSignal): Promise<strin
       && capabilities['research_workflow_lineage'] === 1
       && capabilities['research_evidence_timeline'] === 1
       && capabilities['research_watch'] === 1
+      && capabilities['proactive_target'] === 1
+      && capabilities['disposition_receipts'] === 1
       && capabilities['research_suggestion_inbox'] === 1
       && capabilities['research_suggestion_preview'] === 1
       && capabilities['research_handoff'] === 1
@@ -1437,20 +1439,52 @@ function deeppulseTargetOf(href: string): { url: string; hash: string } | undefi
 /** 深链 hash → 工作台导航指令（免刷新导航） */
 const PAGE_KEYS = ['overview', 'emotion', 'market', 'ladder', 'watch', 'strategy', 'epaper', 'datasrc', 'about'];
 
-type DeepPulseNavTarget = { page?: string; code?: string; attentionId?: string }
+type DeepPulseNavTarget = {
+  page?: string; code?: string; attentionId?: string;
+  entityType?: string; entityId?: string; view?: string; fingerprint?: string; runId?: string;
+}
+
+const TARGET_ENTITY_TYPES = new Set([
+  'attention', 'research_workflow', 'research_hypothesis', 'research_suggestion',
+  'security', 'data_component', 'service_recommendation', 'review_day',
+]);
+const TARGET_VIEWS = new Set([
+  'evidence', 'latest_change', 'latest_result', 'review', 'detail', 'diagnostics',
+  'service_manager', 'calendar', 'alert', 'context',
+]);
+const safeTargetId = (value: string | null, maximum = 180): string | undefined => {
+  const clean = (value ?? '').trim().slice(0, maximum);
+  return clean && !/[<>\\]/.test(clean) && !clean.includes('://') ? clean : undefined;
+};
 
 export function navOfHash(hash: string): DeepPulseNavTarget | undefined {
   const h = hash.replace(/^#\/?/, '').trim();
   if (PAGE_KEYS.includes(h)) return { page: h };
   if (/^\d{6}$/.test(h)) return { code: h };
-  const attention = h.match(/^attention\/([^?]+)(?:\?page=([^?&]+))?$/i);
+  const attention = h.match(/^attention\/([^?]+)(?:\?(.*))?$/i);
   if (attention) {
     let attentionId = '';
     try { attentionId = decodeURIComponent(attention[1] ?? '').slice(0, 160); }
     catch { return undefined }
     if (!attentionId) return undefined;
-    const page = PAGE_KEYS.includes(attention[2] ?? '') ? attention[2] : undefined;
-    return page ? { attentionId, page } : { attentionId };
+    const params = new URLSearchParams(attention[2] ?? '');
+    const pageValue = params.get('page') ?? '';
+    const page = PAGE_KEYS.includes(pageValue) ? pageValue : undefined;
+    const entityTypeValue = params.get('entityType') ?? '';
+    const entityType = TARGET_ENTITY_TYPES.has(entityTypeValue) ? entityTypeValue : undefined;
+    const entityId = safeTargetId(params.get('entityId'));
+    const viewValue = params.get('view') ?? '';
+    const view = TARGET_VIEWS.has(viewValue) ? viewValue : undefined;
+    const fingerprintValue = params.get('fingerprint') ?? '';
+    const fingerprint = /^[a-f0-9]{24}$/i.test(fingerprintValue) ? fingerprintValue : undefined;
+    const runId = safeTargetId(params.get('runId'));
+    const result: DeepPulseNavTarget = { attentionId };
+    if (page) result.page = page;
+    if (entityType && entityId && view && fingerprint) {
+      Object.assign(result, { entityType, entityId, view, fingerprint });
+      if (runId) result.runId = runId;
+    }
+    return result;
   }
   return undefined;
 }

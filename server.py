@@ -150,7 +150,7 @@ UA_HEADERS = {
 EM_UT = '7eea3edcaed734bea9cbfc24409ed989'  # 东财公开 token
 TDX_ENABLED = os.environ.get('DEEPPULSE_TDX_ENABLED', '1').strip().lower() not in ('0', 'false', 'off')
 TDX_HOST = '127.0.0.1:17709'
-VERSION = '1.35.0'
+VERSION = '1.36.0'
 
 _desktop_heartbeat_lock = threading.Lock()
 _desktop_heartbeat = {
@@ -1615,6 +1615,7 @@ PROFILE_LIST_LIMITS = {
     'brief_receipts': 200,
     'attention_inbox': 200,
     'attention_feedback': 500,
+    'attention_disposition_receipts': 500,
     'routine_receipts': 180,
     'routine_skips': 180,
     'routine_effect_actions': 100,
@@ -2221,17 +2222,19 @@ def attention_triage_status():
     return build_attention_triage(data.get('attention_inbox') or [])
 
 
-def update_attention_triage(group_id, action, signal=None, surface='web'):
+def update_attention_triage(group_id, action, signal=None, surface='web', target_fingerprint=''):
     """Apply one explicit action to the server-resolved members of a triage group."""
     clean_id = str(group_id or '').strip()[:160]
     clean_action = str(action or '').strip()
     clean_signal = str(signal or '').strip()
-    if clean_action not in {'mark_read', 'mark_all_read', 'feedback'}:
+    disposition_actions = {'open', 'start', 'resolve', 'reopen'}
+    if clean_action not in {'mark_read', 'mark_all_read', 'feedback', *disposition_actions}:
         raise ValueError('unsupported attention triage action')
     if clean_action != 'mark_all_read' and not clean_id:
         raise ValueError('attention triage group is required')
     if clean_action == 'feedback' and clean_signal not in ATTENTION_FEEDBACK_SIGNALS:
         raise ValueError('unsupported attention feedback signal')
+    clean_fingerprint = str(target_fingerprint or '').strip()[:80]
     timestamp = int(time.time() * 1000)
     with _profile_lock:
         current = _read_profile_unlocked()
@@ -2244,19 +2247,63 @@ def update_attention_triage(group_id, action, signal=None, surface='web'):
                       if str(row.get('id') or '') == clean_id), None))
         if not group:
             raise ValueError('attention triage group was not found')
+        server_target = group.get('target') if isinstance(group.get('target'), dict) else {}
+        server_fingerprint = str(server_target.get('fingerprint') or '')
+        if clean_action in disposition_actions:
+            if not clean_fingerprint or not hmac.compare_digest(clean_fingerprint, server_fingerprint):
+                raise ValueError('attention target changed; reopen the item before updating its status')
         member_ids = {str(value or '') for value in (group.get('memberIds') or [])}
         items = [row for row in (data.get('attention_inbox') or []) if isinstance(row, dict)]
+        transition = {
+            'open': 'opened', 'start': 'in_progress', 'resolve': 'resolved', 'reopen': 'in_progress',
+        }.get(clean_action)
+        previous_states = []
+        changed_disposition = False
         for item in items:
             if str(item.get('id') or '') not in member_ids:
                 continue
+            current_disposition = item.get('disposition') if isinstance(item.get('disposition'), dict) else {}
+            previous = str(current_disposition.get('status') or (
+                'resolved' if item.get('doneAt') else 'pending'))
+            previous_states.append(previous)
             if clean_action in {'mark_read', 'mark_all_read'}:
                 item['readAt'] = item.get('readAt') or timestamp
+            elif clean_action in disposition_actions:
+                if clean_action == 'start' and previous == 'resolved':
+                    raise ValueError('resolved attention item must be reopened before starting again')
+                next_status = previous if clean_action == 'open' and previous in {'in_progress', 'resolved'} else transition
+                disposition = dict(current_disposition)
+                disposition['status'] = next_status
+                disposition['updatedAt'] = timestamp
+                disposition['surface'] = str(surface or 'web').strip()[:40]
+                disposition['targetFingerprint'] = server_fingerprint
+                if clean_action in {'open', 'start', 'resolve'}:
+                    disposition['openedAt'] = disposition.get('openedAt') or timestamp
+                    item['readAt'] = item.get('readAt') or timestamp
+                if clean_action in {'start', 'reopen'}:
+                    disposition['startedAt'] = disposition.get('startedAt') or timestamp
+                if clean_action == 'resolve':
+                    disposition['resolvedAt'] = disposition.get('resolvedAt') or timestamp
+                    item['doneAt'] = item.get('doneAt') or timestamp
+                elif clean_action == 'reopen':
+                    disposition['resolvedAt'] = None
+                    item.pop('doneAt', None)
+                item['disposition'] = disposition
+                changed_disposition = changed_disposition or previous != next_status
             else:
                 item['feedback'] = clean_signal
                 item['feedbackAt'] = timestamp
                 if clean_signal == 'done':
                     item['doneAt'] = timestamp
                     item['readAt'] = item.get('readAt') or timestamp
+                    disposition = dict(current_disposition)
+                    disposition.update({
+                        'status': 'resolved', 'openedAt': disposition.get('openedAt') or timestamp,
+                        'resolvedAt': disposition.get('resolvedAt') or timestamp,
+                        'updatedAt': timestamp, 'surface': str(surface or 'web').strip()[:40],
+                        'targetFingerprint': server_fingerprint,
+                    })
+                    item['disposition'] = disposition
         if clean_action == 'feedback':
             feedback_id = clean_id if group.get('type') == 'cluster' else next(iter(member_ids))
             feedback = [row for row in (data.get('attention_feedback') or [])
@@ -2279,6 +2326,18 @@ def update_attention_triage(group_id, action, signal=None, surface='web'):
                 }
             preferences['kindControls'] = controls
             data['attention_preferences'] = preferences
+        if clean_action in disposition_actions and changed_disposition:
+            receipts = [row for row in (data.get('attention_disposition_receipts') or [])
+                        if isinstance(row, dict)]
+            receipts.append({
+                'id': 'attention-disposition:%s:%s:%d' % (clean_id, transition, timestamp),
+                'groupId': clean_id, 'memberIds': sorted(member_ids)[:50],
+                'fromStates': sorted(set(previous_states)), 'status': transition,
+                'at': timestamp, 'surface': str(surface or 'web').strip()[:40],
+                'target': server_target, 'targetFingerprint': server_fingerprint,
+                'resolverType': 'explicit_user', 'automatic': False,
+            })
+            data['attention_disposition_receipts'] = receipts[-PROFILE_LIST_LIMITS['attention_disposition_receipts']:]
         data['attention_inbox'] = items[-PROFILE_LIST_LIMITS['attention_inbox']:]
         saved = _write_profile_unlocked(current)
         return {
@@ -2507,7 +2566,16 @@ def claim_attention_delivery(channel, consumer='local'):
         receipts.append(receipt)
         data['delivery_receipts'] = receipts[-PROFILE_LIST_LIMITS['delivery_receipts']:]
         _write_profile_unlocked(current)
-        return {'item': json.loads(json.dumps(item, ensure_ascii=False)),
+        delivered_item = json.loads(json.dumps(item, ensure_ascii=False))
+        if build_attention_triage is not None:
+            triage = build_attention_triage(data.get('attention_inbox') or [], now_ms)
+            group = next((row for row in (triage.get('groups') or [])
+                          if item_id in {str(value or '') for value in (row.get('memberIds') or [])}), None)
+            if group and isinstance(group.get('target'), dict):
+                delivered_item['target'] = group['target']
+                delivered_item['attentionGroupId'] = group.get('id')
+                delivered_item['disposition'] = group.get('disposition')
+        return {'item': delivered_item,
                 'receipt': receipt, 'channel': channel, 'enabled': True}
 
 
@@ -4732,9 +4800,11 @@ def research_cockpit_status(profile=None, current=None, diagnostics=None):
             'evidence': {'available': int(row.get('count') or 1),
                          'status': '原始事件可展开核对' if grouped else '提醒事实待核对', 'missing': []},
             'nextAction': {'type': 'inspect', 'label': '查看提醒依据',
-                           'page': str(row.get('page') or 'overview')[:30]},
+                           'page': str((row.get('target') or {}).get('page') or row.get('page') or 'overview')[:30],
+                           'target': row.get('target')},
             'origin': '你开启的提醒或事件服务',
             'attentionMembers': list(row.get('memberIds') or [])[:24],
+            'disposition': row.get('disposition'),
         })
 
     effect = routine_effectiveness_status(data)
@@ -6571,7 +6641,7 @@ def build_diagnostics_archive(report=None):
 # ---------------------------------------------------------------- HTTP 服务
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'DeepPulse/1.35.0'
+    server_version = 'DeepPulse/1.36.0'
     protocol_version = 'HTTP/1.1'
 
     # ---- 基础
@@ -6741,9 +6811,11 @@ class Handler(BaseHTTPRequestHandler):
                            'research_run_comparison': 1,
                            'research_workflow_lineage': 1,
                            'research_evidence_timeline': 1,
-                           'research_watch': 1,
-                           'service_management_center': 1,
-                           'research_suggestion_inbox': 1,
+                            'research_watch': 1,
+                            'service_management_center': 1,
+                            'proactive_target': 1,
+                            'disposition_receipts': 1,
+                            'research_suggestion_inbox': 1,
                            'research_suggestion_preview': 1,
                            'research_handoff': 1,
                            'research_journey': 1,
@@ -7019,7 +7091,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.read_json_body()
                 self.send_json({'ok': True, 'data': update_attention_triage(
                     body.get('groupId'), body.get('action'), body.get('signal'),
-                    body.get('surface') or 'web')})
+                    body.get('surface') or 'web', body.get('targetFingerprint'))})
             elif u.path == '/api/delivery/pull':
                 body = self.read_json_body()
                 self.send_json({'ok': True, 'data': claim_attention_delivery(

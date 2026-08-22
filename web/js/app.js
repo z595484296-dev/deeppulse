@@ -1,22 +1,22 @@
 /* 深脉 DeepPulse — 应用主控：路由 / 轮询 / 顶栏 / 状态栏 */
 
-import { api } from './api.js?v=1.35.0';
-import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.35.0';
-import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.35.0';
+import { api } from './api.js?v=1.36.0';
+import { state, marketState, bus, emit, loadAlerts, markTriggered, syncProfile } from './store.js?v=1.36.0';
+import { esc, fmtPct, fmtPrice, pctClass, tradingState, toast } from './util.js?v=1.36.0';
 
-import * as pageOverview from './pages/overview.js?v=1.35.0';
-import * as pageEmotion from './pages/emotion.js?v=1.35.0';
-import * as pageMarket from './pages/market.js?v=1.35.0';
-import * as pageLadder from './pages/ladder.js?v=1.35.0';
-import * as pageWatch from './pages/watch.js?v=1.35.0';
-import * as pageStrategy from './pages/strategy.js?v=1.35.0';
-import * as pageEpaper from './pages/epaper.js?v=1.35.0';
-import * as pageDatasrc from './pages/datasrc.js?v=1.35.0';
-import * as pageAbout from './pages/about.js?v=1.35.0';
-import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.35.0';
-import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.35.0';
-import { initOnboarding } from './onboarding.js?v=1.35.0';
-import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.35.0';
+import * as pageOverview from './pages/overview.js?v=1.36.0';
+import * as pageEmotion from './pages/emotion.js?v=1.36.0';
+import * as pageMarket from './pages/market.js?v=1.36.0';
+import * as pageLadder from './pages/ladder.js?v=1.36.0';
+import * as pageWatch from './pages/watch.js?v=1.36.0';
+import * as pageStrategy from './pages/strategy.js?v=1.36.0';
+import * as pageEpaper from './pages/epaper.js?v=1.36.0';
+import * as pageDatasrc from './pages/datasrc.js?v=1.36.0';
+import * as pageAbout from './pages/about.js?v=1.36.0';
+import { createChatView, chatStore, ensureGreeting } from './chat.js?v=1.36.0';
+import { EMBEDDED, initBridge, exitToSession, applyTheme, askDeepSeek, setBridgeContextProvider } from './bridge.js?v=1.36.0';
+import { initOnboarding } from './onboarding.js?v=1.36.0';
+import { attentionContext, initAttentionCenter, publishAttention } from './attention-center.js?v=1.36.0';
 
 const PAGES = {
   overview: { title: '总览', mod: pageOverview, freq: 'emotion' },
@@ -61,6 +61,54 @@ function goto(page, force = false) {
   PAGES[page].mod.init(el);
   if (location.hash !== '#' + page) history.replaceState(null, '', '#' + page);
   pushDataToPage(page);
+}
+
+function requestTargetFocus(eventName, detail, timeoutMs = 12000) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = found => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(found === true);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    document.dispatchEvent(new CustomEvent(eventName, {
+      detail: { ...detail, acknowledge: finish },
+    }));
+  });
+}
+
+async function navigateAttentionTarget(target, group) {
+  const page = String(target?.page || 'overview');
+  if (!PAGES[page]) return false;
+  goto(page, true);
+  await new Promise(resolve => requestAnimationFrame(() => resolve()));
+  const detail = {
+    target, groupId: group?.id || target.attentionId, attentionId: target.attentionId,
+    disposition: group?.disposition || null,
+  };
+  if (target.entityType === 'research_workflow') {
+    return requestTargetFocus('research-workflow-open', { ...detail, workflowId: target.entityId, runId: target.runId });
+  }
+  if (target.entityType === 'research_hypothesis') {
+    return requestTargetFocus('research-hypothesis-open', { ...detail, hypothesisId: target.entityId });
+  }
+  if (target.entityType === 'security') {
+    return requestTargetFocus(page === 'watch' ? 'watch-security-open' : 'open-quote', {
+      ...detail, code: target.entityId, name: target.entityId,
+    });
+  }
+  if (target.entityType === 'data_component') {
+    return requestTargetFocus('datasource-component-open', { ...detail, componentId: target.entityId });
+  }
+  if (target.entityType === 'service_recommendation') {
+    return requestTargetFocus('service-recommendation-open', { ...detail, recommendationId: target.entityId });
+  }
+  if (target.entityType === 'review_day') {
+    return requestTargetFocus('strategy-review-open', { ...detail, dataDate: target.entityId });
+  }
+  return target.entityType === 'attention';
 }
 
 function currentHarnessContext() {
@@ -699,7 +747,33 @@ async function boot() {
   // 构建页面容器
   const pages = $('#pages');
   pages.innerHTML = Object.keys(PAGES).map(p => `<section class="page" id="page-${p}"></section>`).join('');
-  initAttentionCenter({ navigate: page => goto(page) });
+  initAttentionCenter({ navigate: navigateAttentionTarget });
+
+  document.addEventListener('attention-target-open', async event => {
+    const detail = event.detail || {};
+    const target = detail.target || {};
+    const attentionId = String(detail.id || '').slice(0, 160);
+    if (!attentionId || target.entityType === 'attention') {
+      document.dispatchEvent(new CustomEvent('attention-open', { detail: { id: attentionId } }));
+      return;
+    }
+    const found = await navigateAttentionTarget(target, { id: attentionId, target });
+    if (!found) {
+      document.dispatchEvent(new CustomEvent('attention-open', { detail: { id: attentionId } }));
+      toast('没有找到对应对象，已为你打开提醒中心；该事项不会被误记为已打开', 'err', 6000);
+      return;
+    }
+    try {
+      const result = await api.mutateAttentionTriage(attentionId, 'open', null, 'desktop-deeplink', target.fingerprint);
+      await syncProfile();
+      const next = (result.triage?.groups || []).find(row => String(row.id) === attentionId);
+      bus.dispatchEvent(new CustomEvent('attention-disposition', {
+        detail: { groupId: attentionId, disposition: next?.disposition, target: next?.target || target },
+      }));
+    } catch (error) {
+      toast(error.message || '已定位目标，但处置回执暂未同步', 'err', 5000);
+    }
+  });
 
   bus.addEventListener('profile-sync', e => {
     const result = e.detail || {};

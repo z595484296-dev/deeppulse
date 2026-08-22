@@ -1,12 +1,12 @@
 /* 深脉 DeepPulse — 自选页（分组 · 排序 · 批量 · 提醒） */
 
-import { api } from '../api.js?v=1.35.0';
+import { api } from '../api.js?v=1.36.0';
 import {
   loadWatch, saveWatch, removeWatch, setWatchNote,
   batchRemoveWatch, batchMoveWatch, watchGroups, bus,
   loadAlerts, addAlert, removeAlert,
-} from '../store.js?v=1.35.0';
-import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.35.0';
+} from '../store.js?v=1.36.0';
+import { fmtPct, fmtPrice, pctClass, esc, debounce, toast, emptyState } from '../util.js?v=1.36.0';
 
 let built = false;
 let timer = null;
@@ -131,6 +131,19 @@ export function init(container) {
   });
   document.addEventListener('click', e => {
     if (!e.target.closest('.search-box')) resEl.classList.remove('show');
+  });
+  document.addEventListener('watch-security-open', async e => {
+    await refresh(container);
+    const name = [...container.querySelectorAll('.name-cell[data-code]')]
+      .find(row => row.dataset.code === String(e.detail?.code || ''));
+    const row = name?.closest('tr');
+    if (row) {
+      row.classList.add('attention-target');
+      row.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+      name.focus({ preventScroll: true });
+      setTimeout(() => row.classList.remove('attention-target'), 3200);
+    }
+    e.detail?.acknowledge?.(Boolean(row));
   });
 
   // ---- 分组管理 ----
@@ -497,7 +510,7 @@ function rowHtml(q, pools, selectedSet) {
   if (!tags) tags = '<span class="badge gray">普通</span>';
   return `<tr>
     <td class="c"><input type="checkbox" data-check="${esc(w.code)}" ${selectedSet.has(w.code) ? 'checked' : ''}></td>
-    <td><div class="name-cell" style="cursor:pointer" data-act="open" data-code="${esc(w.code)}" data-name="${esc(w.name)}">
+    <td><div class="name-cell" tabindex="-1" style="cursor:pointer" data-act="open" data-code="${esc(w.code)}" data-name="${esc(w.name)}">
       <b>${esc(w.name || q.name)}</b><span class="code-sub">${esc(w.code)}</span></div></td>
     <td class="r num ${cls}" style="font-weight:700">${fmtPrice(q.price)}</td>
     <td class="r num ${cls}" style="font-weight:650">${fmtPct(q.pct)}</td>

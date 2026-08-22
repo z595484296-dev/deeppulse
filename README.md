@@ -4,7 +4,13 @@
 > 一台放在桌面上的金融工作台：以 A 股**情绪周期分析**为核心，
 > 把涨停、连板、炸板、溢价、宽度、量能与资金流，压缩成一颗 0-100° 的**情绪温度**。
 
-![version](https://img.shields.io/badge/version-1.35.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+![version](https://img.shields.io/badge/version-1.36.0-4f8cff) ![license](https://img.shields.io/badge/license-MIT-a855f7) ![deps](https://img.shields.io/badge/依赖-零第三方-2ebd85)
+
+### 主动事项精准落点（v1.36）
+
+- 提醒中心、研究驾驶舱和 Windows 通知使用同一条受限落点，能直接聚焦对应股票、研究流程、复盘日期或数据诊断，而不是只打开一个大页面。
+- 只有目标确实被找到后才记录“已打开”；未读、已打开、处理中和已处理彼此独立，打开页面不再等于完成任务。
+- 研究值守事项会展开对应流程的最新变化与证据时间线。所有处置均校验当前状态指纹并保留本机回执；DeepSeek 只能解释，不能替用户处理事项。
 
 ### 主动服务管理中心（v1.34）
 

@@ -206,7 +206,12 @@ a { color: var(--accent); text-decoration: none; }
 .attention-item-head time { flex: 0 0 auto; color: var(--text-3); font-size: 9.5px; }
 .attention-item p { margin: 5px 0; color: var(--text-2); font-size: 11px; line-height: 1.5; }
 .attention-item small { display: block; color: var(--text-3); line-height: 1.45; }
-.attention-item-actions { display: flex; gap: 6px; margin-top: 8px; }
+.attention-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.attention-task-state { flex: 0 0 auto; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-3); font-size: 9px; font-weight: 650; }
+.attention-item[data-task-state="opened"] .attention-task-state { border-color: rgba(79,140,255,.4); color: var(--blue); }
+.attention-item[data-task-state="in_progress"] .attention-task-state { border-color: rgba(240,185,11,.42); color: var(--amber); }
+.attention-item[data-task-state="resolved"] { opacity: .76; }
+.attention-item[data-task-state="resolved"] .attention-task-state { border-color: rgba(46,189,133,.38); color: var(--down); }
 .attention-cluster-evidence { margin-top: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(148, 163, 184, .04); }
 .attention-cluster-evidence > summary { padding: 7px 9px; cursor: pointer; color: var(--blue); font-size: 10.5px; font-weight: 600; }
 .attention-cluster-evidence > div { max-height: 250px; overflow-y: auto; border-top: 1px solid var(--line); }
@@ -1040,7 +1045,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .workflow-options input, .workflow-permissions input, .workflow-check input { margin-top: 2px; accent-color: var(--accent); }
 .workflow-options span, .workflow-permissions span { display: grid; gap: 2px; min-width: 0; }
 .workflow-options b, .workflow-permissions b { color: var(--text-2); font-size: 10.5px; }
-.workflow-options small, .workflow-permissions small { color: var(--text-3); font-size: 9px; line-height: 1.35; }
+.workflow-options small, .workflow-permissions small { color: var(--text-3); font-size: 9px; line-height: 1.36; }
 .workflow-settings { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
 .workflow-settings > label { display: grid; gap: 5px; color: var(--text-2); font-size: 10px; }
 .workflow-settings .workflow-check { display: flex; align-items: center; gap: 7px; min-height: 35px; white-space: nowrap; }
@@ -1065,7 +1070,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .workflow-source-preview li { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
 .workflow-source-preview li span { display: grid; gap: 2px; }
 .workflow-source-preview li b { color: var(--text-2); font-size: 10px; }
-.workflow-source-preview li small { color: var(--text-3); font-size: 8.5px; line-height: 1.35; }
+.workflow-source-preview li small { color: var(--text-3); font-size: 8.5px; line-height: 1.36; }
 .workflow-source-preview em { flex: none; font-style: normal; font-size: 8.5px; }
 .workflow-source-preview em.ok { color: var(--up); }
 .workflow-source-preview em.warn { color: var(--amber); }
@@ -2081,3 +2086,9 @@ body.light .proactive-fact { background: rgba(255, 255, 255, .58); }
 @media(max-width:860px){.research-suggestion-layout{grid-template-columns:1fr}.research-suggestion-list{max-height:280px}}
 @media(max-width:640px){.research-suggestion-actions .btn{flex:1 1 calc(50% - 4px);min-height:40px}.workflow-origin-banner{align-items:flex-start;flex-direction:column}}
 .workflow-item.workflow-focus{border-color:rgba(79,140,255,.78);box-shadow:0 0 0 3px rgba(79,140,255,.14);transition:border-color .2s,box-shadow .2s}
+.workflow-attention-context{display:grid;gap:9px;margin:0 0 11px;padding:10px 11px;border:1px solid rgba(79,140,255,.34);border-radius:9px;background:rgba(79,140,255,.07)}
+.workflow-attention-context>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:9px}.workflow-attention-context b{font-size:11px}.workflow-attention-context span{color:var(--text-3);font-size:9px}.workflow-attention-context .workflow-attention-actions{display:flex;flex-wrap:wrap;gap:6px}
+.workflow-title:focus-visible,.hypothesis-title:focus-visible,[data-watch-name-cell]:focus-visible,[data-diagnostic-component] :focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:4px}
+tr.attention-target,[data-diagnostic-component].attention-target,[data-effect-apply].attention-target{animation:attentionTarget 2.4s ease}
+@media (prefers-reduced-motion: reduce){.attention-item.attention-target,.workflow-item.workflow-focus,tr.attention-target,[data-diagnostic-component].attention-target,[data-effect-apply].attention-target{animation:none;transition:none;box-shadow:0 0 0 3px rgba(79,140,255,.18)}}
+@media(max-width:640px){.attention-panel{top:0;right:0;width:100vw;max-height:100dvh;height:100dvh;border-radius:0}.workflow-attention-context>div:first-child{align-items:flex-start;flex-direction:column}.workflow-attention-context .btn{min-height:40px;flex:1 1 calc(50% - 4px)}}

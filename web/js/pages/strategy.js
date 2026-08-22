@@ -1,9 +1,9 @@
 /* 深脉 DeepPulse — 策略页（情绪周期策略引擎 · 复盘与日记） */
 
-import { api } from '../api.js?v=1.35.0';
-import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state } from '../store.js?v=1.35.0';
-import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.35.0';
-import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.35.0';
+import { api } from '../api.js?v=1.36.0';
+import { loadJournal, saveJournalEntry, deleteJournalEntry, bus, state, syncProfile } from '../store.js?v=1.36.0';
+import { esc, toast, PHASE_COLORS, emptyState, downloadText } from '../util.js?v=1.36.0';
+import { EMBEDDED, generateWithDeepSeek } from '../bridge.js?v=1.36.0';
 
 let built = false;
 let lastEm = null;   // 最近一次情绪数据（导出复盘/日历用）
@@ -18,6 +18,7 @@ let researchSuggestionData = null;
 let activeResearchSuggestion = null;
 let suggestionDraftBackup = null;
 let pendingWorkflowFocus = '';
+let activeWorkflowAttention = null;
 let researchWatchPreview = null;
 let researchWatchTarget = null;
 
@@ -573,6 +574,38 @@ export function init(container) {
     }
   });
   container.querySelector('#st-workflow-list').addEventListener('click', async e => {
+    const attentionButton = e.target.closest('[data-workflow-attention-action]');
+    if (attentionButton && activeWorkflowAttention) {
+      const action = attentionButton.dataset.workflowAttentionAction;
+      if (action === 'return') {
+        document.dispatchEvent(new CustomEvent('attention-open', {
+          detail: { id: activeWorkflowAttention.groupId || activeWorkflowAttention.attentionId },
+        }));
+        return;
+      }
+      if (action === 'show-change') {
+        revealWorkflowAttentionTarget(attentionButton.closest('.workflow-item'), activeWorkflowAttention.target);
+        return;
+      }
+      attentionButton.disabled = true;
+      try {
+        const result = await api.mutateAttentionTriage(
+          activeWorkflowAttention.groupId, action, null, 'strategy',
+          activeWorkflowAttention.target?.fingerprint || '');
+        const group = (result.triage?.groups || []).find(row => row.id === activeWorkflowAttention.groupId);
+        activeWorkflowAttention = { ...activeWorkflowAttention, disposition: group?.disposition || activeWorkflowAttention.disposition };
+        await syncProfile();
+        renderWorkflowAttentionContext(container);
+        bus.dispatchEvent(new CustomEvent('attention-disposition', {
+          detail: { groupId: activeWorkflowAttention.groupId, disposition: activeWorkflowAttention.disposition, target: activeWorkflowAttention.target },
+        }));
+        toast(action === 'resolve' ? '已标记为处理完成' : action === 'reopen' ? '已重新打开处理' : '已进入处理中', 'ok');
+      } catch (error) {
+        attentionButton.disabled = false;
+        toast(error.message || '处置状态未保存，请重试', 'err');
+      }
+      return;
+    }
     const button = e.target.closest('[data-wf-action]');
     if (!button) return;
     const workflow = (researchWorkflowData?.items || []).find(row => row.id === button.dataset.wfId);
@@ -691,8 +724,43 @@ export function init(container) {
   document.addEventListener('research-suggestion-prepare', e => {
     if (e.detail?.suggestion && e.detail?.draft) applyPreparedSuggestion(container, e.detail);
   });
-  document.addEventListener('research-workflow-open', e => {
-    focusResearchWorkflow(container, e.detail?.workflowId);
+  document.addEventListener('research-workflow-open', async e => {
+    let target = focusResearchWorkflow(container, e.detail?.workflowId, e.detail?.target);
+    if (!target) {
+      await refreshResearchWorkflows(container);
+      target = focusResearchWorkflow(container, e.detail?.workflowId, e.detail?.target);
+    }
+    if (target && e.detail?.attentionId) {
+      activeWorkflowAttention = {
+        groupId: e.detail.groupId || e.detail.attentionId,
+        attentionId: e.detail.attentionId,
+        target: e.detail.target,
+        disposition: e.detail.disposition,
+      };
+      renderWorkflowAttentionContext(container);
+    }
+    e.detail?.acknowledge?.(Boolean(target));
+  });
+  document.addEventListener('research-hypothesis-open', async e => {
+    let target = focusResearchHypothesis(container, e.detail?.hypothesisId);
+    if (!target) {
+      await refreshHypotheses(container);
+      target = focusResearchHypothesis(container, e.detail?.hypothesisId);
+    }
+    e.detail?.acknowledge?.(Boolean(target));
+  });
+  document.addEventListener('strategy-review-open', e => {
+    const panel = container.querySelector('#st-cal-panel');
+    if (panel) {
+      panel.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+      container.querySelector('#st-cal-text')?.focus({ preventScroll: true });
+    }
+    e.detail?.acknowledge?.(Boolean(panel));
+  });
+  bus.addEventListener('attention-disposition', e => {
+    if (!activeWorkflowAttention || e.detail?.groupId !== activeWorkflowAttention.groupId) return;
+    activeWorkflowAttention = { ...activeWorkflowAttention, disposition: e.detail.disposition || activeWorkflowAttention.disposition };
+    renderWorkflowAttentionContext(container);
   });
   refreshResearchWorkflows(container);
   refreshResearchSuggestions(container);
@@ -1272,7 +1340,7 @@ function renderResearchWorkflows(container) {
     </section>` : '';
     const canRun = item.status === 'active';
     return `<article class="workflow-item" data-status="${esc(item.effectiveStatus)}" data-workflow-id="${esc(item.id)}">
-      <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b>${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
+      <div class="workflow-item-head"><div><span class="badge ${status[1]}">${status[0]}</span><b class="workflow-title" tabindex="-1">${esc(item.title || '未命名流程')}</b></div><time>${item.dueAt ? `复盘 ${esc(formatHypothesisTime(item.dueAt))}` : '无到期时间'}</time></div>
       <div class="workflow-target"><b>${esc(target.name || target.code || target.type || '研究对象')}</b>${target.code ? `<span>${esc(target.code)}</span>` : ''}<span>${Number(item.reviewDays || 0)} 个工作日</span></div>
       <p>${esc(item.question || '')}</p>
       <div class="workflow-source-tags">${sourceTags}</div>
@@ -1293,22 +1361,81 @@ function renderResearchWorkflows(container) {
       </div>
     </article>`;
   }).join('');
+  if (activeWorkflowAttention) requestAnimationFrame(() => renderWorkflowAttentionContext(container));
   if (pendingWorkflowFocus) requestAnimationFrame(() => focusResearchWorkflow(container, pendingWorkflowFocus));
 }
 
-function focusResearchWorkflow(container, workflowId) {
+function reducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
+function revealWorkflowAttentionTarget(target, attentionTarget = {}) {
+  if (!target) return;
+  const view = attentionTarget?.view;
+  const comparison = target.querySelector('.workflow-comparison');
+  const comparisonDetails = comparison?.querySelector('details');
+  const timeline = target.querySelector('.workflow-evidence-timeline');
+  const watch = target.querySelector('.workflow-watch');
+  if (view === 'latest_change') {
+    if (comparisonDetails) comparisonDetails.open = true;
+    if (timeline) timeline.open = true;
+    (comparison || timeline || watch)?.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'center' });
+  }
+}
+
+function renderWorkflowAttentionContext(container) {
+  container.querySelectorAll('.workflow-attention-context').forEach(row => row.remove());
+  if (!activeWorkflowAttention?.target?.entityId) return;
+  const card = [...container.querySelectorAll('.workflow-item')]
+    .find(row => row.dataset.workflowId === String(activeWorkflowAttention.target.entityId));
+  if (!card) return;
+  const status = activeWorkflowAttention.disposition?.status || 'pending';
+  const labels = { pending: '尚未查看', opened: '已查看', in_progress: '处理中', resolved: '已处理' };
+  const context = document.createElement('section');
+  context.className = 'workflow-attention-context';
+  context.dataset.state = status;
+  context.innerHTML = `<div><b>来自研究值守提醒</b><span>${esc(labels[status] || status)}</span></div>
+    <p>已定位到本次变化对应的研究流程；打开不等于处理完成。</p>
+    <div class="workflow-attention-actions">
+      <button class="btn sm primary" data-workflow-attention-action="show-change">查看证据差异</button>
+      ${status === 'opened' ? '<button class="btn sm" data-workflow-attention-action="start">开始处理</button>' : ''}
+      ${status === 'resolved'
+        ? '<button class="btn sm ghost" data-workflow-attention-action="reopen">重新处理</button>'
+        : '<button class="btn sm" data-workflow-attention-action="resolve">标记已处理</button>'}
+      <button class="btn sm ghost" data-workflow-attention-action="return">返回提醒中心</button>
+    </div>`;
+  card.querySelector('.workflow-item-head')?.after(context);
+  card.dataset.attentionState = status;
+}
+
+function focusResearchWorkflow(container, workflowId, attentionTarget = null) {
   const id = String(workflowId || '');
-  if (!id) return;
+  if (!id) return null;
   const rows = [...container.querySelectorAll('[data-workflow-id]')];
   const target = rows.find(row => row.dataset.workflowId === id);
   if (!target) {
     pendingWorkflowFocus = id;
-    return;
+    return null;
   }
   pendingWorkflowFocus = '';
   rows.forEach(row => row.classList.toggle('workflow-focus', row === target));
-  target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  revealWorkflowAttentionTarget(target, attentionTarget || {});
+  target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+  target.querySelector('.workflow-title')?.focus({ preventScroll: true });
   setTimeout(() => target.classList.remove('workflow-focus'), 3200);
+  return target;
+}
+
+function focusResearchHypothesis(container, hypothesisId) {
+  const target = [...container.querySelectorAll('.hypothesis-item')]
+    .find(row => row.dataset.hypothesisId === String(hypothesisId || ''));
+  if (!target) return null;
+  target.classList.add('workflow-focus');
+  target.querySelector('.hypothesis-title')?.focus({ preventScroll: true });
+  target.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+  target.querySelector('.hypothesis-timeline')?.setAttribute('open', '');
+  setTimeout(() => target.classList.remove('workflow-focus'), 3200);
+  return target;
 }
 
 const HYP_STATUS = {
@@ -1370,10 +1497,10 @@ function renderHypotheses(container) {
       </li>`;
     }).join('');
     const due = item.effectiveStatus === 'review_due';
-    return `<article class="hypothesis-item" data-status="${esc(item.effectiveStatus)}">
+    return `<article class="hypothesis-item" data-status="${esc(item.effectiveStatus)}" data-hypothesis-id="${esc(item.id)}">
       <div class="hypothesis-head">
         <span class="badge ${status[1]}">${status[0]}</span>
-        <b>${esc(baseline.title || '未命名研究假设')}</b>
+        <b class="hypothesis-title" tabindex="-1">${esc(baseline.title || '未命名研究假设')}</b>
         <time>复盘 ${esc(formatHypothesisTime(item.reviewDueAt))}</time>
       </div>
       <p class="hypothesis-statement">${esc(item.statement)}</p>

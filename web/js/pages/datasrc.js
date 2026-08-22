@@ -1,8 +1,8 @@
 /* 深脉 DeepPulse — 数据源页 */
 
-import { api } from '../api.js?v=1.35.0';
-import { esc, toast, downloadText } from '../util.js?v=1.35.0';
-import { state } from '../store.js?v=1.35.0';
+import { api } from '../api.js?v=1.36.0';
+import { esc, toast, downloadText } from '../util.js?v=1.36.0';
+import { state } from '../store.js?v=1.36.0';
 
 let built = false;
 
@@ -208,6 +208,18 @@ export function init(container) {
       toast('处理失败：' + err.message, 'err');
       btn.disabled = false; btn.textContent = original;
     }
+  });
+  document.addEventListener('datasource-component-open', async e => {
+    await renderDiagnostics(container);
+    const card = [...container.querySelectorAll('[data-diagnostic-component]')]
+      .find(row => row.dataset.diagnosticComponent === String(e.detail?.componentId || ''));
+    if (card) {
+      card.classList.add('attention-target');
+      card.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+      card.querySelector('[tabindex="-1"]')?.focus({ preventScroll: true });
+      setTimeout(() => card.classList.remove('attention-target'), 3200);
+    }
+    e.detail?.acknowledge?.(Boolean(card));
   });
   // 导出情绪历史快照
   const exportHistory = async (fmt) => {
@@ -468,8 +480,8 @@ async function renderDiagnostics(container) {
         ${(report.components || []).map(row => {
           const tone = row.state === 'ok' ? 'ok' : row.state === 'error' ? 'err' : 'warn';
           const stateLabel = row.state === 'ok' ? '正常' : row.state === 'error' ? '需处理' : row.state === 'warn' ? '留意' : '可选';
-          return `<div style="border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel-2)">
-            <div class="tdx-state ${tone}" style="margin-bottom:7px"><i class="dot ${tone}"></i>${esc(row.label)} · ${stateLabel}${trendLabels[row.trend] ? ` · ${trendLabels[row.trend]}` : ''}</div>
+          return `<div data-diagnostic-component="${esc(row.id || '')}" style="border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel-2)">
+            <div class="tdx-state ${tone}" tabindex="-1" style="margin-bottom:7px"><i class="dot ${tone}"></i>${esc(row.label)} · ${stateLabel}${trendLabels[row.trend] ? ` · ${trendLabels[row.trend]}` : ''}</div>
             <div style="font-size:12px;color:var(--text-2);line-height:1.7">${esc(row.summary)}</div>
             ${row.action ? `<div style="font-size:11.5px;color:var(--text-3);line-height:1.7;margin-top:5px">建议：${esc(row.action)}</div>` : ''}
             ${row.repairAction ? `<button class="btn sm" data-diagnostic-repair="${esc(row.repairAction)}" style="margin-top:8px">${esc(row.repairLabel || '尝试修复')}</button>` : ''}

@@ -1,14 +1,14 @@
 /* 深脉 DeepPulse — 统一提醒中心与注意力调度 */
 
-import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.35.0';
-import { api } from './api.js?v=1.35.0';
+import { attentionDecision, digestMessage, makeAttentionItem, nextMorning } from './attention.js?v=1.36.0';
+import { api } from './api.js?v=1.36.0';
 import {
   attentionLearningContext, bus, loadAttentionInbox, loadAttentionPreferences,
   pushAttentionItem, resetAttentionLearning, saveAttentionPreferences, syncProfile,
-} from './store.js?v=1.35.0';
-import { esc, toast } from './util.js?v=1.35.0';
+} from './store.js?v=1.36.0';
+import { esc, toast } from './util.js?v=1.36.0';
 
-let navigate = () => {};
+let navigate = async () => false;
 let digestTimer = null;
 let initialized = false;
 let knownIds = new Set();
@@ -16,8 +16,12 @@ let deliverySnapshot = { channels: {}, recent: [] };
 let triageSnapshot = null;
 let triageRequest = null;
 const $ = selector => document.querySelector(selector);
-const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', event: '事件影响', hypothesis_review: '假设复盘', system: '系统更新' };
-const FEEDBACK_LABELS = { helpful: '有用', done: '已完成', too_frequent: '少一点', irrelevant: '不相关' };
+const KIND_LABELS = { phase: '情绪阶段', move: '盘中异动', price: '价格条件', routine: '主动日程', event: '事件影响', hypothesis_review: '假设复盘', research_watch: '研究值守', research_workflow_review: '研究流程复盘', system: '系统更新' };
+const FEEDBACK_LABELS = { helpful: '有用', too_frequent: '少一点', irrelevant: '不相关' };
+const DISPOSITION_LABELS = {
+  pending: '待处理', opened: '已查看', in_progress: '处理中', resolved: '已处理',
+  snoozed: '已稍后', dismissed: '已忽略', superseded: '目标已变化',
+};
 
 function isExpired(item, now = Date.now()) {
   return Number(item?.expiresAt) > 0 && now >= Number(item.expiresAt);
@@ -68,6 +72,29 @@ function clusterEvidence(group) {
   </details>`;
 }
 
+function dispositionStatus(group) {
+  return group?.disposition?.status || (group?.feedback === 'done' ? 'resolved' : group?.unreadCount ? 'pending' : 'opened');
+}
+
+function openLabel(group) {
+  const type = group?.target?.entityType;
+  if (type === 'research_workflow') return '查看本次变化';
+  if (type === 'research_hypothesis') return '查看复盘';
+  if (type === 'data_component') return '查看数据问题';
+  if (type === 'security') return '查看标的';
+  return '查看详情';
+}
+
+function dispositionActions(group, status) {
+  if (isExpired(group) || ['dismissed', 'superseded'].includes(status)) return '';
+  if (status === 'resolved') {
+    return `<button class="btn sm ghost" data-attention-disposition="reopen">重新处理</button>`;
+  }
+  return `${status === 'opened' ? '<button class="btn sm" data-attention-disposition="start">开始处理</button>' : ''}
+    ${status === 'in_progress' ? '' : group.unreadCount ? '<button class="btn sm ghost" data-attention-read>标记已查看</button>' : ''}
+    <button class="btn sm ghost" data-attention-disposition="resolve">标记已处理</button>`;
+}
+
 async function refreshTriage() {
   if (triageRequest) return triageRequest;
   triageRequest = api.attentionTriage().then(snapshot => {
@@ -82,31 +109,37 @@ function render() {
   if (!initialized) return;
   const groups = triageSnapshot?.groups || rawFallbackGroups();
   const unread = triageSnapshot?.unreadGroupCount ?? groups.filter(group => group.unreadCount).length;
+  const pending = groups.filter(group => !isExpired(group)
+    && !['resolved', 'dismissed', 'superseded'].includes(dispositionStatus(group))).length;
   const badge = $('#attention-badge');
   badge.textContent = unread > 99 ? '99+' : String(unread);
   badge.hidden = unread === 0;
   const rawUnread = triageSnapshot?.unreadRawCount;
-  $('#attention-count').textContent = unread
-    ? `${unread} 个待处理主题${Number(rawUnread) > unread ? ` · 含 ${rawUnread} 条原始事件` : ''}`
-    : '已全部读完';
+  $('#attention-count').textContent = pending
+    ? `${pending} 个待处理 · ${unread} 个未查看${Number(rawUnread) > unread ? ` · 含 ${rawUnread} 条原始事件` : ''}`
+    : unread ? `${unread} 个未查看事项` : '当前没有待处理事项';
   const list = $('#attention-list');
-  list.innerHTML = groups.length ? groups.map(group => `
-    <article class="attention-item ${group.unreadCount ? 'unread' : ''} ${isExpired(group) ? 'expired' : ''} ${group.type === 'cluster' ? 'cluster' : ''}" data-id="${esc(group.id)}" data-members="${esc((group.memberIds || []).join(','))}">
-      <div class="attention-item-head"><b>${esc(group.title)}</b><time>${isExpired(group) ? '已过期 · ' : ''}${timeLabel(group.createdAt)}</time></div>
+  list.innerHTML = groups.length ? groups.map(group => {
+    const status = dispositionStatus(group);
+    const target = group.target?.fingerprint ? group.target : null;
+    return `
+    <article class="attention-item ${group.unreadCount ? 'unread' : ''} ${isExpired(group) ? 'expired' : ''} ${group.type === 'cluster' ? 'cluster' : ''}" data-id="${esc(group.id)}" data-members="${esc((group.memberIds || []).join(','))}" data-task-state="${esc(status)}">
+      <div class="attention-item-head"><b>${esc(group.title)}</b><span class="attention-task-state">${esc(DISPOSITION_LABELS[status] || status)}</span><time>${isExpired(group) ? '已过期 · ' : ''}${timeLabel(group.createdAt)}</time></div>
       <p>${esc(group.detail)}</p>
       <small>为什么提醒我：${esc(group.reason)}</small>
       ${group.type === 'item' ? deliveryTrace(group.id) : ''}
       ${clusterEvidence(group)}
       <div class="attention-item-actions">
-        ${group.page ? `<button class="btn sm" data-attention-page="${esc(group.page)}">查看</button>` : ''}
-        ${group.unreadCount && !isExpired(group) ? `<button class="btn sm ghost" data-attention-read>${group.type === 'cluster' ? '整组已读' : '已读'}</button>` : ''}
+        ${target ? `<button class="btn sm primary" data-attention-open>${openLabel(group)}</button>` : '<button class="btn sm" disabled>正在生成落点…</button>'}
+        ${dispositionActions(group, status)}
       </div>
       <div class="attention-item-feedback" aria-label="告诉深脉这条提醒是否有用">
-        ${['helpful', 'done', ...(group.kind === 'price' ? [] : ['too_frequent', 'irrelevant'])].map(signal => `
+        ${['helpful', ...(group.kind === 'price' ? [] : ['too_frequent', 'irrelevant'])].map(signal => `
           <button class="attention-feedback-btn ${group.feedback === signal ? 'selected' : ''}" data-attention-feedback="${signal}" aria-pressed="${group.feedback === signal}">${FEEDBACK_LABELS[signal]}</button>
         `).join('')}
       </div>
-    </article>`).join('') : '<div class="attention-empty"><b>现在很安静</b><span>价格到达、阶段变化和重要异动会统一出现在这里。</span></div>';
+    </article>`;
+  }).join('') : '<div class="attention-empty"><b>现在很安静</b><span>价格到达、阶段变化和重要异动会统一出现在这里。</span></div>';
   renderLearning();
 }
 
@@ -210,6 +243,7 @@ export function attentionContext() {
       kind: item.kind, priority: item.priority, title: item.title, detail: item.detail,
       reason: item.reason, createdAt: item.createdAt, expiresAt: item.expiresAt, rawCount: item.count,
       read: !item.unreadCount, expired: isExpired(item), feedback: item.feedback || null,
+      disposition: item.disposition || null, target: item.target || null,
     })),
   };
 }
@@ -238,6 +272,8 @@ export function initAttentionCenter(options = {}) {
   $('#attention-list').addEventListener('click', event => {
     const card = event.target.closest('.attention-item');
     if (!card) return;
+    const group = (triageSnapshot?.groups || rawFallbackGroups())
+      .find(row => String(row.id) === String(card.dataset.id));
     const retryChannel = event.target.closest('[data-delivery-retry]')?.dataset.deliveryRetry;
     if (retryChannel) {
       const button = event.target.closest('[data-delivery-retry]');
@@ -258,6 +294,25 @@ export function initAttentionCenter(options = {}) {
       }).catch(error => toast(`未能标记已读：${error.message}`, 'err'));
       return;
     }
+    const dispositionAction = event.target.closest('[data-attention-disposition]')?.dataset.attentionDisposition;
+    if (dispositionAction) {
+      const button = event.target.closest('[data-attention-disposition]');
+      button.disabled = true;
+      api.mutateAttentionTriage(card.dataset.id, dispositionAction, null, 'web', group?.target?.fingerprint || '')
+        .then(async result => {
+          triageSnapshot = result.triage;
+          await syncProfile();
+          render();
+          const next = (result.triage?.groups || []).find(row => String(row.id) === String(card.dataset.id));
+          bus.dispatchEvent(new CustomEvent('attention-disposition', {
+            detail: { groupId: card.dataset.id, disposition: next?.disposition, target: next?.target || group?.target },
+          }));
+          const messages = { start: '已进入处理中', resolve: '已标记为处理完成', reopen: '已重新打开处理' };
+          toast(messages[dispositionAction] || '处置状态已更新', 'ok');
+        })
+        .catch(error => { button.disabled = false; toast(error.message || '处置状态未保存，请重试', 'err'); });
+      return;
+    }
     const signal = event.target.closest('[data-attention-feedback]')?.dataset.attentionFeedback;
     if (signal) {
       api.mutateAttentionTriage(card.dataset.id, 'feedback', signal, 'web').then(async result => {
@@ -265,14 +320,33 @@ export function initAttentionCenter(options = {}) {
         await syncProfile();
         const message = signal === 'too_frequent' ? '同类提醒以后合并为摘要，可随时恢复'
           : signal === 'irrelevant' ? '同类提醒以后只收入中心，可随时恢复'
-            : signal === 'done' ? '已记为完成' : '已记住这类提醒对你有用';
+            : '已记住这类提醒对你有用';
         toast(message, 'ok', 4500);
       }).catch(error => toast(`反馈未保存：${error.message}`, 'err'));
+      return;
     }
-    const page = event.target.closest('[data-attention-page]')?.dataset.attentionPage;
-    if (page) {
-      api.mutateAttentionTriage(card.dataset.id, 'mark_read', null, 'web').then(syncProfile).catch(() => {});
-      navigate(page); toggle(false);
+    const open = event.target.closest('[data-attention-open]');
+    if (open && group?.target) {
+      open.disabled = true;
+      const oldText = open.textContent;
+      open.textContent = '正在定位…';
+      Promise.resolve(navigate(group.target, group)).then(found => {
+        if (!found) throw new Error('目标已变化或暂时无法定位，事项仍保持待处理');
+        return api.mutateAttentionTriage(card.dataset.id, 'open', null, 'web', group.target.fingerprint);
+      }).then(async result => {
+        triageSnapshot = result.triage;
+        await syncProfile();
+        const next = (result.triage?.groups || []).find(row => String(row.id) === String(card.dataset.id));
+        bus.dispatchEvent(new CustomEvent('attention-disposition', {
+          detail: { groupId: card.dataset.id, disposition: next?.disposition, target: next?.target || group.target },
+        }));
+        if (group.target.entityType !== 'attention') toggle(false);
+      }).catch(error => {
+        open.disabled = false;
+        open.textContent = oldText;
+        toast(error.message || '没有找到提醒对应的对象', 'err', 6000);
+        refreshTriage();
+      });
     }
   });
   ['attention-mode', 'attention-quiet', 'attention-quiet-start', 'attention-quiet-end',
